@@ -5,6 +5,7 @@
 //! event, which is the whole point of the project.
 
 mod alert;
+pub mod attack;
 mod detectors;
 mod score;
 mod signal;
@@ -125,6 +126,23 @@ impl Engine {
             score,
             attack,
         })
+    }
+
+    /// Read-only assessment of a process's lineage: the combined signals and the
+    /// score, with no dedup/reporting side effects. For `investigate`.
+    pub fn assess(&self, subject: ProcKey, graph: &ProcessGraph) -> (Vec<Signal>, Score) {
+        let lineage: Vec<ProcKey> = graph.ancestry(&subject).iter().map(|n| n.key).collect();
+        let lineage = if lineage.is_empty() { vec![subject] } else { lineage };
+        let mut signals: Vec<Signal> = Vec::new();
+        for key in &lineage {
+            if let Some(s) = self.signals.get(key) {
+                signals.extend(s.iter().cloned());
+            }
+        }
+        signals.sort_by_key(|s| s.ts_ns);
+        let ctx = self.context(&lineage, graph);
+        let sc = score::score(&signals, ctx);
+        (signals, sc)
     }
 
     fn context(&self, lineage: &[ProcKey], graph: &ProcessGraph) -> Context {

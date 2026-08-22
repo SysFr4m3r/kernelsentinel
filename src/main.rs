@@ -47,6 +47,14 @@ enum Command {
         /// Capture file to read; use "-" for stdin.
         input: String,
     },
+    /// Investigate one process from a capture: lineage, timeline, risk, ATT&CK.
+    Investigate {
+        /// PID to investigate.
+        pid: u32,
+        /// Capture file to analyze.
+        #[arg(short, long)]
+        capture: String,
+    },
     /// Print the current process tree as reconstructed from /proc.
     Tree {
         /// Show only this subtree.
@@ -69,6 +77,7 @@ fn main() -> Result<()> {
         }
         Command::Record { out } => record(&out),
         Command::Replay { input } => replay(&input),
+        Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
         Command::Run {
             max_processes,
@@ -174,6 +183,138 @@ fn replay(input: &str) -> Result<()> {
         "kernelsentinel: replayed {n} events ({bad} malformed lines skipped), graph {} nodes",
         g.nodes
     ));
+    Ok(())
+}
+
+/// Investigate one process from a capture. Replays the whole file to rebuild
+/// the graph and detection state, then prints everything known about the target
+/// pid: identity, lineage, credential history, its event timeline, the signals
+/// that fired on its lineage, the risk score, and the ATT&CK techniques. This is
+/// the post-incident view -- run it against a capture, no root required.
+fn investigate(pid: u32, capture: &str) -> Result<()> {
+    use kernelsentinel::detect::attack;
+
+    let text = std::fs::read_to_string(capture)?;
+    let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
+    let mut engine = Engine::new(Severity::Info);
+    let clock = BootClock::new();
+
+    // Rebuild state, and collect this pid's own events for its timeline.
+    let mut timeline: Vec<Event> = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = match serde_json::from_str(line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        graph.apply(&ev);
+        engine.on_event(&ev, &graph);
+        if ev.tgid == pid {
+            timeline.push(ev);
+        }
+    }
+
+    // A pid can recur in a long capture; investigate every instance.
+    let subjects: Vec<ProcKey> = graph
+        .nodes()
+        .filter(|n| n.key.pid == pid)
+        .map(|n| n.key)
+        .collect();
+
+    if subjects.is_empty() {
+        status(&format!("no process with pid {pid} found in {capture}"));
+        return Ok(());
+    }
+    if subjects.len() > 1 {
+        status(&format!(
+            "note: pid {pid} was reused {} times in this capture; showing each",
+            subjects.len()
+        ));
+    }
+
+    for subject in subjects {
+        let node = graph.get(&subject).unwrap();
+        emit(&format!("\n=== PID {} {} ===", subject.pid, node.comm));
+        if !node.exe.is_empty() {
+            emit(&format!("executable : {}", node.exe));
+        }
+        if !node.argv.is_empty() {
+            emit(&format!("command    : {}", node.argv.join(" ")));
+        }
+        emit(&format!("uid        : {} (euid {})", node.uid, node.euid));
+        if let Some(exited) = node.exited {
+            emit(&format!("exited     : {}", clock.format(exited)));
+        }
+
+        // Lineage, root first.
+        let chain: Vec<String> = graph
+            .ancestry(&subject)
+            .iter()
+            .rev()
+            .map(|n| format!("{}({})", n.comm, n.key.pid))
+            .collect();
+        if !chain.is_empty() {
+            emit(&format!("lineage    : {}", chain.join(" -> ")));
+        }
+
+        // Credential transitions.
+        if !node.cred_history.is_empty() {
+            emit("\ncredential changes:");
+            for c in &node.cred_history {
+                emit(&format!(
+                    "  {}  uid={} euid={} gid={} egid={}",
+                    clock.format(c.ts_ns),
+                    c.uid,
+                    c.euid,
+                    c.gid,
+                    c.egid
+                ));
+            }
+        }
+
+        // Risk assessment over the lineage.
+        let (signals, score) = engine.assess(subject, &graph);
+        emit(&format!(
+            "\nrisk       : {} {}/100  (base {} + chain {})",
+            score.severity.label(),
+            score.total,
+            score.base,
+            score.chain_bonus
+        ));
+        if !signals.is_empty() {
+            emit("signals:");
+            for s in &signals {
+                emit(&format!(
+                    "  {}  {:<22} {}  (+{})",
+                    clock.format(s.ts_ns),
+                    s.id,
+                    s.detail,
+                    s.score
+                ));
+            }
+        }
+
+        // This process's own event timeline.
+        if !timeline.is_empty() {
+            emit("\ntimeline:");
+            for ev in timeline.iter().filter(|e| e.start_boottime == subject.start_boottime) {
+                emit(&format!("  {}  {}", clock.format(ev.ts_ns), event_detail(ev)));
+            }
+        }
+
+        // ATT&CK techniques from the lineage's signals.
+        let mut techniques: Vec<&str> = signals.iter().flat_map(|s| s.attack.iter().copied()).collect();
+        techniques.sort();
+        techniques.dedup();
+        if !techniques.is_empty() {
+            emit("\nMITRE ATT&CK:");
+            for t in techniques {
+                emit(&format!("  {:<12} {}", t, attack::name(t)));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -324,7 +465,22 @@ fn status(line: &str) {
 }
 
 fn print_event(clock: &BootClock, ev: &Event) {
-    let detail = match ev.event_type() {
+    let detail = event_detail(ev);
+    emit(&format!(
+        "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
+        clock.format(ev.ts_ns),
+        ev.tgid,
+        ev.ppid,
+        ev.uid,
+        ev.comm,
+        detail.trim_end()
+    ));
+}
+
+/// The human-readable detail string for one event, shared by the live display
+/// and the investigate timeline.
+fn event_detail(ev: &Event) -> String {
+    match ev.event_type() {
         EventType::Exec => {
             let filename = &ev.filename;
             let argv = &ev.argv;
@@ -405,17 +561,7 @@ fn print_event(clock: &BootClock, ev: &Event) {
         }
         EventType::Module => format!("MODULE-LOAD {} (via {})", ev.filename, ev.module_origin()),
         EventType::Unknown(t) => format!("unknown type={t}"),
-    };
-
-    emit(&format!(
-        "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
-        clock.format(ev.ts_ns),
-        ev.tgid,
-        ev.ppid,
-        ev.uid,
-        ev.comm,
-        detail.trim_end()
-    ));
+    }
 }
 
 /// Set on SIGINT/SIGTERM; the ring buffer poll loop reads it between iterations.

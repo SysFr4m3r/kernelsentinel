@@ -77,3 +77,36 @@ fn container_suid_as_root_is_low_not_critical() {
     assert_eq!(low.len(), 1);
     assert_eq!(low[0].0, Severity::Low);
 }
+
+#[test]
+fn investigate_data_path_surfaces_the_chain() {
+    // The engine.assess() call that `investigate` relies on must, for the SUID
+    // creator in the host capture, surface the full lineage assessment:
+    // CRITICAL, carrying both the escalation and the SUID-creation signals.
+    use kernelsentinel::graph::ProcKey;
+
+    let text = std::fs::read_to_string("tests/fixtures/host_sudo_suid.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Info);
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        e.on_event(&ev, &g);
+    }
+
+    // Find the chmod that created the SUID binary.
+    let chmod: ProcKey = g
+        .nodes()
+        .find(|n| n.comm == "chmod")
+        .map(|n| n.key)
+        .expect("capture must contain the chmod process");
+
+    let (signals, score) = e.assess(chmod, &g);
+    assert_eq!(score.severity, Severity::Critical);
+    let ids: Vec<&str> = signals.iter().map(|s| s.id).collect();
+    assert!(ids.contains(&"suid_create"), "signals: {ids:?}");
+    assert!(ids.contains(&"privilege_escalation"), "signals: {ids:?}");
+}
