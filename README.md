@@ -54,14 +54,14 @@ test replaying a real capture.
 
 ## What works today
 
-**Sensors** (eBPF CO-RE, verified live on kernel 6.19 unless noted):
+**Sensors** (eBPF CO-RE, all six verified live on kernel 6.19):
 - `exec` with full `argv`, `fork`/`exit`, and every credential transition via `fentry/commit_creds`
 - New SUID/SGID binaries (`lsm/path_chmod`), file capabilities via setcap (`lsm/inode_setxattr`)
 - Writes to watched paths — `ld.so.preload`, `authorized_keys`, cron, systemd, sudoers, shadow —
   filtered in-kernel by an LPM trie so the daemon never sees the firehose (`lsm/file_open` + `bpf_d_path`)
 - `ptrace` and cross-uid `/proc` memory reads (`lsm/ptrace_access_check`)
 - Fileless execution from memfd / anonymous files (`lsm/bprm_check_security`)
-- Kernel module load (`fexit/do_init_module`) — built; testable only in a VM
+- Kernel module load (`fexit/do_init_module`) — verified with a standard module
 
 **Process graph**: PID-reuse-proof identity `(pid, start_boottime)`, parent/child edges, credential
 history, ancestry walks, retention window, hard memory caps, and `/proc` bootstrap for processes that
@@ -260,7 +260,7 @@ exists once you correlate them per process.
 |---|---|---|
 | M0 | BPF pipeline, exec sensor, `doctor` | ✅ done & verified |
 | M1 | fork/exit, `commit_creds`, process graph, `/proc` bootstrap | ✅ done & verified |
-| M2 | File sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | ✅ done (module-load VM-pending) |
+| M2 | File sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | ✅ done & verified (all 6 sensors) |
 | M3 | Built-in detections, risk scoring, alerts, `investigate`, NDJSON — **first usable release** | ✅ done & validated |
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL | |

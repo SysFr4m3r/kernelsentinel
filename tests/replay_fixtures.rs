@@ -143,3 +143,31 @@ fn ndjson_incident_record_is_valid_and_complete() {
     assert_eq!(v["signals"].as_array().unwrap().len(), 2);
     assert!(v["attack"].as_array().unwrap().iter().any(|a| a == "T1548.001"));
 }
+
+
+#[test]
+fn module_load_fires_and_captures_the_name() {
+    // Real capture of `sudo modprobe dummy`. Verifies the do_init_module sensor
+    // end to end: the module_load signal fires and carries the real module name
+    // read from the parsed struct module (T1547.006). This was the last sensor
+    // that could only be verified against a live module load.
+    let text = std::fs::read_to_string("tests/fixtures/module_load.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Info);
+    let mut saw_module = false;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            if let Some(sig) = inc.signals.iter().find(|s| s.id == "module_load") {
+                assert!(sig.detail.contains("dummy"), "module name lost: {}", sig.detail);
+                assert!(sig.attack.contains(&"T1547.006"));
+                saw_module = true;
+            }
+        }
+    }
+    assert!(saw_module, "module_load signal never fired on a real module-load capture");
+}

@@ -582,7 +582,14 @@ fn event_detail(ev: &Event) -> String {
                 warn
             )
         }
-        EventType::Module => format!("MODULE-LOAD {} (via {})", ev.filename, ev.module_origin()),
+        EventType::Module => {
+            let origin = ev.module_origin();
+            if origin.is_empty() {
+                format!("MODULE-LOAD {}", ev.filename)
+            } else {
+                format!("MODULE-LOAD {} (via {})", ev.filename, origin)
+            }
+        }
         EventType::Unknown(t) => format!("unknown type={t}"),
     }
 }
