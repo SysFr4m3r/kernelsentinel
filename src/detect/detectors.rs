@@ -33,7 +33,11 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
         EventType::Ptrace => ptrace(ev, key, graph),
         EventType::FileOpen => sensitive_write(ev, key),
         EventType::Module => module_load(ev, key),
-        EventType::Exec => exec_from_suspicious_dir(ev, key, graph),
+        EventType::Exec => {
+            let mut sigs = exec_from_suspicious_dir(ev, key, graph);
+            sigs.extend(shell_from_network_daemon(ev, key, graph));
+            sigs
+        }
         _ => Vec::new(),
     }
 }
@@ -186,4 +190,68 @@ fn exec_from_suspicious_dir(ev: &Event, key: ProcKey, _graph: &ProcessGraph) -> 
     } else {
         Vec::new()
     }
+}
+
+/// A shell whose ancestry contains a network-facing service daemon. A web or
+/// database server spawning /bin/sh is the classic webshell / command-injection
+/// shape (T1059.004) -- it should essentially never happen in normal operation.
+///
+/// sshd is deliberately excluded: spawning a login shell is exactly its job, so
+/// sshd -> bash is an interactive login, not an intrusion. Web and database
+/// daemons have no such reason to fork a shell.
+fn shell_from_network_daemon(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
+    if !is_shell(&ev.filename) {
+        return Vec::new();
+    }
+    // Walk the shell's ancestry for a web/db daemon.
+    let daemon = graph
+        .ancestry(&key)
+        .into_iter()
+        .find(|n| is_web_or_db_daemon(&n.comm))
+        .map(|n| format!("{}({})", n.comm, n.key.pid));
+
+    match daemon {
+        Some(d) => vec![Signal::new(
+            "shell_from_network_daemon",
+            50,
+            &["T1059.004"],
+            key,
+            ev.ts_ns,
+            format!("{} spawned a shell ({})", d, shell_name(&ev.filename)),
+        )],
+        None => Vec::new(),
+    }
+}
+
+fn shell_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn is_shell(path: &str) -> bool {
+    const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "ksh", "fish", "csh", "tcsh"];
+    SHELLS.contains(&shell_name(path))
+}
+
+/// Web and database servers -- daemons that face the network but have no
+/// legitimate reason to spawn a shell. sshd is intentionally absent.
+fn is_web_or_db_daemon(comm: &str) -> bool {
+    const DAEMONS: &[&str] = &[
+        "nginx",
+        "apache2",
+        "httpd",
+        "php-fpm",
+        "php-fpm7",
+        "php-fpm8",
+        "tomcat",
+        "node",
+        "gunicorn",
+        "uwsgi",
+        "mysqld",
+        "mariadbd",
+        "postgres",
+        "redis-server",
+        "mongod",
+        "memcached",
+    ];
+    DAEMONS.iter().any(|d| comm == *d || comm.starts_with(d))
 }

@@ -280,6 +280,32 @@ mod tests {
         assert_eq!(low[0].score.severity, Severity::Low);
     }
 
+    // Synthetic: a real nginx->shell capture is not on hand, but the detection
+    // is a graph-ancestry walk, which this exercises exactly. Flagged as synthetic
+    // so it is revalidated against a real capture when one exists.
+    #[test]
+    fn web_daemon_spawning_shell_is_flagged() {
+        let events = vec![
+            ev(r#"{"ts_ns":1000000000,"type":3,"tgid":800,"ppid":1,"start_boottime":500000000,"comm":"nginx","child_pid":900,"child_start_boottime":1000000000,"uid":33}"#),
+            ev(r#"{"ts_ns":1001000000,"type":1,"tgid":900,"ppid":800,"start_boottime":1000000000,"comm":"sh","filename":"/bin/sh","uid":33}"#),
+        ];
+        let incidents = run(&events, Severity::Medium);
+        assert_eq!(incidents.len(), 1, "nginx->sh should alert");
+        assert!(incidents[0].signals.iter().any(|s| s.id == "shell_from_network_daemon"));
+        // The network-daemon context multiplier must have been applied.
+        assert!(incidents[0].score.context_mult > 1.0);
+    }
+
+    #[test]
+    fn sshd_spawning_shell_is_not_flagged() {
+        // sshd's whole job is to spawn login shells; this must never alert.
+        let events = vec![
+            ev(r#"{"ts_ns":1000000000,"type":3,"tgid":700,"ppid":1,"start_boottime":500000000,"comm":"sshd","child_pid":950,"child_start_boottime":1000000000,"uid":0}"#),
+            ev(r#"{"ts_ns":1001000000,"type":1,"tgid":950,"ppid":700,"start_boottime":1000000000,"comm":"bash","filename":"/bin/bash","uid":1000}"#),
+        ];
+        assert!(run(&events, Severity::Low).is_empty(), "sshd->bash is a normal login");
+    }
+
     #[test]
     fn escalation_does_not_re_alert_without_escalating() {
         // Once a lineage is reported at CRITICAL, further events in it must not
