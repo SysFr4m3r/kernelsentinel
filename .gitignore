@@ -16,6 +16,10 @@ bpf/vmlinux.h
 # host they were recorded on. Never commit them.
 *.ndjson
 /captures/
+# ...except the scrubbed regression fixtures, which MUST be committed so the
+# detection tests run in CI. These are reviewed for IPs/keys/secrets.
+!tests/fixtures/
+!tests/fixtures/*.ndjson
 kernelsentinel.log
 
 # --- VM / test scratch ---

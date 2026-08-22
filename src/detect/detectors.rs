@@ -30,7 +30,7 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
         EventType::ExecAnon => fileless_exec(ev, key),
         EventType::CredChange => privilege_escalation(ev, key),
         EventType::Setcap => setcap(ev, key),
-        EventType::Ptrace => ptrace(ev, key),
+        EventType::Ptrace => ptrace(ev, key, graph),
         EventType::FileOpen => sensitive_write(ev, key),
         EventType::Module => module_load(ev, key),
         EventType::Exec => exec_from_suspicious_dir(ev, key, graph),
@@ -101,28 +101,38 @@ fn setcap(ev: &Event, key: ProcKey) -> Vec<Signal> {
     )]
 }
 
-fn ptrace(ev: &Event, key: ProcKey) -> Vec<Signal> {
-    // Only attach-mode is scored as an injection primitive; a cross-uid read is
-    // credential access, scored lower.
+fn ptrace(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
     if ev.ptrace_is_attach() {
-        vec![Signal::new(
+        return vec![Signal::new(
             "ptrace_attach",
             30,
             &["T1055.008"],
             key,
             ev.ts_ns,
             format!("ptrace-attached to pid {}", ev.target_pid),
-        )]
-    } else {
-        vec![Signal::new(
-            "cross_uid_proc_read",
-            25,
-            &["T1003", "T1552"],
-            key,
-            ev.ts_ns,
-            format!("read another user's process memory (pid {})", ev.target_pid),
-        )]
+        )];
     }
+
+    // A cross-uid read of a process *in your own lineage* is not credential
+    // theft -- it is a parent/child relationship, e.g. sudo (now root) reading
+    // the tty of the shell that launched it. The theft signal is reading a
+    // process OUTSIDE your tree. Suppress in-lineage reads.
+    let in_lineage = graph
+        .ancestry(&key)
+        .iter()
+        .any(|n| n.key.pid == ev.target_pid);
+    if in_lineage {
+        return Vec::new();
+    }
+
+    vec![Signal::new(
+        "cross_uid_proc_read",
+        25,
+        &["T1003", "T1552"],
+        key,
+        ev.ts_ns,
+        format!("read an unrelated process's memory (pid {})", ev.target_pid),
+    )]
 }
 
 fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {

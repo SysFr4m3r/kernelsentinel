@@ -53,10 +53,19 @@ impl Engine {
             return None;
         }
         let subject = new_signals[0].key;
-        self.signals
-            .entry(subject)
-            .or_default()
-            .extend(new_signals);
+        let bucket = self.signals.entry(subject).or_default();
+        for sig in new_signals {
+            // One signal of each kind per process. sudo alone emits ~16 credential
+            // events as it brackets its privileges (euid 1 <-> 0); without this,
+            // the same logical escalation stacks into a false critical. This is
+            // the "net transition per process" collapse: keep the highest-scored
+            // instance of each signal id, never sum duplicates.
+            match bucket.iter_mut().find(|s| s.id == sig.id) {
+                Some(existing) if existing.score >= sig.score => {}
+                Some(existing) => *existing = sig,
+                None => bucket.push(sig),
+            }
+        }
 
         self.evaluate(subject, graph)
     }
