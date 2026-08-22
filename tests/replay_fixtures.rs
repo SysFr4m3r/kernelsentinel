@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{Engine, IncidentRecord, Severity};
+use kernelsentinel::detect::{signals_for_event, Baseline, Engine, IncidentRecord, Severity};
 use kernelsentinel::graph::ProcessGraph;
 
 fn replay(path: &str, min: Severity) -> Vec<(Severity, u32, Vec<String>)> {
@@ -170,4 +170,73 @@ fn module_load_fires_and_captures_the_name() {
         }
     }
     assert!(saw_module, "module_load signal never fired on a real module-load capture");
+}
+
+
+// Build a baseline of (signal, exe) pairs from a clean capture.
+fn learn(path: &str) -> Baseline {
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut b = Baseline::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        for sig in signals_for_event(&ev, &g) {
+            let exe = g.get(&sig.key).map(|n| n.exe.clone()).unwrap_or_default();
+            b.observe(sig.id, &exe);
+        }
+    }
+    b
+}
+
+fn replay_with(path: &str, min: Severity, baseline: Option<Baseline>) -> Vec<(Severity, u32, Vec<String>)> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(min);
+    if let Some(b) = baseline {
+        e = e.with_baseline(b);
+    }
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            let ids = inc.signals.iter().map(|s| s.id.to_string()).collect();
+            out.push((inc.score.severity, inc.score.total, ids));
+        }
+    }
+    out
+}
+
+#[test]
+fn baseline_suppresses_routine_sudo_modprobe() {
+    // A capture of `sudo modprobe dummy` alerts CRITICAL without a baseline.
+    // Learned as normal (its own patterns), it must drop below Medium.
+    let baseline = learn("tests/fixtures/module_load.ndjson");
+    assert!(baseline.known("privilege_escalation", "/usr/bin/sudo"));
+
+    let without = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, None);
+    assert!(!without.is_empty(), "routine sudo modprobe is CRITICAL without a baseline");
+
+    let with = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, Some(baseline));
+    assert!(with.is_empty(), "baseline should suppress routine sudo modprobe, got {with:?}");
+}
+
+#[test]
+fn baseline_preserves_novel_attack_signal() {
+    // A baseline learned from routine sudo (no SUID creation) must NOT hide a
+    // real SUID-creation chain. suid_create is novel, so it keeps full score;
+    // the routine escalation is downweighted. The incident survives -- baselining
+    // must suppress the routine part without hiding the novel part.
+    let baseline = learn("tests/fixtures/module_load.ndjson");
+    let incidents = replay_with("tests/fixtures/host_sudo_suid.ndjson", Severity::Medium, Some(baseline));
+    assert_eq!(incidents.len(), 1, "the real SUID chain must still alert");
+    let (_, _, ids) = &incidents[0];
+    assert!(ids.contains(&"suid_create".to_string()), "novel signal must survive baselining");
 }

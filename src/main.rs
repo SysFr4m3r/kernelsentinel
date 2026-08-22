@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use kernelsentinel::clock::BootClock;
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{self, Engine, IncidentRecord, Severity};
+use kernelsentinel::detect::{self, Baseline, Engine, IncidentRecord, Severity};
 use kernelsentinel::event::{EventType, RawEvent};
 use kernelsentinel::graph::{scan, ProcKey, ProcessGraph};
 use kernelsentinel::{doctor, sensors};
@@ -38,6 +38,9 @@ enum Command {
         /// Emit incidents as NDJSON (one per line) and suppress the event stream.
         #[arg(long)]
         json: bool,
+        /// Apply a learned baseline to downweight known-normal behavior.
+        #[arg(long)]
+        baseline: Option<String>,
     },
     /// Capture raw events to an NDJSON file (no detection), for later replay.
     Record {
@@ -52,6 +55,19 @@ enum Command {
         /// Emit incidents as NDJSON (one per line) and suppress the event stream.
         #[arg(long)]
         json: bool,
+        /// Apply a learned baseline to downweight known-normal behavior.
+        #[arg(long)]
+        baseline: Option<String>,
+    },
+    /// Learn a per-host baseline of normal (signal, exe) pairs from a clean
+    /// capture, so routine behavior stops firing alerts.
+    Baseline {
+        /// Clean capture to learn from.
+        #[arg(short, long)]
+        capture: String,
+        /// Where to write the baseline JSON.
+        #[arg(short, long)]
+        out: String,
     },
     /// Investigate one process from a capture: lineage, timeline, risk, ATT&CK.
     Investigate {
@@ -82,14 +98,16 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Record { out } => record(&out),
-        Command::Replay { input, json } => replay(&input, json),
+        Command::Replay { input, json, baseline } => replay(&input, json, baseline),
+        Command::Baseline { capture, out } => baseline_build(&capture, &out),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
         Command::Run {
             max_processes,
             retain,
             json,
-        } => run(max_processes, retain, json),
+            baseline,
+        } => run(max_processes, retain, json, baseline),
     }
 }
 
@@ -141,7 +159,7 @@ fn record(out: &str) -> Result<()> {
 
 /// Replay a capture through the same graph and display the live path uses. No
 /// BPF, no root: this is where detection logic is developed and regression-tested.
-fn replay(input: &str, json: bool) -> Result<()> {
+fn replay(input: &str, json: bool, baseline: Option<String>) -> Result<()> {
     use std::io::BufRead;
 
     let reader: Box<dyn BufRead> = if input == "-" {
@@ -154,6 +172,10 @@ fn replay(input: &str, json: bool) -> Result<()> {
     // relative to that capture's own first event rather than this machine's boot.
     let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
     let mut engine = Engine::new(Severity::Low);
+    if let Some(path) = &baseline {
+        let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
+        engine = engine.with_baseline(b);
+    }
     let clock = BootClock::new();
 
     if !json {
@@ -197,6 +219,39 @@ fn replay(input: &str, json: bool) -> Result<()> {
     status(&format!(
         "kernelsentinel: replayed {n} events ({bad} malformed lines skipped), graph {} nodes",
         g.nodes
+    ));
+    Ok(())
+}
+
+/// Learn a baseline from a clean capture: replay it, run the detectors on every
+/// event, and record each (signal, exe) pair as known-normal. Applying this
+/// baseline later downweights those pairs so routine behavior stops alerting.
+fn baseline_build(capture: &str, out: &str) -> Result<()> {
+    let text = std::fs::read_to_string(capture)?;
+    let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
+    let mut baseline = Baseline::new();
+    let mut n = 0u64;
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = match serde_json::from_str(line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        graph.apply(&ev);
+        for sig in detect::signals_for_event(&ev, &graph) {
+            let exe = graph.get(&sig.key).map(|node| node.exe.clone()).unwrap_or_default();
+            baseline.observe(sig.id, &exe);
+        }
+        n += 1;
+    }
+    baseline.events_observed = n;
+    baseline.save(out)?;
+    status(&format!(
+        "kernelsentinel: learned {} known-normal patterns from {n} events -> {out}",
+        baseline.len()
     ));
     Ok(())
 }
@@ -399,7 +454,7 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
     }
 }
 
-fn run(max_processes: usize, retain_secs: u64, json: bool) -> Result<()> {
+fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<String>) -> Result<()> {
     let report = doctor::run();
     if report.fatal() {
         report.print();
@@ -413,6 +468,11 @@ fn run(max_processes: usize, retain_secs: u64, json: bool) -> Result<()> {
 
     let mut graph = ProcessGraph::new(max_processes, Duration::from_secs(retain_secs));
     let mut engine = Engine::new(Severity::Medium);
+    if let Some(path) = &baseline {
+        let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
+        status(&format!("kernelsentinel: applying baseline ({} known patterns)", b.len()));
+        engine = engine.with_baseline(b);
+    }
     let boot = scan::bootstrap(&mut graph);
     status(&format!(
         "kernelsentinel: bootstrapped {} processes from /proc",

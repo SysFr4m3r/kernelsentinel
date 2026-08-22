@@ -7,6 +7,7 @@
 mod alert;
 mod record;
 pub mod attack;
+pub mod baseline;
 mod detectors;
 mod score;
 mod signal;
@@ -19,6 +20,7 @@ use crate::graph::{ProcKey, ProcessGraph};
 pub use alert::render;
 pub use record::IncidentRecord;
 pub use score::{Context, Score, Severity};
+pub use baseline::Baseline;
 pub use signal::Signal;
 
 /// One correlated detection: a lineage, its signals, and its score.
@@ -30,6 +32,12 @@ pub struct Incident {
     pub attack: Vec<String>,
 }
 
+/// Run the built-in detectors on one event, without any engine state. Used to
+/// learn a baseline: what (signal, exe) pairs occur during a clean period.
+pub fn signals_for_event(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
+    detectors::detect(ev, graph)
+}
+
 pub struct Engine {
     /// Signals indexed by the process they fired on.
     signals: HashMap<ProcKey, Vec<Signal>>,
@@ -37,6 +45,9 @@ pub struct Engine {
     /// steady stream of events does not re-alert until things actually escalate.
     reported: HashMap<ProcKey, Severity>,
     min_severity: Severity,
+    /// Learned per-host normal. When present, signals whose (id, exe) pair is
+    /// known-normal are downweighted before scoring.
+    baseline: Option<Baseline>,
 }
 
 impl Engine {
@@ -45,6 +56,29 @@ impl Engine {
             signals: HashMap::new(),
             reported: HashMap::new(),
             min_severity,
+            baseline: None,
+        }
+    }
+
+    pub fn with_baseline(mut self, baseline: Baseline) -> Self {
+        self.baseline = Some(baseline);
+        self
+    }
+
+    /// Apply the baseline to a signal set: a signal whose (id, exe) pair is
+    /// known-normal on this host keeps only KNOWN_FACTOR of its score. exe is
+    /// resolved from the process the signal fired on.
+    fn adjust_for_baseline(&self, signals: &mut [Signal], graph: &ProcessGraph) {
+        let Some(baseline) = &self.baseline else {
+            return;
+        };
+        for sig in signals.iter_mut() {
+            let exe = graph.get(&sig.key).map(|n| n.exe.as_str()).unwrap_or("");
+            if baseline.known(sig.id, exe) {
+                let reduced = (sig.score as f64 * baseline::KNOWN_FACTOR).round() as u32;
+                sig.detail = format!("{} [baseline: known-normal]", sig.detail);
+                sig.score = reduced;
+            }
         }
     }
 
@@ -96,6 +130,7 @@ impl Engine {
             return None;
         }
 
+        self.adjust_for_baseline(&mut signals, graph);
         let ctx = self.context(&lineage, graph);
         let score = score::score(&signals, ctx);
 
@@ -142,6 +177,7 @@ impl Engine {
             }
         }
         signals.sort_by_key(|s| s.ts_ns);
+        self.adjust_for_baseline(&mut signals, graph);
         let ctx = self.context(&lineage, graph);
         let sc = score::score(&signals, ctx);
         (signals, sc)

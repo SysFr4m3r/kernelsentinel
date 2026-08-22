@@ -78,6 +78,8 @@ alerts once, not per event; and MITRE ATT&CK mapping.
   credential history, signals, risk, ATT&CK
 - `kernelsentinel record` / `replay` — capture events to NDJSON, replay through the engine
   unprivileged and deterministically (this is how detections are developed and regression-tested)
+- `kernelsentinel baseline` — learn per-host normal from a clean capture; `run`/`replay --baseline`
+  then downweights routine behavior (a plain `sudo` stops alerting) while novel behavior is untouched
 - `kernelsentinel tree`, `doctor`
 
 **Tested**: 26 tests, including detections replayed from **real kernel captures** committed as
@@ -265,7 +267,7 @@ exists once you correlate them per process.
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL | |
 | M6 | Container & namespace awareness | |
-| M7 | Baselining, YARA, optional enforcement (NDJSON/SIEM done in M3) | |
+| M7 | Baselining ✅ first increment · YARA, optional enforcement · (NDJSON/SIEM done in M3) | 🚧 in progress |
 
 ## Planned detections
 
