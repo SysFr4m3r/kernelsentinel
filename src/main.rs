@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 
 use kernelsentinel::clock::BootClock;
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{self, Engine, Severity};
+use kernelsentinel::detect::{self, Engine, IncidentRecord, Severity};
 use kernelsentinel::event::{EventType, RawEvent};
 use kernelsentinel::graph::{scan, ProcKey, ProcessGraph};
 use kernelsentinel::{doctor, sensors};
@@ -35,6 +35,9 @@ enum Command {
         /// Seconds to retain a process after it exits.
         #[arg(long, default_value_t = 300)]
         retain: u64,
+        /// Emit incidents as NDJSON (one per line) and suppress the event stream.
+        #[arg(long)]
+        json: bool,
     },
     /// Capture raw events to an NDJSON file (no detection), for later replay.
     Record {
@@ -46,6 +49,9 @@ enum Command {
     Replay {
         /// Capture file to read; use "-" for stdin.
         input: String,
+        /// Emit incidents as NDJSON (one per line) and suppress the event stream.
+        #[arg(long)]
+        json: bool,
     },
     /// Investigate one process from a capture: lineage, timeline, risk, ATT&CK.
     Investigate {
@@ -76,13 +82,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Record { out } => record(&out),
-        Command::Replay { input } => replay(&input),
+        Command::Replay { input, json } => replay(&input, json),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
         Command::Run {
             max_processes,
             retain,
-        } => run(max_processes, retain),
+            json,
+        } => run(max_processes, retain, json),
     }
 }
 
@@ -134,7 +141,7 @@ fn record(out: &str) -> Result<()> {
 
 /// Replay a capture through the same graph and display the live path uses. No
 /// BPF, no root: this is where detection logic is developed and regression-tested.
-fn replay(input: &str) -> Result<()> {
+fn replay(input: &str, json: bool) -> Result<()> {
     use std::io::BufRead;
 
     let reader: Box<dyn BufRead> = if input == "-" {
@@ -149,10 +156,12 @@ fn replay(input: &str) -> Result<()> {
     let mut engine = Engine::new(Severity::Low);
     let clock = BootClock::new();
 
-    emit(&format!(
-        "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
-        "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
-    ));
+    if !json {
+        emit(&format!(
+            "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
+            "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
+        ));
+    }
 
     let mut n = 0u64;
     let mut bad = 0u64;
@@ -166,13 +175,19 @@ fn replay(input: &str) -> Result<()> {
             Ok(ev) => {
                 graph.apply(&ev);
                 if let Some(inc) = engine.on_event(&ev, &graph) {
-                    emit(&detect::render(&inc, &graph, &clock));
+                    if json {
+                        emit(&IncidentRecord::from_incident(&inc, &graph).to_ndjson());
+                    } else {
+                        emit(&detect::render(&inc, &graph, &clock));
+                    }
                 }
                 if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
                     graph.reap(ev.ts_ns);
                     last_reap = ev.ts_ns;
                 }
-                print_event(&clock, &ev);
+                if !json {
+                    print_event(&clock, &ev);
+                }
                 n += 1;
             }
             Err(_) => bad += 1,
@@ -384,7 +399,7 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
     }
 }
 
-fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
+fn run(max_processes: usize, retain_secs: u64, json: bool) -> Result<()> {
     let report = doctor::run();
     if report.fatal() {
         report.print();
@@ -405,10 +420,12 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
     ));
 
     status("kernelsentinel: sensors attached, streaming events (ctrl-c to stop)\n");
-    emit(&format!(
-        "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
-        "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
-    ));
+    if !json {
+        emit(&format!(
+            "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
+            "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
+        ));
+    }
 
     let mut last_reap = 0u64;
     let stats = sensors::run(&STOP, |raw: RawEvent| {
@@ -421,7 +438,11 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
         // Detection runs after the graph update so lineage queries see this
         // event's process already in place.
         if let Some(inc) = engine.on_event(&ev, &graph) {
-            emit(&detect::render(&inc, &graph, &bootclock));
+            if json {
+                emit(&IncidentRecord::from_incident(&inc, &graph).to_ndjson());
+            } else {
+                emit(&detect::render(&inc, &graph, &bootclock));
+            }
         }
 
         // Reaping on the event stream rather than a timer keeps the daemon
@@ -430,7 +451,9 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
             graph.reap(ev.ts_ns);
             last_reap = ev.ts_ns;
         }
-        print_event(&bootclock, &ev);
+        if !json {
+            print_event(&bootclock, &ev);
+        }
     })?;
 
     let g = graph.stats();

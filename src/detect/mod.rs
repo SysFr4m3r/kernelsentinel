@@ -5,6 +5,7 @@
 //! event, which is the whole point of the project.
 
 mod alert;
+mod record;
 pub mod attack;
 mod detectors;
 mod score;
@@ -16,6 +17,7 @@ use crate::decoded::Event;
 use crate::graph::{ProcKey, ProcessGraph};
 
 pub use alert::render;
+pub use record::IncidentRecord;
 pub use score::{Context, Score, Severity};
 pub use signal::Signal;
 

@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{Engine, Severity};
+use kernelsentinel::detect::{Engine, IncidentRecord, Severity};
 use kernelsentinel::graph::ProcessGraph;
 
 fn replay(path: &str, min: Severity) -> Vec<(Severity, u32, Vec<String>)> {
@@ -109,4 +109,37 @@ fn investigate_data_path_surfaces_the_chain() {
     let ids: Vec<&str> = signals.iter().map(|s| s.id).collect();
     assert!(ids.contains(&"suid_create"), "signals: {ids:?}");
     assert!(ids.contains(&"privilege_escalation"), "signals: {ids:?}");
+}
+
+
+#[test]
+fn ndjson_incident_record_is_valid_and_complete() {
+    // The critical incident from the host capture must serialize to valid JSON
+    // carrying the version tag, severity, resolved lineage, and both signals --
+    // this is the SIEM-facing contract.
+    let text = std::fs::read_to_string("tests/fixtures/host_sudo_suid.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Medium);
+    let mut json_lines = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            json_lines.push(IncidentRecord::from_incident(&inc, &g).to_ndjson());
+        }
+    }
+    assert_eq!(json_lines.len(), 1, "expected one Medium+ incident");
+
+    // Must parse back as valid JSON with the expected shape.
+    let v: serde_json::Value = serde_json::from_str(&json_lines[0]).unwrap();
+    assert_eq!(v["schema"], "kernelsentinel.incident/v1");
+    assert_eq!(v["severity"], "CRITICAL");
+    assert_eq!(v["score"], 100);
+    assert_eq!(v["subject"]["comm"], "chmod");
+    assert!(v["lineage"].as_array().unwrap().len() >= 4);
+    assert_eq!(v["signals"].as_array().unwrap().len(), 2);
+    assert!(v["attack"].as_array().unwrap().iter().any(|a| a == "T1548.001"));
 }
