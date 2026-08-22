@@ -15,47 +15,74 @@ execve("/proc/self/fd/7")
 setresuid(0, 0, 0)
 ```
 
-But this:
+But this — real output, from a real captured attack:
 
 ```
-CRITICAL  Suspicious privilege escalation chain            risk 94/100
-
-  nginx (uid=33, pid=1204)
-    └─ sh                          spawned shell from network daemon   +25
-        ├─ memfd_create()          anonymous executable created        +45
-        ├─ execve(memfd:)          executed from memory, never on disk  ×
-        └─ setresuid(0,0,0)        uid 33 → 0                          +40
-            └─ bash
-
-  ATT&CK: T1059.004, T1620, T1548
+CRITICAL  risk 100/100  [T1068, T1548.001]
+  zsh(4510) -> sudo(7429) -> sudo(7449) -> sh(7450) -> chmod(7452)
+    privilege_escalation   changed euid 1000 -> 0; gained CAP_SYS_ADMIN,CAP_BPF,...  (+40)
+    suid_create            created a new SUID binary /tmp/.x                         (+45)
+  score: base 85 + chain 22 = 100
 ```
+
+A web server spawning a shell that runs from memory scores itself, and shows its work:
+
+```
+CRITICAL  risk 100/100  [T1059.004, T1620]
+  nginx(800) -> sh(900)
+    shell_from_network_daemon   nginx(800) spawned a shell (sh)     (+50)
+    fileless_exec               executed from memfd (memfd:payload)  (+45)
+  score: base 95 + chain 25 x1.30 (lineage rooted at a network daemon) = 100
+```
+
+Every number decomposes into named parts, because a score nobody can explain is one nobody acts on.
 
 ---
 
-## ⚠️ Project status: early (M0 of 8)
+## Project status: working detection engine (M3), developed in public
 
-This is an in-progress build, developed in public. **Today it is an exec logger with a working
-CO-RE/BPF pipeline — it does not detect anything yet.** The detection engine described above is the
-design target, not the current behavior. See [Roadmap](#roadmap) for what actually works.
+The full pipeline is built and validated on real kernel captures: **eBPF sensors → process graph →
+correlation engine → scored, MITRE-mapped alerts**, in both human and NDJSON form. M0–M3 are done;
+see the [Roadmap](#roadmap) for what is verified and what remains.
 
-Do not deploy this on anything you care about.
+Still a young project — not yet a packaged release, and the false-positive tuning that separates a
+production EDR from a research tool (baselining, M7) is ahead. Do not deploy it as your only line of
+defense. But it detects real post-exploitation chains today, and every detection is covered by a
+test replaying a real capture.
 
 ---
 
 ## What works today
 
-- **Sensors**: `exec` (with full `argv`), `fork`/`exit` via raw tracepoints, and every credential
-  transition via `fentry/commit_creds` — uid/gid changes and capability gains alike
-- **Process graph**: PID-reuse-proof identity, parent/child edges, credential history, ancestry
-  walks, with retention and hard memory caps
-- **`/proc` bootstrap** so processes that predate the daemon are not invisible
-- `kernelsentinel tree` — process tree from the same code path the daemon uses
-- `kernelsentinel doctor` — preflight report on kernel, BTF, LSM, and privileges
-- Ring buffer drop accounting (a silent EDR is worse than no EDR)
-- Struct-layout test that fails the build if the C and Rust event definitions drift
+**Sensors** (eBPF CO-RE, verified live on kernel 6.19 unless noted):
+- `exec` with full `argv`, `fork`/`exit`, and every credential transition via `fentry/commit_creds`
+- New SUID/SGID binaries (`lsm/path_chmod`), file capabilities via setcap (`lsm/inode_setxattr`)
+- Writes to watched paths — `ld.so.preload`, `authorized_keys`, cron, systemd, sudoers, shadow —
+  filtered in-kernel by an LPM trie so the daemon never sees the firehose (`lsm/file_open` + `bpf_d_path`)
+- `ptrace` and cross-uid `/proc` memory reads (`lsm/ptrace_access_check`)
+- Fileless execution from memfd / anonymous files (`lsm/bprm_check_security`)
+- Kernel module load (`fexit/do_init_module`) — built; testable only in a VM
 
-Verified on kernel 6.19.14: 1403 events with zero ring buffer drops, `tree` matching `/proc` ground
-truth 273/273, and a steady-state graph of ~2,100 nodes (~1MB) on an idle desktop.
+**Process graph**: PID-reuse-proof identity `(pid, start_boottime)`, parent/child edges, credential
+history, ancestry walks, retention window, hard memory caps, and `/proc` bootstrap for processes that
+predate the daemon.
+
+**Detection engine**: eight built-in detections mapping events to scored signals; a correlation
+engine that combines the signals in one process lineage into a single incident; explainable risk
+scoring (base + chain bonus + context multiplier, with severity bands); deduplication so a chain
+alerts once, not per event; and MITRE ATT&CK mapping.
+
+**Tooling**:
+- `kernelsentinel run` — the daemon (human alerts, or `--json` for NDJSON)
+- `kernelsentinel investigate <pid> --capture <file>` — one process\'s full story: lineage, timeline,
+  credential history, signals, risk, ATT&CK
+- `kernelsentinel record` / `replay` — capture events to NDJSON, replay through the engine
+  unprivileged and deterministically (this is how detections are developed and regression-tested)
+- `kernelsentinel tree`, `doctor`
+
+**Tested**: 26 tests, including detections replayed from **real kernel captures** committed as
+fixtures — the strongest possible regression net. The false-positive discipline (a bare `sudo` must
+not alert; `sshd` spawning a shell is a login, not an intrusion) is enforced by tests.
 
 ## Requirements
 
@@ -90,14 +117,63 @@ cargo build --release
 ./target/release/kernelsentinel doctor
 ```
 
+Run the daemon — it streams events and raises correlated incidents:
+
 ```bash
 sudo ./target/release/kernelsentinel run
 ```
 
+Emit incidents as NDJSON for a SIEM or pipeline (suppresses the event stream):
+
+```bash
+sudo ./target/release/kernelsentinel run --json
 ```
-TIME         PID     PPID    UID    COMM             EVENT
-14:22:03.118 18342   1204    33     sh               exec /bin/sh
-14:22:03.140 18351   18342   33     id               exec /usr/bin/id
+
+Each incident is one self-contained, version-tagged JSON object:
+
+```json
+{"schema":"kernelsentinel.incident/v1","severity":"CRITICAL","score":100,
+ "subject":{"pid":7452,"comm":"chmod","exe":"/usr/bin/chmod","uid":0},
+ "lineage":["zsh(4510)","sudo(7429)","sh(7450)","chmod(7452)"],
+ "attack":["T1068","T1548.001"],"signals":[…]}
+```
+
+### Try it without waiting for an attack
+
+`record` captures events; `replay` runs them back through the engine unprivileged and
+deterministically — no root, no kernel:
+
+```bash
+sudo ./target/release/kernelsentinel record -o capture.ndjson
+```
+
+```bash
+./target/release/kernelsentinel replay capture.ndjson
+```
+
+The repository ships real captures as fixtures, so you can see a detection immediately:
+
+```bash
+./target/release/kernelsentinel replay tests/fixtures/host_sudo_suid.ndjson
+```
+
+### Investigate one process
+
+```bash
+./target/release/kernelsentinel investigate 7452 --capture tests/fixtures/host_sudo_suid.ndjson
+```
+
+```
+=== PID 7452 chmod ===
+executable : /usr/bin/chmod
+lineage    : zsh(4510) -> sudo(7429) -> sudo(7449) -> sh(7450) -> chmod(7452)
+risk       : CRITICAL 100/100  (base 85 + chain 22)
+signals:
+  privilege_escalation   changed euid 1000 -> 0; gained CAP_SYS_ADMIN,...  (+40)
+  suid_create            created a new SUID binary /tmp/.x                 (+45)
+MITRE ATT&CK:
+  T1068        Exploitation for Privilege Escalation
+  T1548.001    Setuid and Setgid
 ```
 
 ## Architecture
@@ -184,12 +260,12 @@ exists once you correlate them per process.
 |---|---|---|
 | M0 | BPF pipeline, exec sensor, `doctor` | ✅ done & verified |
 | M1 | fork/exit, `commit_creds`, process graph, `/proc` bootstrap | ✅ done & verified |
-| M2 | File sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | next |
-| M3 | Built-in detections, risk scoring, alerts, `investigate` — **first usable release** | |
-| M4 | `record`/`replay` + scenario test harness | |
+| M2 | File sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | ✅ done (module-load VM-pending) |
+| M3 | Built-in detections, risk scoring, alerts, `investigate`, NDJSON — **first usable release** | ✅ done & validated |
+| M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL | |
 | M6 | Container & namespace awareness | |
-| M7 | Baselining, YARA, SIEM output, optional enforcement | |
+| M7 | Baselining, YARA, optional enforcement (NDJSON/SIEM done in M3) | |
 
 ## Planned detections
 
