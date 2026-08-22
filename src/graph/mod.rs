@@ -259,7 +259,12 @@ impl ProcessGraph {
             EventType::CredChange => self.on_cred(ev),
             // File opens describe behavior, not process structure; the
             // detection engine consumes them, the graph does not.
-            EventType::FileOpen => {}
+            EventType::FileOpen
+            | EventType::FileMode
+            | EventType::Setcap
+            | EventType::Ptrace
+            | EventType::ExecAnon
+            | EventType::Module => {}
             EventType::Unknown(_) => {}
         }
     }

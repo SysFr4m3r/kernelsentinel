@@ -14,6 +14,7 @@ set -euo pipefail
 
 IMAGE="kernelsentinel-lab"
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$LAB_DIR/../.." && pwd)"
 
 # Least privilege by design. A scenario that needs more must ask for it
 # explicitly via KS_CAPS, which documents exactly what the attack requires.
@@ -45,6 +46,7 @@ run_container() {
 		--env KS_LAB=1 \
 		--tmpfs /tmp:exec \
 		--tmpfs /dev/shm:exec \
+		--volume "$REPO_ROOT/tests/scenarios:/scenarios:ro" \
 		"$IMAGE" "$@"
 }
 

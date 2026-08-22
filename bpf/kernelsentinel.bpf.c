@@ -25,8 +25,16 @@ struct {
 	__type(value, __u64);
 } stats SEC(".maps");
 
-/* fmode_t bit; not a BTF type, so define it here. Stable ABI. */
+/* fmode_t and st_mode bits; not BTF types, stable ABI, define here. */
 #define FMODE_WRITE 0x2
+#define S_ISUID 0x800   /* 04000 */
+#define S_ISGID 0x400   /* 02000 */
+#define S_IFMT  0xF000
+#define S_IFREG 0x8000
+
+#define TMPFS_MAGIC          0x01021994
+#define ANON_INODE_FS_MAGIC  0x09041934
+#define PTRACE_MODE_ATTACH   0x02   /* the write-capable ptrace modes */
 
 /* Paths the daemon asked us to watch. LPM_TRIE so one entry like "/etc/cron.d/"
  * matches every file beneath it, and the match happens in-kernel: shipping
@@ -84,7 +92,10 @@ static __always_inline void fill_hdr(struct event *e, __u16 type)
 	e->child_pid = 0;
 	e->child_start_boottime = 0;
 	e->file_mode = 0;
+	e->old_file_mode = 0;
 	e->watch_id = 0;
+	e->target_pid = 0;
+	e->aux = 0;
 	e->old_uid = 0;
 	e->old_gid = 0;
 	e->old_euid = 0;
@@ -322,6 +333,192 @@ int BPF_PROG(handle_file_open, struct file *file)
 	e->watch_id = *watch;
 	__builtin_memcpy(e->filename, key.path, sizeof(e->filename));
 
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* lsm/path_chmod fires before the new mode is applied, so the inode still
+ * carries the old mode and the hook argument carries the new one -- exactly the
+ * before/after needed to catch a 0 -> SUID transition. Requires
+ * CONFIG_SECURITY_PATH; on kernels without it, inode_setattr is the portable
+ * fallback (dentry walk instead of bpf_d_path). path_chmod takes a struct path,
+ * so bpf_d_path resolves the canonical path with no dentry walk here.
+ *
+ * A newly-SUID root binary is the classic local-privilege-escalation artifact
+ * (T1548.001). The signal is the *transition*: a binary that was already SUID
+ * getting re-chmod'd is not interesting; one gaining the bit is.
+ */
+SEC("lsm/path_chmod")
+int BPF_PROG(handle_path_chmod, struct path *path, umode_t new_mode)
+{
+	struct dentry *dentry = BPF_CORE_READ(path, dentry);
+	__u32 inode_mode = BPF_CORE_READ(dentry, d_inode, i_mode);
+	struct event *e;
+
+	/* Only regular files. SGID on a directory is normal and common. */
+	if ((inode_mode & S_IFMT) != S_IFREG)
+		return 0;
+
+	__u32 gained_suid = (new_mode & S_ISUID) && !(inode_mode & S_ISUID);
+	__u32 gained_sgid = (new_mode & S_ISGID) && !(inode_mode & S_ISGID);
+	if (!gained_suid && !gained_sgid)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+
+	fill_hdr(e, EV_FILE_MODE);
+	e->old_file_mode = inode_mode;
+	e->file_mode = new_mode;
+	if (bpf_d_path(path, e->filename, sizeof(e->filename)) < 0)
+		e->flags |= EV_F_DEGRADED_PATH;
+
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* setcap writes file capabilities through the security.capability xattr. This
+ * is the real privilege-escalation signal behind `setcap`: a binary can gain
+ * CAP_SYS_ADMIN with no SUID bit and no visible mode change. T1548.
+ * The hook fires for every setxattr, so filter to the capability name in-kernel.
+ */
+SEC("lsm/inode_setxattr")
+int BPF_PROG(handle_setxattr, struct mnt_idmap *idmap, struct dentry *dentry,
+	     const char *name)
+{
+	char xattr[20] = {};
+	struct event *e;
+
+	if (bpf_probe_read_kernel_str(xattr, sizeof(xattr), name) < 0)
+		return 0;
+
+	/* "security.capability" -- compare enough to be unambiguous. */
+	if (__builtin_memcmp(xattr, "security.capability", 19) != 0)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+	fill_hdr(e, EV_SETCAP);
+	/* bpf_d_path is not available on this hook (dentry, no struct path), so
+	 * record the leaf name; userspace can enrich via (dev, inode) later. */
+	bpf_probe_read_kernel_str(e->filename, sizeof(e->filename),
+				  BPF_CORE_READ(dentry, d_name.name));
+	e->flags |= EV_F_DEGRADED_PATH;
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* ptrace_access_check fires when one task attaches to or reads another. It is
+ * how debuggers, injectors, and /proc/<pid>/mem readers reach another process.
+ * current is the tracer; `child` is the target. T1055.008.
+ */
+SEC("lsm/ptrace_access_check")
+int BPF_PROG(handle_ptrace, struct task_struct *child, unsigned int mode)
+{
+	__u32 target = BPF_CORE_READ(child, tgid);
+	struct event *e;
+
+	/* Ignore self-inspection: a thread poking its own group is not attack
+	 * shaped, and it stops the daemon from noticing its own /proc reads. */
+	if (target == (__u32)(bpf_get_current_pid_tgid() >> 32))
+		return 0;
+
+	/* ptrace_access_check fires constantly for same-privilege introspection --
+	 * ps, top, systemd reading /proc, container runtimes reading their own
+	 * children. Filter to the two shapes that actually matter in-kernel:
+	 *   - ATTACH mode: real ptrace attach, and /proc/<pid>/mem reads
+	 *   - a cross-uid read: one euid reading another's memory/environ/maps,
+	 *     the credential-theft shape (T1003 / T1552)
+	 * Same-uid, read-only access is dropped. This is where the flood lives. */
+	__u32 tracer_euid = BPF_CORE_READ(
+		(struct task_struct *)bpf_get_current_task_btf(), cred, euid.val);
+	__u32 target_euid = BPF_CORE_READ(child, cred, euid.val);
+	if (!(mode & PTRACE_MODE_ATTACH) && tracer_euid == target_euid)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+	fill_hdr(e, EV_PTRACE);
+	e->target_pid = target;
+	e->aux = mode;
+	bpf_probe_read_kernel_str(e->filename, TASK_COMM_LEN,
+				  BPF_CORE_READ(child, comm));
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* Detect execution that never touched disk. bprm_check_security runs during
+ * execve with the resolved binary in bprm->file. The robust signal is the
+ * dentry name beginning "memfd:" (set by memfd_create) or an anonymous
+ * superblock -- NOT the /proc/self/fd/ path string, which is trivially evaded
+ * by re-opening the descriptor elsewhere. T1620.
+ */
+SEC("lsm/bprm_check_security")
+int BPF_PROG(handle_bprm, struct linux_binprm *bprm)
+{
+	/* Direct dereference of the trusted bprm argument. bpf_d_path requires a
+	 * trusted pointer, and BPF_CORE_READ would launder `file` into an
+	 * untrusted scalar (the verifier rejects d_path on it). vmlinux.h enables
+	 * preserve_access_index, so these direct loads are still CO-RE relocated. */
+	struct file *file = bprm->file;
+	unsigned long magic = file->f_inode->i_sb->s_magic;
+	unsigned int nlink = file->f_inode->__i_nlink;
+	char name[8] = {};
+	__u32 source = 0;
+
+	bpf_probe_read_kernel_str(name, sizeof(name), file->f_path.dentry->d_name.name);
+
+	if (name[0] == 'm' && name[1] == 'e' && name[2] == 'm' && name[3] == 'f' &&
+	    name[4] == 'd' && name[5] == ':')
+		source = EXEC_SRC_MEMFD;
+	else if (magic == ANON_INODE_FS_MAGIC)
+		source = EXEC_SRC_ANON;
+	else if (nlink == 0)
+		source = EXEC_SRC_DELETED; /* unlinked binary executed */
+	else
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+	fill_hdr(e, EV_EXEC_ANON);
+	e->aux = source;
+	if (bpf_d_path(&file->f_path, e->filename, sizeof(e->filename)) < 0)
+		e->flags |= EV_F_DEGRADED_PATH;
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* Kernel module load. do_init_module runs after the module is parsed, so the
+ * name is the real loaded module name, not an attacker-supplied filename.
+ * T1547.006. NOTE: only testable in a VM -- insmod hits the host kernel.
+ */
+SEC("fexit/do_init_module")
+int BPF_PROG(handle_module, struct module *mod)
+{
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+	fill_hdr(e, EV_MODULE);
+	bpf_probe_read_kernel_str(e->filename, 64, BPF_CORE_READ(mod, name));
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);
 	return 0;

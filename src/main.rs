@@ -1,7 +1,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
+
+use std::io::Write;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -134,30 +135,26 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
         anyhow::bail!("preflight checks failed");
     }
 
-    let stop = Arc::new(AtomicBool::new(false));
-    {
-        let stop = stop.clone();
-        ctrlc_handler(move || stop.store(true, Ordering::Relaxed))?;
-    }
+    install_signal_handlers();
 
     let bootclock = BootClock::new();
     let self_pid = std::process::id();
 
     let mut graph = ProcessGraph::new(max_processes, Duration::from_secs(retain_secs));
     let boot = scan::bootstrap(&mut graph);
-    eprintln!(
+    status(&format!(
         "kernelsentinel: bootstrapped {} processes from /proc",
         boot.scanned
-    );
+    ));
 
-    eprintln!("kernelsentinel: sensors attached, streaming events (ctrl-c to stop)\n");
-    println!(
+    status("kernelsentinel: sensors attached, streaming events (ctrl-c to stop)\n");
+    emit(&format!(
         "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
         "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
-    );
+    ));
 
     let mut last_reap = 0u64;
-    let stats = sensors::run(stop, |ev: RawEvent| {
+    let stats = sensors::run(&STOP, |ev: RawEvent| {
         if ev.tgid == self_pid {
             return;
         }
@@ -173,19 +170,34 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
     })?;
 
     let g = graph.stats();
-    eprintln!(
+    status(&format!(
         "kernelsentinel: graph {} nodes ({} alive), {} reaped, {} evicted, {} scanned nodes adopted",
         g.nodes, g.alive, g.reaped, g.evicted, g.adopted
-    );
-
-    eprintln!(
+    ));
+    status(&format!(
         "\nkernelsentinel: {} events emitted, {} ring buffer drops",
         stats.emitted, stats.drops
-    );
+    ));
     if stats.drops > 0 {
-        eprintln!("kernelsentinel: WARNING — dropped events mean blind spots");
+        status("kernelsentinel: WARNING — dropped events mean blind spots");
     }
     Ok(())
+}
+
+/// Write one line to stdout without panicking. `println!` unwraps its write and
+/// panics on a broken pipe (reader gone); inside the ring buffer callback that
+/// panic unwinds across libbpf's C stack and aborts the process. Here a broken
+/// pipe just means the reader left, so signal a clean stop and move on.
+fn emit(line: &str) {
+    let mut out = std::io::stdout().lock();
+    if out.write_all(line.as_bytes()).and_then(|_| out.write_all(b"\n")).is_err() {
+        STOP.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Same, for status/summary messages on stderr. Never panics on a broken pipe.
+fn status(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
 
 fn print_event(clock: &BootClock, ev: &RawEvent) {
@@ -234,10 +246,45 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
             let label = kernelsentinel::watchlist::label_for(&path);
             format!("open[{mode}] {path}  <{label}>")
         }
+        EventType::FileMode => {
+            let path = ev.filename();
+            let warn = if ev.degraded_path() { " [path degraded]" } else { "" };
+            // Only the permission bits are meaningful to a reader here.
+            format!(
+                "SUID-CREATE {} gained {} (0{:o} -> 0{:o}){}",
+                path,
+                ev.gained_bits(),
+                ev.old_file_mode & 0o7777,
+                ev.file_mode & 0o7777,
+                warn
+            )
+        }
+        EventType::Setcap => {
+            let warn = if ev.degraded_path() { " [name only]" } else { "" };
+            format!("SETCAP file capabilities set on {}{}", ev.filename(), warn)
+        }
+        EventType::Ptrace => {
+            let kind = if ev.ptrace_is_attach() { "ATTACH" } else { "read" };
+            format!(
+                "PTRACE[{kind}] -> pid {} ({})",
+                ev.target_pid,
+                ev.filename() // target comm, stored in the path buffer
+            )
+        }
+        EventType::ExecAnon => {
+            let warn = if ev.degraded_path() { " [path degraded]" } else { "" };
+            format!(
+                "FILELESS-EXEC from {} {}{}",
+                ev.exec_source(),
+                ev.filename(),
+                warn
+            )
+        }
+        EventType::Module => format!("MODULE-LOAD {} (via {})", ev.filename(), ev.module_origin()),
         EventType::Unknown(t) => format!("unknown type={t}"),
     };
 
-    println!(
+    emit(&format!(
         "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
         clock.format(ev.ts_ns),
         ev.tgid,
@@ -245,33 +292,29 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
         ev.uid,
         ev.comm(),
         detail.trim_end()
-    );
+    ));
 }
 
-/// Minimal SIGINT/SIGTERM handling without pulling in a signal crate.
-fn ctrlc_handler<F>(f: F) -> Result<()>
-where
-    F: FnMut() + Send + 'static,
-{
-    use std::sync::Mutex;
-    static HANDLER: Mutex<Option<Box<dyn FnMut() + Send>>> = Mutex::new(None);
+/// Set on SIGINT/SIGTERM; the ring buffer poll loop reads it between iterations.
+static STOP: AtomicBool = AtomicBool::new(false);
 
-    extern "C" fn on_signal(_: libc::c_int) {
-        if let Ok(mut guard) = HANDLER.lock() {
-            if let Some(f) = guard.as_mut() {
-                f();
-            }
-        }
-    }
+/// A signal handler may only touch async-signal-safe state. An atomic store is
+/// the entirety of what is safe here -- the previous version locked a Mutex and
+/// dropped a Box from signal context, which is undefined behavior and aborted
+/// the process on a second ^C during libbpf teardown.
+extern "C" fn on_signal(_: libc::c_int) {
+    STOP.store(true, Ordering::SeqCst);
+}
 
-    *HANDLER.lock().unwrap() = Some(Box::new(f));
-    // SAFETY: on_signal only touches a Mutex-guarded closure that sets an
-    // AtomicBool; the poll loop checks the flag between iterations.
+fn install_signal_handlers() {
+    // SAFETY: on_signal only performs an atomic store, which is async-signal-safe.
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        // A daemon behind a pipe gets SIGHUP when the reader closes; handle it
+        // so shutdown still runs the summary and clean teardown.
+        libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
     }
-    Ok(())
 }
 
 /// Render a capability mask, naming the interesting bits and counting the rest.

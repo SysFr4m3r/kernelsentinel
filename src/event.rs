@@ -18,6 +18,11 @@ pub enum EventType {
     Fork,
     CredChange,
     FileOpen,
+    FileMode,
+    Setcap,
+    Ptrace,
+    ExecAnon,
+    Module,
     Unknown(u16),
 }
 
@@ -29,6 +34,11 @@ impl From<u16> for EventType {
             3 => EventType::Fork,
             4 => EventType::CredChange,
             5 => EventType::FileOpen,
+            6 => EventType::FileMode,
+            7 => EventType::Setcap,
+            8 => EventType::Ptrace,
+            9 => EventType::ExecAnon,
+            10 => EventType::Module,
             other => EventType::Unknown(other),
         }
     }
@@ -59,7 +69,10 @@ pub struct RawEvent {
     pub argv_len: u32,
     pub child_pid: u32,
     pub file_mode: u32,
+    pub old_file_mode: u32,
     pub watch_id: u32,
+    pub target_pid: u32,
+    pub aux: u32,
 
     pub r#type: u16,
     pub flags: u16,
@@ -102,6 +115,49 @@ impl RawEvent {
             .filter(|s| !s.is_empty())
             .map(|s| String::from_utf8_lossy(s).into_owned())
             .collect()
+    }
+
+    /// EV_PTRACE: was this an attach/write-capable access, not just a read?
+    pub fn ptrace_is_attach(&self) -> bool {
+        self.aux & 0x02 != 0 // PTRACE_MODE_ATTACH
+    }
+
+    /// EV_EXEC_ANON: where the executed image came from.
+    pub fn exec_source(&self) -> &'static str {
+        match self.aux {
+            1 => "memfd",
+            2 => "anon-inode",
+            3 => "deleted-file",
+            _ => "unknown",
+        }
+    }
+
+    /// EV_MODULE: how the module was loaded.
+    pub fn module_origin(&self) -> &'static str {
+        match self.aux {
+            1 => "init_module",
+            2 => "finit_module",
+            _ => "",
+        }
+    }
+
+    /// EV_FILE_MODE: which setuid/setgid bit was newly gained.
+    pub fn gained_bits(&self) -> &'static str {
+        const S_ISUID: u32 = 0o4000;
+        const S_ISGID: u32 = 0o2000;
+        let suid = self.file_mode & S_ISUID != 0 && self.old_file_mode & S_ISUID == 0;
+        let sgid = self.file_mode & S_ISGID != 0 && self.old_file_mode & S_ISGID == 0;
+        match (suid, sgid) {
+            (true, true) => "SUID+SGID",
+            (true, false) => "SUID",
+            (false, true) => "SGID",
+            (false, false) => "none",
+        }
+    }
+
+    /// EV_FILE_MODE: degraded path resolution (bpf_d_path failed).
+    pub fn degraded_path(&self) -> bool {
+        self.flags & EV_F_DEGRADED_PATH != 0
     }
 
     /// EV_FILE_OPEN: was the file opened writable? (FMODE_WRITE)

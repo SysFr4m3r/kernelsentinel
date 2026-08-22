@@ -3,12 +3,13 @@
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, RingBufferBuilder};
+
+use std::io::Write;
 
 use crate::event::RawEvent;
 use crate::watchlist::{self, Watch};
@@ -26,7 +27,7 @@ pub struct Stats {
 }
 
 /// Load, attach, and pump events into `on_event` until `stop` is set.
-pub fn run<F>(stop: Arc<AtomicBool>, mut on_event: F) -> Result<Stats>
+pub fn run<F>(stop: &AtomicBool, mut on_event: F) -> Result<Stats>
 where
     F: FnMut(RawEvent),
 {
@@ -47,10 +48,25 @@ where
     skel.attach().context("attaching BPF programs")?;
     eprintln!("kernelsentinel: watching {loaded} paths for suspicious writes");
 
+    // The callback runs across libbpf's C stack, where a Rust panic cannot
+    // unwind and would abort the whole daemon. Catch it so a single malformed
+    // event degrades to a logged error instead of taking the monitor down.
+    let panics = std::cell::Cell::new(0u64);
     let mut rb = RingBufferBuilder::new();
-    rb.add(&skel.maps.events, move |data: &[u8]| {
-        if let Some(ev) = RawEvent::from_bytes(data) {
-            on_event(ev);
+    rb.add(&skel.maps.events, |data: &[u8]| {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(ev) = RawEvent::from_bytes(data) {
+                on_event(ev);
+            }
+        }));
+        if r.is_err() {
+            panics.set(panics.get() + 1);
+            // stderr may itself be a broken pipe; ignore the write result so
+            // the recovery path can never re-panic across the C boundary.
+            let _ = writeln!(
+                std::io::stderr(),
+                "kernelsentinel: recovered from a panic decoding one event"
+            );
         }
         0
     })
