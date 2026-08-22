@@ -257,6 +257,9 @@ impl ProcessGraph {
             EventType::Exec => self.on_exec(ev),
             EventType::Exit => self.on_exit(ev),
             EventType::CredChange => self.on_cred(ev),
+            // File opens describe behavior, not process structure; the
+            // detection engine consumes them, the graph does not.
+            EventType::FileOpen => {}
             EventType::Unknown(_) => {}
         }
     }

@@ -25,6 +25,20 @@ struct {
 	__type(value, __u64);
 } stats SEC(".maps");
 
+/* fmode_t bit; not a BTF type, so define it here. Stable ABI. */
+#define FMODE_WRITE 0x2
+
+/* Paths the daemon asked us to watch. LPM_TRIE so one entry like "/etc/cron.d/"
+ * matches every file beneath it, and the match happens in-kernel: shipping
+ * every file_open to userspace would melt the host. */
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__type(key, struct path_key);
+	__type(value, __u32);
+	__uint(max_entries, 1024);
+	__uint(map_flags, BPF_F_NO_PREALLOC); /* required for LPM_TRIE */
+} watched_paths SEC(".maps");
+
 static __always_inline void stat_inc(__u32 key)
 {
 	__u64 *v = bpf_map_lookup_elem(&stats, &key);
@@ -69,6 +83,8 @@ static __always_inline void fill_hdr(struct event *e, __u16 type)
 	e->argv_len = 0;
 	e->child_pid = 0;
 	e->child_start_boottime = 0;
+	e->file_mode = 0;
+	e->watch_id = 0;
 	e->old_uid = 0;
 	e->old_gid = 0;
 	e->old_euid = 0;
@@ -250,6 +266,61 @@ int BPF_PROG(handle_commit_creds, struct cred *new)
 	e->old_egid = old_egid;
 	e->cap_effective = new_cap;
 	e->old_cap_effective = old_cap;
+
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* lsm/file_open runs after the kernel has resolved the file, so we get a real
+ * struct file and can call bpf_d_path() -- the path is canonical and there is
+ * no TOCTOU window, unlike reading a userspace pointer at sys_enter_openat.
+ *
+ * Detect-only: this hook can return an error to *deny* the open, but we always
+ * return 0. Blocking is an explicit v2 decision, not a side effect.
+ */
+SEC("lsm/file_open")
+int BPF_PROG(handle_file_open, struct file *file)
+{
+	struct path_key key = {};
+	struct event *e;
+	__u32 *watch;
+	long len;
+
+	/* bpf_d_path is GPL-only and allowlisted to a set of hooks that take a
+	 * struct path; file_open is one of them. */
+	len = bpf_d_path(&file->f_path, key.path, sizeof(key.path));
+	if (len < 0)
+		return 0;
+
+	/* LPM matches on bits of the key; exclude the trailing NUL so a stored
+	 * prefix like "/etc/" (40 bits) matches "/etc/passwd". Clamp so a
+	 * pathological length can never drive prefixlen past the buffer -- this
+	 * is exactly the silent-overflow class of bug seen elsewhere here. */
+	if (len < 1)
+		return 0;
+	if (len > (long)sizeof(key.path))
+		len = sizeof(key.path);
+	key.prefixlen = (__u32)(len - 1) * 8;
+
+	watch = bpf_map_lookup_elem(&watched_paths, &key);
+	if (!watch)
+		return 0;
+
+	__u32 f_mode = BPF_CORE_READ(file, f_mode);
+	if ((*watch & WATCH_ON_WRITE) && !(f_mode & FMODE_WRITE))
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+
+	fill_hdr(e, EV_FILE_OPEN);
+	e->file_mode = f_mode;
+	e->watch_id = *watch;
+	__builtin_memcpy(e->filename, key.path, sizeof(e->filename));
 
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);

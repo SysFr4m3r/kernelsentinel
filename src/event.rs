@@ -17,6 +17,7 @@ pub enum EventType {
     Exit,
     Fork,
     CredChange,
+    FileOpen,
     Unknown(u16),
 }
 
@@ -27,6 +28,7 @@ impl From<u16> for EventType {
             2 => EventType::Exit,
             3 => EventType::Fork,
             4 => EventType::CredChange,
+            5 => EventType::FileOpen,
             other => EventType::Unknown(other),
         }
     }
@@ -56,6 +58,8 @@ pub struct RawEvent {
     pub exit_code: u32,
     pub argv_len: u32,
     pub child_pid: u32,
+    pub file_mode: u32,
+    pub watch_id: u32,
 
     pub r#type: u16,
     pub flags: u16,
@@ -98,6 +102,11 @@ impl RawEvent {
             .filter(|s| !s.is_empty())
             .map(|s| String::from_utf8_lossy(s).into_owned())
             .collect()
+    }
+
+    /// EV_FILE_OPEN: was the file opened writable? (FMODE_WRITE)
+    pub fn opened_for_write(&self) -> bool {
+        self.file_mode & 0x2 != 0
     }
 
     pub fn truncated(&self) -> bool {

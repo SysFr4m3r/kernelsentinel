@@ -4,4 +4,5 @@ pub mod clock;
 pub mod doctor;
 pub mod event;
 pub mod graph;
+pub mod watchlist;
 pub mod sensors;

@@ -11,6 +11,7 @@ use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, RingBufferBuilder};
 
 use crate::event::RawEvent;
+use crate::watchlist::{self, Watch};
 
 mod skel {
     #![allow(dead_code, non_snake_case, non_camel_case_types, clippy::all)]
@@ -36,7 +37,15 @@ where
         .open(&mut open_object)
         .context("opening BPF object (is vmlinux.h current?)")?;
     let mut skel = open.load().context("loading BPF programs (verifier)")?;
+
+    // Populate the watched-paths trie before attaching, so the file_open sensor
+    // never runs against an empty trie (which would match nothing) or, worse,
+    // a partially-filled one.
+    let watches = watchlist::default_watches();
+    let loaded = populate_watches(&skel.maps.watched_paths, &watches)?;
+
     skel.attach().context("attaching BPF programs")?;
+    eprintln!("kernelsentinel: watching {loaded} paths for suspicious writes");
 
     let mut rb = RingBufferBuilder::new();
     rb.add(&skel.maps.events, move |data: &[u8]| {
@@ -57,6 +66,20 @@ where
     }
 
     Ok(read_stats(&skel.maps.stats))
+}
+
+fn populate_watches(map: &impl MapCore, watches: &[Watch]) -> Result<usize> {
+    let mut n = 0;
+    for w in watches {
+        let Some(key) = watchlist::encode_key(&w.prefix) else {
+            eprintln!("kernelsentinel: skipping over-long watch {:?}", w.prefix);
+            continue;
+        };
+        map.update(&key, &w.flags.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
+            .with_context(|| format!("adding watch {:?}", w.prefix))?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 fn read_stats(map: &impl MapCore) -> Stats {

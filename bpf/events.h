@@ -14,6 +14,7 @@ enum event_type {
 	EV_EXIT        = 2,
 	EV_FORK        = 3,
 	EV_CRED_CHANGE = 4,
+	EV_FILE_OPEN   = 5,
 };
 
 /* flags */
@@ -42,14 +43,27 @@ struct event {
 	__u32 exit_code;
 	__u32 argv_len;
 	__u32 child_pid;          /* EV_FORK: the new task */
+	__u32 file_mode;          /* EV_FILE_OPEN: fmode_t at open */
+	__u32 watch_id;           /* EV_FILE_OPEN: value from the watched-paths trie */
 
 	__u16 type;
 	__u16 flags;
 
 	char comm[TASK_COMM_LEN];
-	char filename[MAX_FILENAME];
+	char filename[MAX_FILENAME]; /* EV_EXEC: exec target; EV_FILE_OPEN: opened path */
 	char argv[MAX_ARGV]; /* NUL-separated argv, truncated */
 };
+
+/* Longest-prefix-match key for the watched-paths trie. Shared with userspace so
+ * the daemon populates the trie with the exact byte layout the BPF side reads. */
+#define MAX_WATCH_PATH MAX_FILENAME
+struct path_key {
+	__u32 prefixlen;              /* bits of `path` to match (LPM) */
+	char  path[MAX_WATCH_PATH];
+};
+
+/* watched-paths trie value: flags describing when a match should fire */
+#define WATCH_ON_WRITE (1u << 0) /* only emit if the file was opened writable */
 
 /* stats map indices */
 enum stat_key {

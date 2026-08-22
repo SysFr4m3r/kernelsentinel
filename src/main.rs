@@ -228,6 +228,12 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
             }
             format!("cred {}", parts.join(" "))
         }
+        EventType::FileOpen => {
+            let path = ev.filename();
+            let mode = if ev.opened_for_write() { "write" } else { "read" };
+            let label = kernelsentinel::watchlist::label_for(&path);
+            format!("open[{mode}] {path}  <{label}>")
+        }
         EventType::Unknown(t) => format!("unknown type={t}"),
     };
 
