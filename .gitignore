@@ -1,0 +1,40 @@
+# --- Rust ---
+/target/
+**/*.rs.bk
+*.pdb
+
+# --- Generated BPF artifacts ---
+# vmlinux.h is 2.8MB of machine-generated kernel types and is host-specific.
+# Regenerate it with:
+#   bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+bpf/vmlinux.h
+*.bpf.o
+*.skel.rs
+
+# --- Runtime / capture output ---
+# Event captures can contain command lines, file paths, and usernames from the
+# host they were recorded on. Never commit them.
+*.ndjson
+/captures/
+kernelsentinel.log
+
+# --- VM / test scratch ---
+/vm/*.qcow2
+/vm/*.img
+/vm/seed.iso
+
+# --- Editors & OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- Local scratch ---
+temp.log
+*.log
+.obsidian/
+
+# --- Local working notes ---
+# PLAN.md is the private engineering plan; README.md is the public description.
+PLAN.md

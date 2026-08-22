@@ -1,0 +1,50 @@
+//! Kernel events are timestamped with CLOCK_BOOTTIME. Compute the offset to
+//! wall-clock once at startup so alerts can be printed with real times.
+
+use std::time::{Duration, SystemTime};
+
+pub struct BootClock {
+    /// Wall-clock time corresponding to boottime == 0.
+    epoch: SystemTime,
+}
+
+impl BootClock {
+    pub fn new() -> Self {
+        let boot = clock_gettime(libc::CLOCK_BOOTTIME);
+        let now = SystemTime::now();
+        Self {
+            epoch: now.checked_sub(boot).unwrap_or(SystemTime::UNIX_EPOCH),
+        }
+    }
+
+    pub fn to_wall(&self, ts_ns: u64) -> SystemTime {
+        self.epoch + Duration::from_nanos(ts_ns)
+    }
+
+    /// `HH:MM:SS.mmm` in UTC, without pulling in a date-time crate for M0.
+    pub fn format(&self, ts_ns: u64) -> String {
+        let d = self
+            .to_wall(ts_ns)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = d.as_secs();
+        let ms = d.subsec_millis();
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            (secs / 3600) % 24,
+            (secs / 60) % 60,
+            secs % 60,
+            ms
+        )
+    }
+}
+
+fn clock_gettime(clk: libc::clockid_t) -> Duration {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: ts is a valid, properly aligned timespec for the duration of the call.
+    unsafe { libc::clock_gettime(clk, &mut ts) };
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}

@@ -1,0 +1,19 @@
+[package]
+name = "kernelsentinel"
+version = "0.1.0"
+edition = "2024"
+description = "Runtime detection engine for Linux post-exploitation and privilege-escalation behavior, using eBPF"
+license = "Apache-2.0 OR MIT"
+readme = "README.md"
+keywords = ["ebpf", "security", "edr", "linux", "detection"]
+categories = ["command-line-utilities"]
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+libbpf-rs = "0.27.0"
+libc = "0.2.189"
+
+[build-dependencies]
+libbpf-cargo = "0.27.0"
