@@ -32,6 +32,29 @@ static __always_inline void stat_inc(__u32 key)
 		__sync_fetch_and_add(v, 1);
 }
 
+/* kernel_cap_t is `struct { u64 val; }` since 6.3 and `struct { u32 cap[2]; }`
+ * before that. Read it CO-RE-safely so one binary works across both. */
+static __always_inline __u64 read_cap(const kernel_cap_t *cap)
+{
+	__u64 val = 0;
+
+	if (bpf_core_field_exists(cap->val)) {
+		val = BPF_CORE_READ(cap, val);
+	} else {
+		/* Older layout: two 32-bit halves. Accessed through a compatible
+		 * view so CO-RE relocates rather than the verifier rejecting. */
+		struct kernel_cap_legacy {
+			__u32 cap[2];
+		} *legacy = (void *)cap;
+		__u32 lo = 0, hi = 0;
+
+		bpf_core_read(&lo, sizeof(lo), &legacy->cap[0]);
+		bpf_core_read(&hi, sizeof(hi), &legacy->cap[1]);
+		val = ((__u64)hi << 32) | lo;
+	}
+	return val;
+}
+
 /* Fill the common header from the current task. */
 static __always_inline void fill_hdr(struct event *e, __u16 type)
 {
@@ -44,6 +67,14 @@ static __always_inline void fill_hdr(struct event *e, __u16 type)
 	e->flags = 0;
 	e->exit_code = 0;
 	e->argv_len = 0;
+	e->child_pid = 0;
+	e->child_start_boottime = 0;
+	e->old_uid = 0;
+	e->old_gid = 0;
+	e->old_euid = 0;
+	e->old_egid = 0;
+	e->cap_effective = read_cap(&BPF_CORE_READ(task, cred)->cap_effective);
+	e->old_cap_effective = 0;
 	e->filename[0] = '\0';
 	e->argv[0] = '\0';
 
@@ -108,6 +139,117 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 				  (void *)ctx + fname_off);
 
 	fill_argv(e);
+
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* Raw tracepoints hand us the task_struct directly, which regular tracepoints
+ * do not. That matters here: a pid alone cannot tell a thread from a process,
+ * and we only want process-level fork/exit in the graph. */
+SEC("raw_tp/sched_process_fork")
+int BPF_PROG(handle_fork, struct task_struct *parent, struct task_struct *child)
+{
+	struct event *e;
+	__u32 child_pid = BPF_CORE_READ(child, pid);
+	__u32 child_tgid = BPF_CORE_READ(child, tgid);
+
+	/* pid != tgid means a new thread in an existing process, not a fork. */
+	if (child_pid != child_tgid)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+
+	fill_hdr(e, EV_FORK);
+	e->child_pid = child_tgid;
+	e->child_start_boottime = BPF_CORE_READ(child, start_boottime);
+
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+SEC("raw_tp/sched_process_exit")
+int BPF_PROG(handle_exit, struct task_struct *p)
+{
+	struct event *e;
+	__u32 pid = BPF_CORE_READ(p, pid);
+	__u32 tgid = BPF_CORE_READ(p, tgid);
+
+	/* Only the thread group leader's exit ends the process. */
+	if (pid != tgid)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+
+	fill_hdr(e, EV_EXIT);
+	e->start_boottime = BPF_CORE_READ(p, start_boottime);
+	e->exit_code = (__u32)BPF_CORE_READ(p, exit_code) >> 8;
+
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* fentry, not fexit: on entry current_cred() is still the *old* credential set
+ * and `new` is what is about to be installed, so both sides are visible.
+ *
+ * Hooking commit_creds rather than the setuid syscalls catches every
+ * credential transition -- setuid/setresuid/capset, SUID exec, and kernel
+ * paths that never touch a syscall -- from one place.
+ */
+SEC("fentry/commit_creds")
+int BPF_PROG(handle_commit_creds, struct cred *new)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+	const struct cred *old = BPF_CORE_READ(task, cred);
+	struct event *e;
+
+	__u32 old_uid = BPF_CORE_READ(old, uid.val);
+	__u32 old_gid = BPF_CORE_READ(old, gid.val);
+	__u32 old_euid = BPF_CORE_READ(old, euid.val);
+	__u32 old_egid = BPF_CORE_READ(old, egid.val);
+	__u32 new_uid = BPF_CORE_READ(new, uid.val);
+	__u32 new_gid = BPF_CORE_READ(new, gid.val);
+	__u32 new_euid = BPF_CORE_READ(new, euid.val);
+	__u32 new_egid = BPF_CORE_READ(new, egid.val);
+
+	__u64 old_cap = read_cap(&old->cap_effective);
+	__u64 new_cap = read_cap(&new->cap_effective);
+
+	/* Every execve calls commit_creds, almost always installing identical
+	 * credentials. Emitting those would bury the real transitions, so drop
+	 * no-ops in the kernel rather than filtering in userspace. */
+	if (old_uid == new_uid && old_gid == new_gid && old_euid == new_euid &&
+	    old_egid == new_egid && old_cap == new_cap)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+
+	fill_hdr(e, EV_CRED_CHANGE);
+	e->uid = new_uid;
+	e->gid = new_gid;
+	e->euid = new_euid;
+	e->egid = new_egid;
+	e->old_uid = old_uid;
+	e->old_gid = old_gid;
+	e->old_euid = old_euid;
+	e->old_egid = old_egid;
+	e->cap_effective = new_cap;
+	e->old_cap_effective = old_cap;
 
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);

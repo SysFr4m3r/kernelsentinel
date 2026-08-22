@@ -44,15 +44,18 @@ Do not deploy this on anything you care about.
 
 ## What works today
 
-- CO-RE BPF pipeline: build → skeleton → load → attach → ring buffer → decode
-- `sched_process_exec` sensor with full `argv`, resolved filename, uid/euid, cgroup id, and the
-  PID-reuse-proof process key
+- **Sensors**: `exec` (with full `argv`), `fork`/`exit` via raw tracepoints, and every credential
+  transition via `fentry/commit_creds` — uid/gid changes and capability gains alike
+- **Process graph**: PID-reuse-proof identity, parent/child edges, credential history, ancestry
+  walks, with retention and hard memory caps
+- **`/proc` bootstrap** so processes that predate the daemon are not invisible
+- `kernelsentinel tree` — process tree from the same code path the daemon uses
 - `kernelsentinel doctor` — preflight report on kernel, BTF, LSM, and privileges
 - Ring buffer drop accounting (a silent EDR is worse than no EDR)
 - Struct-layout test that fails the build if the C and Rust event definitions drift
 
-Verified on kernel 6.19.14: ~6 exec/sec on an idle desktop, zero ring buffer drops, command lines
-intact up to the 512-byte truncation boundary.
+Verified on kernel 6.19.14: 1403 events with zero ring buffer drops, `tree` matching `/proc` ground
+truth 273/273, and a steady-state graph of ~2,100 nodes (~1MB) on an idle desktop.
 
 ## Requirements
 
@@ -169,13 +172,19 @@ Per-event rules cannot see any of that, which is why the process graph is M1 and
 are M2. Sensors without correlation produce a tool that cries wolf, and a tool that cries wolf gets
 turned off.
 
+A second measurement makes the same point from the other direction. A single `sudo id` produces
+**eight** credential transitions — sudo brackets its privileges, dropping to euid 1 and back around
+each operation. Every one is a real transition, correctly captured, and individually meaningless.
+The fact worth alerting on is the net result (`uid 1000 → 0, gained CAP_SYS_ADMIN`), which only
+exists once you correlate them per process.
+
 ## Roadmap
 
 | | Milestone | Status |
 |---|---|---|
 | M0 | BPF pipeline, exec sensor, `doctor` | ✅ done & verified |
-| M1 | fork/exit, `commit_creds`, process graph, `/proc` bootstrap | next |
-| M2 | File & credential sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | |
+| M1 | fork/exit, `commit_creds`, process graph, `/proc` bootstrap | ✅ done & verified |
+| M2 | File sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | next |
 | M3 | Built-in detections, risk scoring, alerts, `investigate` — **first usable release** | |
 | M4 | `record`/`replay` + scenario test harness | |
 | M5 | YAML rule DSL | |

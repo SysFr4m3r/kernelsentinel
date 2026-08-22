@@ -16,6 +16,7 @@ pub enum EventType {
     Exec,
     Exit,
     Fork,
+    CredChange,
     Unknown(u16),
 }
 
@@ -25,6 +26,7 @@ impl From<u16> for EventType {
             1 => EventType::Exec,
             2 => EventType::Exit,
             3 => EventType::Fork,
+            4 => EventType::CredChange,
             other => EventType::Unknown(other),
         }
     }
@@ -36,6 +38,9 @@ pub struct RawEvent {
     pub ts_ns: u64,
     pub cgroup_id: u64,
     pub start_boottime: u64,
+    pub cap_effective: u64,
+    pub old_cap_effective: u64,
+    pub child_start_boottime: u64,
 
     pub pid: u32,
     pub tgid: u32,
@@ -44,8 +49,13 @@ pub struct RawEvent {
     pub gid: u32,
     pub euid: u32,
     pub egid: u32,
+    pub old_uid: u32,
+    pub old_gid: u32,
+    pub old_euid: u32,
+    pub old_egid: u32,
     pub exit_code: u32,
     pub argv_len: u32,
+    pub child_pid: u32,
 
     pub r#type: u16,
     pub flags: u16,
@@ -99,4 +109,26 @@ fn cstr_lossy(buf: &[u8]) -> String {
     CStr::from_bytes_until_nul(buf)
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|_| String::from_utf8_lossy(buf).into_owned())
+}
+
+/// Linux capability bits worth naming in alerts. Not exhaustive -- these are
+/// the ones that matter for privilege escalation.
+pub fn cap_names(mask: u64) -> Vec<&'static str> {
+    const CAPS: &[(u32, &str)] = &[
+        (0, "CAP_CHOWN"),
+        (1, "CAP_DAC_OVERRIDE"),
+        (2, "CAP_DAC_READ_SEARCH"),
+        (6, "CAP_SETGID"),
+        (7, "CAP_SETUID"),
+        (8, "CAP_SETPCAP"),
+        (12, "CAP_NET_ADMIN"),
+        (16, "CAP_SYS_MODULE"),
+        (19, "CAP_SYS_PTRACE"),
+        (21, "CAP_SYS_ADMIN"),
+        (38, "CAP_BPF"),
+    ];
+    CAPS.iter()
+        .filter(|(bit, _)| mask & (1u64 << bit) != 0)
+        .map(|(_, name)| *name)
+        .collect()
 }
