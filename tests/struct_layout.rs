@@ -50,3 +50,17 @@ int main(void) {
         "struct event size differs between bpf/events.h and src/event.rs"
     );
 }
+
+#[test]
+fn event_json_roundtrips() {
+    use kernelsentinel::decoded::Event;
+    let json = r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261}"#;
+    let ev: Event = serde_json::from_str(json).unwrap();
+    assert_eq!(ev.gained_bits(), "SUID");
+    // re-serialize and parse again: values must be stable across the round trip
+    let again = serde_json::to_string(&ev).unwrap();
+    let ev2: Event = serde_json::from_str(&again).unwrap();
+    assert_eq!(ev2.filename, "/tmp/.x");
+    assert_eq!(ev2.file_mode, 2541);
+    assert_eq!(ev2.gained_bits(), "SUID");
+}

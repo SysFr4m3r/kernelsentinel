@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use kernelsentinel::clock::BootClock;
+use kernelsentinel::decoded::Event;
 use kernelsentinel::event::{EventType, RawEvent};
 use kernelsentinel::graph::{scan, ProcKey, ProcessGraph};
 use kernelsentinel::{doctor, sensors};
@@ -34,6 +35,17 @@ enum Command {
         #[arg(long, default_value_t = 300)]
         retain: u64,
     },
+    /// Capture raw events to an NDJSON file (no detection), for later replay.
+    Record {
+        /// Output file; use "-" for stdout.
+        #[arg(short, long, default_value = "-")]
+        out: String,
+    },
+    /// Replay a recorded NDJSON capture through the graph + display, no root.
+    Replay {
+        /// Capture file to read; use "-" for stdin.
+        input: String,
+    },
     /// Print the current process tree as reconstructed from /proc.
     Tree {
         /// Show only this subtree.
@@ -54,12 +66,110 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Record { out } => record(&out),
+        Command::Replay { input } => replay(&input),
         Command::Tree { pid } => tree(pid),
         Command::Run {
             max_processes,
             retain,
         } => run(max_processes, retain),
     }
+}
+
+/// Capture every event as one JSON object per line. This is the raw feed with
+/// no detection, so a scenario can be recorded once (as root, briefly) and then
+/// replayed unprivileged and deterministically as often as needed.
+fn record(out: &str) -> Result<()> {
+    let report = doctor::run();
+    if report.fatal() {
+        report.print();
+        anyhow::bail!("preflight checks failed");
+    }
+    install_signal_handlers();
+
+    let mut sink: Box<dyn Write> = if out == "-" {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::io::BufWriter::new(std::fs::File::create(out)?))
+    };
+    let self_pid = std::process::id();
+    status(&format!("kernelsentinel: recording to {out} (ctrl-c to stop)"));
+
+    let mut count = 0u64;
+    let stats = sensors::run(&STOP, |raw: RawEvent| {
+        if raw.tgid == self_pid {
+            return;
+        }
+        let ev = Event::from(&raw);
+        // A serialize/write failure to the capture file is worth stopping for,
+        // unlike a broken stdout pipe; surface it and shut down.
+        match serde_json::to_string(&ev) {
+            Ok(line) => {
+                if writeln!(sink, "{line}").is_err() {
+                    STOP.store(true, Ordering::SeqCst);
+                } else {
+                    count += 1;
+                }
+            }
+            Err(e) => status(&format!("kernelsentinel: skipped an event: {e}")),
+        }
+    })?;
+    let _ = sink.flush();
+    status(&format!(
+        "kernelsentinel: recorded {count} events ({} emitted, {} drops)",
+        stats.emitted, stats.drops
+    ));
+    Ok(())
+}
+
+/// Replay a capture through the same graph and display the live path uses. No
+/// BPF, no root: this is where detection logic is developed and regression-tested.
+fn replay(input: &str) -> Result<()> {
+    use std::io::BufRead;
+
+    let reader: Box<dyn BufRead> = if input == "-" {
+        Box::new(std::io::BufReader::new(std::io::stdin()))
+    } else {
+        Box::new(std::io::BufReader::new(std::fs::File::open(input)?))
+    };
+
+    // The capture carries boot-clock timestamps from another moment; render them
+    // relative to that capture's own first event rather than this machine's boot.
+    let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
+    let clock = BootClock::new();
+
+    emit(&format!(
+        "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
+        "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
+    ));
+
+    let mut n = 0u64;
+    let mut bad = 0u64;
+    let mut last_reap = 0u64;
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Event>(&line) {
+            Ok(ev) => {
+                graph.apply(&ev);
+                if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
+                    graph.reap(ev.ts_ns);
+                    last_reap = ev.ts_ns;
+                }
+                print_event(&clock, &ev);
+                n += 1;
+            }
+            Err(_) => bad += 1,
+        }
+    }
+    let g = graph.stats();
+    status(&format!(
+        "kernelsentinel: replayed {n} events ({bad} malformed lines skipped), graph {} nodes",
+        g.nodes
+    ));
+    Ok(())
 }
 
 /// Snapshot the process tree from /proc. This exercises exactly the bootstrap
@@ -154,10 +264,11 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
     ));
 
     let mut last_reap = 0u64;
-    let stats = sensors::run(&STOP, |ev: RawEvent| {
-        if ev.tgid == self_pid {
+    let stats = sensors::run(&STOP, |raw: RawEvent| {
+        if raw.tgid == self_pid {
             return;
         }
+        let ev = Event::from(&raw);
         graph.apply(&ev);
 
         // Reaping on the event stream rather than a timer keeps the daemon
@@ -200,11 +311,11 @@ fn status(line: &str) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }
 
-fn print_event(clock: &BootClock, ev: &RawEvent) {
+fn print_event(clock: &BootClock, ev: &Event) {
     let detail = match ev.event_type() {
         EventType::Exec => {
-            let filename = ev.filename();
-            let argv = ev.argv();
+            let filename = &ev.filename;
+            let argv = &ev.argv;
             // argv[0] is conventionally the program name and is already shown
             // as the filename. For shebang scripts the kernel also inserts the
             // script path as argv[1], so drop that repeat too.
@@ -212,7 +323,7 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
             if args.first().map(String::as_str) == Some(filename.as_str()) {
                 args = &args[1..];
             }
-            let trunc = if ev.truncated() { " …" } else { "" };
+            let trunc = if ev.truncated { " …" } else { "" };
             format!("exec {} {}{}", filename, args.join(" "), trunc)
         }
         EventType::Exit => format!("exit code={}", ev.exit_code),
@@ -241,14 +352,14 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
             format!("cred {}", parts.join(" "))
         }
         EventType::FileOpen => {
-            let path = ev.filename();
+            let path = &ev.filename;
             let mode = if ev.opened_for_write() { "write" } else { "read" };
-            let label = kernelsentinel::watchlist::label_for(&path);
+            let label = kernelsentinel::watchlist::label_for(path);
             format!("open[{mode}] {path}  <{label}>")
         }
         EventType::FileMode => {
-            let path = ev.filename();
-            let warn = if ev.degraded_path() { " [path degraded]" } else { "" };
+            let path = &ev.filename;
+            let warn = if ev.degraded_path { " [path degraded]" } else { "" };
             // Only the permission bits are meaningful to a reader here.
             format!(
                 "SUID-CREATE {} gained {} (0{:o} -> 0{:o}){}",
@@ -260,27 +371,27 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
             )
         }
         EventType::Setcap => {
-            let warn = if ev.degraded_path() { " [name only]" } else { "" };
-            format!("SETCAP file capabilities set on {}{}", ev.filename(), warn)
+            let warn = if ev.degraded_path { " [name only]" } else { "" };
+            format!("SETCAP file capabilities set on {}{}", ev.filename, warn)
         }
         EventType::Ptrace => {
             let kind = if ev.ptrace_is_attach() { "ATTACH" } else { "read" };
             format!(
                 "PTRACE[{kind}] -> pid {} ({})",
                 ev.target_pid,
-                ev.filename() // target comm, stored in the path buffer
+                ev.filename // target comm, stored in the path buffer
             )
         }
         EventType::ExecAnon => {
-            let warn = if ev.degraded_path() { " [path degraded]" } else { "" };
+            let warn = if ev.degraded_path { " [path degraded]" } else { "" };
             format!(
                 "FILELESS-EXEC from {} {}{}",
                 ev.exec_source(),
-                ev.filename(),
+                ev.filename,
                 warn
             )
         }
-        EventType::Module => format!("MODULE-LOAD {} (via {})", ev.filename(), ev.module_origin()),
+        EventType::Module => format!("MODULE-LOAD {} (via {})", ev.filename, ev.module_origin()),
         EventType::Unknown(t) => format!("unknown type={t}"),
     };
 
@@ -290,7 +401,7 @@ fn print_event(clock: &BootClock, ev: &RawEvent) {
         ev.tgid,
         ev.ppid,
         ev.uid,
-        ev.comm(),
+        ev.comm,
         detail.trim_end()
     ));
 }

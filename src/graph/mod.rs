@@ -6,7 +6,7 @@ pub mod scan;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::event::RawEvent;
+use crate::decoded::Event;
 
 /// Scanned start times come from `/proc/<pid>/stat`, which reports clock ticks
 /// (10ms) rather than the exact nanoseconds BPF sees. A process observed both
@@ -250,7 +250,7 @@ impl ProcessGraph {
         }
     }
 
-    pub fn apply(&mut self, ev: &RawEvent) {
+    pub fn apply(&mut self, ev: &Event) {
         use crate::event::EventType;
         match ev.event_type() {
             EventType::Fork => self.on_fork(ev),
@@ -269,12 +269,12 @@ impl ProcessGraph {
         }
     }
 
-    fn on_fork(&mut self, ev: &RawEvent) {
+    fn on_fork(&mut self, ev: &Event) {
         let parent = self.resolve(ev.tgid, ev.start_boottime);
         {
             let pn = self.ensure(parent, Origin::Observed);
             if pn.comm.is_empty() {
-                pn.comm = ev.comm();
+                pn.comm = ev.comm.clone();
             }
         }
         let child = ProcKey {
@@ -291,7 +291,7 @@ impl ProcessGraph {
             // Inherited until the child execs; showing the parent's name is
             // more useful than showing nothing.
             if cn.comm.is_empty() {
-                cn.comm = ev.comm();
+                cn.comm = ev.comm.clone();
             }
         }
         if let Some(pn) = self.nodes.get_mut(&parent) {
@@ -301,9 +301,9 @@ impl ProcessGraph {
         }
     }
 
-    fn on_exec(&mut self, ev: &RawEvent) {
+    fn on_exec(&mut self, ev: &Event) {
         let key = self.resolve(ev.tgid, ev.start_boottime);
-        let (comm, exe, argv) = (ev.comm(), ev.filename(), ev.argv());
+        let (comm, exe, argv) = (ev.comm.clone(), ev.filename.clone(), ev.argv.clone());
         let node = self.ensure(key, Origin::Observed);
         node.comm = comm;
         node.exe = exe;
@@ -313,7 +313,7 @@ impl ProcessGraph {
         node.cgroup_id = ev.cgroup_id;
     }
 
-    fn on_exit(&mut self, ev: &RawEvent) {
+    fn on_exit(&mut self, ev: &Event) {
         let key = self.resolve(ev.tgid, ev.start_boottime);
         let ts = ev.ts_ns;
         if let Some(node) = self.nodes.get_mut(&key) {
@@ -323,7 +323,7 @@ impl ProcessGraph {
         self.by_pid.remove(&key.pid);
     }
 
-    fn on_cred(&mut self, ev: &RawEvent) {
+    fn on_cred(&mut self, ev: &Event) {
         let key = self.resolve(ev.tgid, ev.start_boottime);
         let snap = CredSnapshot {
             ts_ns: ev.ts_ns,
@@ -335,7 +335,7 @@ impl ProcessGraph {
         };
         let node = self.ensure(key, Origin::Observed);
         if node.comm.is_empty() {
-            node.comm = ev.comm();
+            node.comm = ev.comm.clone();
         }
         node.uid = ev.uid;
         node.euid = ev.euid;
@@ -425,15 +425,14 @@ impl ProcessGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::RawEvent;
+    use crate::decoded::Event;
 
-    fn blank() -> RawEvent {
-        // SAFETY: RawEvent is repr(C) and all-integer/byte-array, so zeroed is
-        // a valid value.
-        unsafe { std::mem::zeroed() }
+    fn blank() -> Event {
+        serde_json::from_str(r#"{"ts_ns":0,"type":0,"tgid":0,"ppid":0,"start_boottime":0}"#)
+            .unwrap()
     }
 
-    fn fork_ev(parent: u32, pstart: u64, child: u32, cstart: u64, ts: u64) -> RawEvent {
+    fn fork_ev(parent: u32, pstart: u64, child: u32, cstart: u64, ts: u64) -> Event {
         let mut e = blank();
         e.r#type = 3;
         e.tgid = parent;
@@ -444,7 +443,7 @@ mod tests {
         e
     }
 
-    fn exit_ev(pid: u32, start: u64, ts: u64) -> RawEvent {
+    fn exit_ev(pid: u32, start: u64, ts: u64) -> Event {
         let mut e = blank();
         e.r#type = 2;
         e.tgid = pid;
