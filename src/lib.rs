@@ -3,6 +3,7 @@
 pub mod clock;
 pub mod doctor;
 pub mod decoded;
+pub mod detect;
 pub mod event;
 pub mod graph;
 pub mod watchlist;

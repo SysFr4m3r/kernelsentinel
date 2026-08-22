@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 use kernelsentinel::clock::BootClock;
 use kernelsentinel::decoded::Event;
+use kernelsentinel::detect::{self, Engine, Severity};
 use kernelsentinel::event::{EventType, RawEvent};
 use kernelsentinel::graph::{scan, ProcKey, ProcessGraph};
 use kernelsentinel::{doctor, sensors};
@@ -136,6 +137,7 @@ fn replay(input: &str) -> Result<()> {
     // The capture carries boot-clock timestamps from another moment; render them
     // relative to that capture's own first event rather than this machine's boot.
     let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
+    let mut engine = Engine::new(Severity::Low);
     let clock = BootClock::new();
 
     emit(&format!(
@@ -154,6 +156,9 @@ fn replay(input: &str) -> Result<()> {
         match serde_json::from_str::<Event>(&line) {
             Ok(ev) => {
                 graph.apply(&ev);
+                if let Some(inc) = engine.on_event(&ev, &graph) {
+                    emit(&detect::render(&inc, &graph, &clock));
+                }
                 if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
                     graph.reap(ev.ts_ns);
                     last_reap = ev.ts_ns;
@@ -251,6 +256,7 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
     let self_pid = std::process::id();
 
     let mut graph = ProcessGraph::new(max_processes, Duration::from_secs(retain_secs));
+    let mut engine = Engine::new(Severity::Medium);
     let boot = scan::bootstrap(&mut graph);
     status(&format!(
         "kernelsentinel: bootstrapped {} processes from /proc",
@@ -270,6 +276,12 @@ fn run(max_processes: usize, retain_secs: u64) -> Result<()> {
         }
         let ev = Event::from(&raw);
         graph.apply(&ev);
+
+        // Detection runs after the graph update so lineage queries see this
+        // event's process already in place.
+        if let Some(inc) = engine.on_event(&ev, &graph) {
+            emit(&detect::render(&inc, &graph, &bootclock));
+        }
 
         // Reaping on the event stream rather than a timer keeps the daemon
         // single-threaded; an idle host has nothing to reap anyway.
