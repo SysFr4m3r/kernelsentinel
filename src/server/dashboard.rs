@@ -106,6 +106,15 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .attgrid{display:flex;flex-direction:column;gap:7px}.att{display:flex;align-items:center;gap:10px}
 .att .id{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:12px;color:var(--accent);background:var(--accent-dim);padding:2px 7px;border-radius:5px;min-width:78px;text-align:center}
 .att .nm{font-size:13px}
+.inc.resolved{opacity:.5}
+.inc .rtag{grid-column:2/4;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ok);font-weight:600;margin-top:2px}
+.resolvebar{display:flex;gap:10px;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.resolvebar input{flex:1;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);font:inherit;font-size:12px}
+.resolvebar input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.resolvebtn{border:0;border-radius:8px;padding:8px 14px;background:var(--ok);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.resolvebtn:hover{filter:brightness(1.08)}
+.resolved-note{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+.resolved-note b{color:var(--ok)}
 .foot{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:11.5px;line-height:1.65}
 .foot code{font-family:"IBM Plex Mono",monospace;color:var(--muted);background:var(--panel2);padding:1px 5px;border-radius:4px}
 
@@ -216,7 +225,9 @@ const fleet=document.getElementById('fleet'),hostview=document.getElementById('h
 document.getElementById('hostlist').addEventListener('click',e=>{const b=e.target.closest('.host');if(b)openHost(HOSTS[+b.dataset.i]);});
 document.getElementById('back').addEventListener('click',()=>{hostview.classList.add('hidden');fleet.classList.remove('hidden');window.scrollTo(0,0);});
 
+let currentHost=null;
 async function openHost(h){
+  currentHost=h;
   let incs=[];try{incs=await api('/api/host/'+encodeURIComponent(h.host));}catch(e){}
   fleet.classList.add('hidden');hostview.classList.remove('hidden');window.scrollTo(0,0);
   const sv=svVar(h.band);const hb=document.getElementById('hostbar');hb.style.setProperty('--sv',sv);
@@ -224,11 +235,29 @@ async function openHost(h){
   const feed=document.getElementById('feed');const det=document.getElementById('detail');
   document.getElementById('hicount').textContent=incs.length?`${incs.length} on this host`:'';
   if(!incs.length){feed.innerHTML='<div class="detail empty" style="position:static">No detections on this host in the current window. Agent healthy, reporting.</div>';det.className='detail empty';det.textContent='Nothing to inspect — this host is clean.';return;}
-  feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${t}</span>`).join('');return `<button class="inc" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${(d.subject&&d.subject.comm)||'—'} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${d.severity}</span><span class="line mono">${line}</span><span class="chips">${chips}</span></button>`;}).join('');
+  feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${t}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${(d.subject&&d.subject.comm)||'—'} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${d.severity}</span><span class="line mono">${line}</span><span class="chips">${chips}</span>${rtag}</button>`;}).join('');
   det.className='detail empty';det.textContent='Select an incident to see its lineage, signals, and ATT&CK mapping.';
   feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);}));
 }
-function renderInc(d){const det=document.getElementById('detail');det.className='detail';det.style.setProperty('--sv',svVar(d.severity));det.style.setProperty('--sv-bg',svBg(d.severity));const chain=(d.lineage||[]).length?d.lineage.map((n,i)=>{const tip=i===d.lineage.length-1;return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}">${n}</span>`;}).join(''):'<span class="node">process exited before lineage was captured</span>';const sigs=(d.signals||[]).slice().sort((a,b)=>a.ts_ns-b.ts_ns).map(s=>`<div class="sig"><span class="id">${s.id}</span><span class="txt">${s.detail}</span><span class="pts">+${s.score}</span></div>`).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${b.context_note})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${t}</span><span class="nm">${names[t]||t}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${d.subject&&d.subject.comm||'incident'}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+d.subject.exe:''} · uid ${d.subject?d.subject.uid:'?'}</div></div><div class="d-sv">${d.severity}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div></div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>`;}
+function renderInc(d){const det=document.getElementById('detail');det.className='detail';det.style.setProperty('--sv',svVar(d.severity));det.style.setProperty('--sv-bg',svBg(d.severity));const chain=(d.lineage||[]).length?d.lineage.map((n,i)=>{const tip=i===d.lineage.length-1;return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}">${n}</span>`;}).join(''):'<span class="node">process exited before lineage was captured</span>';const sigs=(d.signals||[]).slice().sort((a,b)=>a.ts_ns-b.ts_ns).map(s=>`<div class="sig"><span class="id">${s.id}</span><span class="txt">${s.detail}</span><span class="pts">+${s.score}</span></div>`).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${b.context_note})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${t}</span><span class="nm">${names[t]||t}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${d.subject&&d.subject.comm||'incident'}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+d.subject.exe:''} · uid ${d.subject?d.subject.uid:'?'}</div></div><div class="d-sv">${d.severity}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div></div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
+  const rb=det.querySelector('.resolvebtn');
+  if(rb)rb.addEventListener('click',()=>resolveIncident(d._id,det.querySelector('.rnote').value));}
+
+function resolveControl(d){
+  if(d._resolved){const when=d._resolved_at?new Date(d._resolved_at*1000).toISOString().slice(0,16).replace('T',' '):'';
+    return `<div class="resolved-note">✓ <b>Resolved</b> by ${d._resolved_by||'admin'} ${when?'· '+when+' UTC':''}${d._note?' · “'+d._note+'”':''}</div>`;}
+  return `<div class="resolvebar"><input class="rnote" placeholder="Note (optional): false positive, acknowledged…"><button class="resolvebtn">Mark resolved</button></div>`;
+}
+async function resolveIncident(id,note){
+  if(id==null)return;
+  await fetch('/api/resolve',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({host:currentHost.host,id,note:note||''})});
+  // Refresh: re-fetch fleet (host score may have dropped) and re-open the host.
+  try{HOSTS=await api('/api/fleet');}catch(e){}
+  const fresh=HOSTS.find(h=>h.host===currentHost.host);
+  if(fresh){openHost(fresh);}else{document.getElementById('back').click();renderFleet();}
+}
 
 boot();
 setInterval(()=>{if(document.getElementById('login').style.display==='none'||!document.getElementById('login').offsetParent){if(!hostview.classList.contains('hidden'))return;boot();}},15000);

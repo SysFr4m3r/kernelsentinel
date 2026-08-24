@@ -231,6 +231,26 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
                 }
             }
         }
+        // Resolve an incident. A WRITE, but only to the central record -- never
+        // to a host. Admin session required; the SameSite=Strict session cookie
+        // blocks cross-site POSTs.
+        (Method::Post, "/api/resolve") => {
+            if !authed(&req, sessions) {
+                text(401, "auth required")
+            } else {
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).ok();
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let host = v.get("host").and_then(|x| x.as_str()).unwrap_or("");
+                let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+                let note = v.get("note").and_then(|x| x.as_str()).unwrap_or("");
+                if store.resolve(host, id, "admin", note) {
+                    text(200, "resolved")
+                } else {
+                    text(404, "no such incident")
+                }
+            }
+        }
 
         // Dashboard (a client-side gate swaps to login when the session is absent).
         (Method::Get, "/") | (Method::Get, "/index.html") => html(200, dashboard::PAGE),
