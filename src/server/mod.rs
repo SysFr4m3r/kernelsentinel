@@ -21,6 +21,9 @@ pub use store::{Store, band};
 
 use std::io::Read;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -49,6 +52,27 @@ pub struct Tls {
     pub key: String,
 }
 
+/// Fan-out of "something changed" notifications to every connected dashboard's
+/// SSE stream. Each subscriber gets a channel; publish sends to all, dropping
+/// any whose receiver has gone (the dashboard disconnected).
+#[derive(Default)]
+struct Broadcaster {
+    clients: Mutex<Vec<Sender<String>>>,
+}
+impl Broadcaster {
+    fn subscribe(&self) -> Receiver<String> {
+        let (tx, rx) = channel();
+        self.clients.lock().unwrap().push(tx);
+        rx
+    }
+    fn publish(&self, msg: String) {
+        self.clients
+            .lock()
+            .unwrap()
+            .retain(|tx| tx.send(msg.clone()).is_ok());
+    }
+}
+
 pub fn serve(cfg: Config) -> Result<()> {
     if cfg.admin_password.is_empty() {
         anyhow::bail!("refusing to start without an admin password (set KS_ADMIN_PASSWORD)");
@@ -74,6 +98,7 @@ pub fn serve(cfg: Config) -> Result<()> {
 
     // Session-signing secret (persisted, so logins survive a restart).
     let secret = Arc::new(store.session_secret());
+    let bus = Arc::new(Broadcaster::default());
 
     // Seed the first admin from KS_ADMIN_PASSWORD if there are no users yet.
     if !store.has_users() && !cfg.admin_password.is_empty() {
@@ -123,11 +148,11 @@ pub fn serve(cfg: Config) -> Result<()> {
     eprintln!("kernelsentinel: admin dashboard + agent ingest ready");
 
     for req in server.incoming_requests() {
-        let (cfg, store, secret) = (cfg.clone(), store.clone(), secret.clone());
+        let (cfg, store, secret, bus) = (cfg.clone(), store.clone(), secret.clone(), bus.clone());
         // Each request is handled to completion (respond consumes it). A panic
         // in one handler must not take the server down.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle(req, &cfg, &store, &secret)
+            handle(req, &cfg, &store, &secret, &bus)
         }));
         if outcome.is_err() {
             eprintln!("kernelsentinel: recovered from a panic handling a request");
@@ -136,7 +161,7 @@ pub fn serve(cfg: Config) -> Result<()> {
     Ok(())
 }
 
-fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8]) {
+fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8], bus: &Arc<Broadcaster>) {
     let method = req.method().clone();
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
@@ -174,6 +199,11 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8]) {
                     store.ingest(&host, &kernel, &ip, v);
                     n += 1;
                 }
+            }
+            if n > 0 {
+                // Notify connected dashboards to refresh (host name only; the
+                // dashboard re-fetches through the authenticated API).
+                bus.publish(format!("{{\"host\":\"{host}\"}}"));
             }
             text(200, &format!("accepted {n}"))
         }
@@ -313,6 +343,26 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8]) {
             _ => text(403, "admin only"),
         },
 
+        // Long-poll: the dashboard holds a request open; the server answers the
+        // instant an agent ships an incident (or after a timeout, so the client
+        // re-polls). Handled in its own thread so the blocking wait does not
+        // stall the single-threaded request loop. Near-real-time without SSE's
+        // chunked-flush issues in tiny_http.
+        (Method::Get, "/api/poll") => {
+            if session(&req, secret).is_none() {
+                let _ = req.respond(text(401, "auth required"));
+                return;
+            }
+            let rx = bus.subscribe();
+            std::thread::spawn(move || {
+                let resp = match rx.recv_timeout(Duration::from_secs(25)) {
+                    Ok(msg) => json_str(200, &msg),
+                    Err(_) => text(204, ""),
+                };
+                let _ = req.respond(resp);
+            });
+            return;
+        }
         (Method::Get, "/") | (Method::Get, "/index.html") => html(200, dashboard::PAGE),
         _ => text(404, "not found"),
     };
@@ -400,6 +450,11 @@ fn html(code: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     r.add_header(
         Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
     );
+    r
+}
+fn json_str(code: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    let mut r = Response::from_string(body).with_status_code(code);
+    r.add_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
     r
 }
 fn json<T: serde::Serialize>(code: u16, v: &T) -> Response<std::io::Cursor<Vec<u8>>> {

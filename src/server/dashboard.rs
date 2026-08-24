@@ -274,6 +274,31 @@ async function boot(){
   document.getElementById('avatar').textContent=(ME.username||'?').slice(0,1).toUpperCase();
   document.getElementById('userslink').classList.toggle('hidden',ME.role!=='admin');
   renderFleet();
+  startLive();
+}
+
+// Live updates via long-poll: hold a request open; the server answers the moment
+// an agent ships an incident, then we refresh the active view in place and poll
+// again. Near-real-time, and robust behind proxies.
+let LIVE=false;
+function startLive(){ if(LIVE)return; LIVE=true; poll(); }
+async function poll(){
+  try{
+    const r=await fetch('/api/poll',{credentials:'same-origin'});
+    if(r.status===401){ LIVE=false; return; }   // session ended
+    if(r.status===200){ await liveRefresh(); }   // an incident arrived
+    // 204 = timeout, just re-poll
+  }catch(e){ await new Promise(r=>setTimeout(r,3000)); }
+  poll();
+}
+let refreshing=false;
+async function liveRefresh(){
+  if(refreshing)return; refreshing=true;
+  try{HOSTS=await api('/api/fleet');}catch(e){refreshing=false;return;}
+  renderFleet();
+  if(!hostview.classList.contains('hidden')&&currentHost){const h=HOSTS.find(x=>x.host===currentHost.host);if(h)openHost(h);}
+  else if(!auditview.classList.contains('hidden'))openAudit();
+  refreshing=false;
 }
 document.getElementById('logoutbtn').addEventListener('click',async()=>{await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.reload();});
 document.getElementById('userslink').addEventListener('click',openUsers);
@@ -364,6 +389,7 @@ async function openAudit(){
   }).join('');
 }
 boot();
-setInterval(()=>{if(document.getElementById('login').style.display==='none'||!document.getElementById('login').offsetParent){if(!hostview.classList.contains('hidden'))return;boot();}},15000);
+// Safety-net poll in case SSE is unavailable (e.g. a proxy buffers it).
+setInterval(()=>{if(document.getElementById('login').style.display==='none'){liveRefresh();}},60000);
 </script>
 "####;
