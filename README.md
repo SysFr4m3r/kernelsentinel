@@ -107,29 +107,48 @@ not alert; `sshd` spawning a shell is a login, not an intrusion) is enforced by 
 
 Developed against kernel 6.19 on Kali. `kernelsentinel doctor` will tell you where your host stands.
 
-## Build
+## Install
+
+**1. Toolchain.** The BPF side is compiled with clang against libbpf; the userspace is Rust.
 
 ```bash
 sudo apt install -y clang llvm libelf-dev zlib1g-dev libbpf-dev bpftool pkg-config
 ```
 
-`vmlinux.h` is host-specific and generated, not committed — make it first:
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+```
+
+**2. Generate `vmlinux.h`.** It is host-specific and not committed; CO-RE regenerates it from
+your kernel's BTF (this is also exactly what CI does):
 
 ```bash
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 ```
 
+**3. Build.**
+
 ```bash
 cargo build --release
 ```
 
-## Run
+The binary is `target/release/kernelsentinel`. Everything below assumes it is on your `PATH`
+(or run it by that path).
+
+**Check your host is supported** — this reports kernel, BTF, LSM, and privileges, and exits
+non-zero if a hard requirement is missing:
 
 ```bash
-./target/release/kernelsentinel doctor
+sudo kernelsentinel doctor
 ```
 
-Run the daemon — it streams events and raises correlated incidents:
+## Run — single host
+
+```bash
+sudo kernelsentinel run
+```
+
+The daemon — it streams events and raises correlated incidents:
 
 ```bash
 sudo ./target/release/kernelsentinel run
@@ -138,7 +157,7 @@ sudo ./target/release/kernelsentinel run
 Emit incidents as NDJSON for a SIEM or pipeline (suppresses the event stream):
 
 ```bash
-sudo ./target/release/kernelsentinel run --json
+sudo kernelsentinel run --json
 ```
 
 Each incident is one self-contained, version-tagged JSON object:
@@ -156,23 +175,23 @@ Each incident is one self-contained, version-tagged JSON object:
 deterministically — no root, no kernel:
 
 ```bash
-sudo ./target/release/kernelsentinel record -o capture.ndjson
+sudo kernelsentinel record -o capture.ndjson
 ```
 
 ```bash
-./target/release/kernelsentinel replay capture.ndjson
+kernelsentinel replay capture.ndjson
 ```
 
 The repository ships real captures as fixtures, so you can see a detection immediately:
 
 ```bash
-./target/release/kernelsentinel replay tests/fixtures/host_sudo_suid.ndjson
+kernelsentinel replay tests/fixtures/host_sudo_suid.ndjson
 ```
 
 ### Investigate one process
 
 ```bash
-./target/release/kernelsentinel investigate 7452 --capture tests/fixtures/host_sudo_suid.ndjson
+kernelsentinel investigate 7452 --capture tests/fixtures/host_sudo_suid.ndjson
 ```
 
 ```
@@ -186,6 +205,67 @@ signals:
 MITRE ATT&CK:
   T1068        Exploitation for Privilege Escalation
   T1548.001    Setuid and Setgid
+```
+
+## Run — fleet (central web panel)
+
+Monitor many hosts from one place. Each host runs the collector and **ships** its incidents to a
+central server; admins log in to a **read-only** dashboard that ranks hosts by score. Telemetry
+flows one way (host → central), so the dashboard can audit activity but never reach into a host.
+
+**Central server.** Set an admin password and either per-agent keys (recommended) or a shared
+ingest key. `--journal` persists incidents across restarts; `--tls-cert/--tls-key` enable HTTPS.
+
+```bash
+export KS_ADMIN_PASSWORD='choose-a-strong-password'
+kernelsentinel serve --bind 0.0.0.0:8088 \
+  --keys /etc/kernelsentinel/agents.keys \
+  --journal /var/lib/kernelsentinel/incidents.ndjson \
+  --tls-cert /etc/kernelsentinel/server.pem --tls-key /etc/kernelsentinel/server.key
+```
+
+The per-agent keys file is one `host key` per line. The key **determines** the host, so a leaked
+key can only ever write its own host's bucket — it cannot impersonate the fleet:
+
+```text
+web-prod-01   b7f3…generate-with-a-csprng
+db-app-03     9c1a…another-key
+```
+
+**Agent** (on each monitored host). Pipe live incidents straight to the server; `--ca` pins the
+server's certificate for HTTPS:
+
+```bash
+export KS_INGEST_KEY='this-hosts-key'
+sudo kernelsentinel run --json \
+  | kernelsentinel ship https://central:8088/api/ingest --ca /etc/kernelsentinel/server.pem
+```
+
+**Admins** open `https://central:8088`, sign in, and see the host list ranked by score. Clicking a
+host shows its incidents; **Mark resolved** acknowledges one (with a note) — resolving the worst
+incident drops that host's score to the next, which is how you work a host back to green. The
+dashboard has a light/dark toggle.
+
+> No TLS? The server binds `127.0.0.1` by default and warns loudly. Use `--tls-*`, or keep it on
+> localhost / behind a TLS-terminating reverse proxy — the ingest key travels in a header.
+
+## Custom detection rules
+
+Add detections in YAML without recompiling — see [docs/WRITING_RULES.md](docs/WRITING_RULES.md):
+
+```bash
+kernelsentinel rules --dir rules            # validate + list
+sudo kernelsentinel run --rules rules       # load alongside the built-ins
+```
+
+## Suppress routine behavior (baselining)
+
+Learn a host's normal from a clean capture, then apply it so routine actions (a plain `sudo`)
+stop alerting while novel behavior still fires:
+
+```bash
+kernelsentinel baseline --capture clean.ndjson --out host.baseline
+sudo kernelsentinel run --baseline host.baseline
 ```
 
 ## Architecture

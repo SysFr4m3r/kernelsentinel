@@ -41,6 +41,17 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .who{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted)}
 .avatar{width:26px;height:26px;border-radius:50%;background:var(--accent-dim);color:var(--accent);display:grid;place-items:center;font-weight:600;font-size:12px;font-family:"IBM Plex Mono",monospace}
 .who b{color:var(--ink);font-weight:600}
+.themebtn{display:inline-grid;place-items:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);cursor:pointer;padding:0}
+.themebtn:hover{color:var(--accent);border-color:var(--accent)}
+.themebtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* default (dark host / dark toggle): show the sun (click for light) */
+.themebtn .moon{display:none}
+.themebtn .sun,.themebtn .sun-rays{display:initial}
+/* when the page is LIGHT, show the moon (click for dark) */
+:root[data-theme="light"] .themebtn .moon{display:initial}
+:root[data-theme="light"] .themebtn .sun,:root[data-theme="light"] .themebtn .sun-rays{display:none}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .themebtn .moon{display:initial}
+:root:not([data-theme="dark"]) .themebtn .sun,:root:not([data-theme="dark"]) .themebtn .sun-rays{display:none}}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:var(--shadow)}
 .stat .n{font-size:24px;font-weight:600;line-height:1}
@@ -153,7 +164,14 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
       </svg>
       <h1>Kernel<span>Sentinel</span></h1>
     </div>
-    <span class="live"><span class="dot"></span>6 agents reporting</span>
+    <span class="live"><span class="dot"></span><span id="agentcount">agents</span></span>
+    <button id="themebtn" class="themebtn" type="button" title="Toggle light / dark" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle class="sun" cx="12" cy="12" r="4.2"/>
+        <g class="sun-rays"><path d="M12 2.5V4.5M12 19.5V21.5M4.5 12H2.5M21.5 12H19.5M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></g>
+        <path class="moon" d="M20 13.5A7.5 7.5 0 0 1 10.5 4 7.5 7.5 0 1 0 20 13.5Z" fill="currentColor" stroke="none"/>
+      </svg>
+    </button>
     <div class="who"><span>signed in as</span><b>admin@soc</b><span class="avatar">A</span></div>
   </header>
   <div id="fleet">
@@ -184,6 +202,18 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
   </p>
 </div>
 <script>
+// theme: honor a saved choice, else follow the OS. Toggle flips and persists.
+(function(){
+  const saved=localStorage.getItem('ks-theme');
+  if(saved)document.documentElement.setAttribute('data-theme',saved);
+  document.getElementById('themebtn').addEventListener('click',()=>{
+    const cur=document.documentElement.getAttribute('data-theme');
+    const dark=cur?cur==='dark':matchMedia('(prefers-color-scheme: dark)').matches;
+    const next=dark?'light':'dark';
+    document.documentElement.setAttribute('data-theme',next);
+    localStorage.setItem('ks-theme',next);
+  });
+})();
 const SV={CRITICAL:'crit',HIGH:'high',MEDIUM:'med',LOW:'low',INFO:'info',OK:'ok'};
 const svVar=s=>`var(--${SV[s]})`,svBg=s=>`var(--${SV[s]}-bg)`;
 const order=['CRITICAL','HIGH','MEDIUM','LOW','INFO'];
@@ -212,6 +242,7 @@ function tsago(sec){if(!sec)return '—';const d=Math.max(0,Math.floor(Date.now(
 function renderFleet(){
   const atRisk=HOSTS.filter(h=>h.score>=50).length,worst=HOSTS.length?Math.max(...HOSTS.map(h=>h.score)):0,
     clean=HOSTS.filter(h=>h.score===0).length,openInc=HOSTS.reduce((a,h)=>a+h.n,0);
+  document.getElementById('agentcount').textContent=HOSTS.length+' agent'+(HOSTS.length===1?'':'s')+' reporting';
   document.getElementById('fstats').innerHTML=[['Hosts',HOSTS.length,''],['Need attention',atRisk,'crit'],['Healthy',clean,'ok'],['Open incidents',openInc,''],['Worst score',worst,'crit']].map(([k,n,c])=>`<div class="stat ${c}"><div class="n mono">${n}</div><div class="k">${k}</div></div>`).join('');
   const hostlist=document.getElementById('hostlist');
   if(!HOSTS.length){hostlist.innerHTML='<div class="stat" style="text-align:center;color:var(--faint)">No agents have reported yet. Point an agent at this server with <code>kernelsentinel ship</code>.</div>';return;}
