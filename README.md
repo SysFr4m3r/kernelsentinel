@@ -85,6 +85,9 @@ alerts once, not per event; and MITRE ATT&CK mapping.
   then downweights routine behavior (a plain `sudo` stops alerting) while novel behavior is untouched
 - `kernelsentinel rules` — validate YAML detection rules; `run`/`replay --rules DIR` loads custom
   match/sequence rules that flow through the same engine (see [docs/WRITING_RULES.md](docs/WRITING_RULES.md))
+- **Fleet monitoring**: `kernelsentinel serve` runs a central web panel; agents `ship` their incidents
+  to it and admins log in to a read-only dashboard that ranks hosts by score. Data flows one way
+  (host → central), so the dashboard can audit activity but never reach into a host
 - `kernelsentinel tree`, `doctor`
 
 **Tested**: 26 tests, including detections replayed from **real kernel captures** committed as

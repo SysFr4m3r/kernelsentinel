@@ -8,4 +8,5 @@ pub mod doctor;
 pub mod event;
 pub mod graph;
 pub mod sensors;
+pub mod server;
 pub mod watchlist;

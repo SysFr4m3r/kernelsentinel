@@ -88,6 +88,22 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Run the central fleet server: agents ingest here, admins view the
+    /// dashboard. Reads KS_ADMIN_PASSWORD and KS_INGEST_KEY from the environment.
+    Serve {
+        /// Address to bind, host:port. Keep it loopback unless TLS fronts it.
+        #[arg(long, default_value = "127.0.0.1:8088")]
+        bind: String,
+    },
+    /// Ship incident NDJSON (from `run --json` / `replay --json` on stdin) to a
+    /// central fleet server. Host -> central only; no control channel back.
+    Ship {
+        /// Server ingest URL, e.g. http://central:8088/api/ingest
+        url: String,
+        /// This host's label (default: the system hostname).
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Validate and list the YAML detection rules in a directory.
     Rules {
         /// Directory of .yaml rules.
@@ -118,6 +134,8 @@ fn main() -> Result<()> {
         Command::Baseline { capture, out } => baseline_build(&capture, &out),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
+        Command::Serve { bind } => serve_cmd(&bind),
+        Command::Ship { url, host } => ship_cmd(&url, host),
         Command::Rules { dir } => rules_cmd(&dir),
         Command::Run {
             max_processes,
@@ -247,6 +265,28 @@ fn replay(input: &str, json: bool, baseline: Option<String>, rules: Option<Strin
         g.nodes
     ));
     Ok(())
+}
+
+/// Run the central fleet server.
+fn serve_cmd(bind: &str) -> Result<()> {
+    use kernelsentinel::server::{Config, serve};
+    let admin_password = std::env::var("KS_ADMIN_PASSWORD").unwrap_or_default();
+    let ingest_key = std::env::var("KS_INGEST_KEY").unwrap_or_default();
+    serve(Config {
+        addr: bind.to_string(),
+        admin_password,
+        ingest_key,
+    })
+}
+
+/// Ship incident NDJSON from stdin to a central server.
+fn ship_cmd(url: &str, host: Option<String>) -> Result<()> {
+    use kernelsentinel::server::{hostname, ship};
+    let key = std::env::var("KS_INGEST_KEY")
+        .map_err(|_| anyhow::anyhow!("set KS_INGEST_KEY to the server's ingest key"))?;
+    let host = host.unwrap_or_else(hostname);
+    let stdin = std::io::stdin();
+    ship(url, &key, &host, stdin.lock())
 }
 
 /// Validate and list the rules in a directory.
