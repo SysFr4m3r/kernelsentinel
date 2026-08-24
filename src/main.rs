@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 
 use kernelsentinel::clock::BootClock;
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{self, Baseline, Engine, IncidentRecord, Severity};
+use kernelsentinel::detect::{self, Baseline, Engine, IncidentRecord, RuleSet, Severity};
 use kernelsentinel::event::{EventType, RawEvent};
 use kernelsentinel::graph::{scan, ProcKey, ProcessGraph};
 use kernelsentinel::{doctor, sensors};
@@ -41,6 +41,9 @@ enum Command {
         /// Apply a learned baseline to downweight known-normal behavior.
         #[arg(long)]
         baseline: Option<String>,
+        /// Directory of YAML detection rules to load alongside the built-ins.
+        #[arg(long)]
+        rules: Option<String>,
     },
     /// Capture raw events to an NDJSON file (no detection), for later replay.
     Record {
@@ -58,6 +61,9 @@ enum Command {
         /// Apply a learned baseline to downweight known-normal behavior.
         #[arg(long)]
         baseline: Option<String>,
+        /// Directory of YAML detection rules to load alongside the built-ins.
+        #[arg(long)]
+        rules: Option<String>,
     },
     /// Learn a per-host baseline of normal (signal, exe) pairs from a clean
     /// capture, so routine behavior stops firing alerts.
@@ -83,6 +89,12 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Validate and list the YAML detection rules in a directory.
+    Rules {
+        /// Directory of .yaml rules.
+        #[arg(short, long, default_value = "rules")]
+        dir: String,
+    },
     /// Report whether this kernel can run the sensors.
     Doctor,
 }
@@ -98,16 +110,18 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Record { out } => record(&out),
-        Command::Replay { input, json, baseline } => replay(&input, json, baseline),
+        Command::Replay { input, json, baseline, rules } => replay(&input, json, baseline, rules),
         Command::Baseline { capture, out } => baseline_build(&capture, &out),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
+        Command::Rules { dir } => rules_cmd(&dir),
         Command::Run {
             max_processes,
             retain,
             json,
             baseline,
-        } => run(max_processes, retain, json, baseline),
+            rules,
+        } => run(max_processes, retain, json, baseline, rules),
     }
 }
 
@@ -159,7 +173,7 @@ fn record(out: &str) -> Result<()> {
 
 /// Replay a capture through the same graph and display the live path uses. No
 /// BPF, no root: this is where detection logic is developed and regression-tested.
-fn replay(input: &str, json: bool, baseline: Option<String>) -> Result<()> {
+fn replay(input: &str, json: bool, baseline: Option<String>, rules: Option<String>) -> Result<()> {
     use std::io::BufRead;
 
     let reader: Box<dyn BufRead> = if input == "-" {
@@ -176,6 +190,10 @@ fn replay(input: &str, json: bool, baseline: Option<String>) -> Result<()> {
     if let Some(path) = &baseline {
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
         engine = engine.with_baseline(b);
+    }
+    if let Some(dir) = &rules {
+        let loaded = detect::load_rules(dir).map_err(anyhow::Error::msg)?;
+        engine = engine.with_rules(RuleSet::new(loaded));
     }
     let clock = BootClock::boot_relative();
 
@@ -222,6 +240,28 @@ fn replay(input: &str, json: bool, baseline: Option<String>) -> Result<()> {
         "kernelsentinel: replayed {n} events ({bad} malformed lines skipped), graph {} nodes",
         g.nodes
     ));
+    Ok(())
+}
+
+/// Validate and list the rules in a directory.
+fn rules_cmd(dir: &str) -> Result<()> {
+    let rules = detect::load_rules(dir).map_err(anyhow::Error::msg)?;
+    status(&format!("{} rule(s) in {dir}, all valid:\n", rules.len()));
+    for r in &rules {
+        let kind = if r.is_sequence() {
+            format!("sequence[{}]", r.sequence.len())
+        } else {
+            "match".to_string()
+        };
+        emit(&format!(
+            "  {:<10} {:<24} score {:<3} {:<10} [{}]",
+            if r.id.is_empty() { "-" } else { &r.id },
+            r.name,
+            r.score,
+            kind,
+            r.attack.join(", ")
+        ));
+    }
     Ok(())
 }
 
@@ -454,7 +494,7 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
     }
 }
 
-fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<String>) -> Result<()> {
+fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<String>, rules: Option<String>) -> Result<()> {
     let report = doctor::run();
     if report.fatal() {
         report.print();
@@ -472,6 +512,11 @@ fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<Stri
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
         status(&format!("kernelsentinel: applying baseline ({} known patterns)", b.len()));
         engine = engine.with_baseline(b);
+    }
+    if let Some(dir) = &rules {
+        let loaded = detect::load_rules(dir).map_err(anyhow::Error::msg)?;
+        status(&format!("kernelsentinel: loaded {} custom rules from {dir}", loaded.len()));
+        engine = engine.with_rules(RuleSet::new(loaded));
     }
     let boot = scan::bootstrap(&mut graph);
     status(&format!(

@@ -1,0 +1,15 @@
+# A privilege escalation to root followed by creating a SUID binary in the same
+# process lineage -- the rootkit/backdoor-install shape, expressed as a rule
+# rather than Rust code.
+name: escalate_then_suid
+id: KS-DSL-0001
+score: 55
+attack: [T1068, T1548.001]
+description: escalated to root then created a SUID binary
+scope: same_lineage
+within: 30s
+sequence:
+  - event: cred_change
+    to_root: true
+  - event: file_mode
+    gained_suid: true

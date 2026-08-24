@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{signals_for_event, Baseline, Engine, IncidentRecord, Severity};
+use kernelsentinel::detect::{load_rules, signals_for_event, Baseline, Engine, IncidentRecord, RuleSet, Severity};
 use kernelsentinel::graph::ProcessGraph;
 
 fn replay(path: &str, min: Severity) -> Vec<(Severity, u32, Vec<String>)> {
@@ -377,4 +377,32 @@ fn engine_reap_bounds_state_with_the_graph() {
     // The reaped process's signals are gone from engine state.
     let (signals, _) = e.assess(ProcKey { pid: 200, start_boottime: 1000000000 }, &g);
     assert!(signals.is_empty(), "engine retained signals for a reaped process");
+}
+
+
+#[test]
+fn yaml_dsl_rule_detects_the_escalation_chain() {
+    // The shipped YAML rule (rules/escalate_then_suid.yaml) -- a sequence rule
+    // with NO Rust behind it -- must fire on the real host capture, proving a
+    // detection can be added declaratively and flow through the same engine.
+    let rules = load_rules("rules").expect("rules/ must load and validate");
+    assert!(!rules.is_empty());
+
+    let text = std::fs::read_to_string("tests/fixtures/host_sudo_suid.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Low).with_rules(RuleSet::new(rules));
+
+    let mut saw_dsl = false;
+    for line in text.lines() {
+        if line.trim().is_empty() { continue; }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            if inc.signals.iter().any(|sig| sig.id == "KS-DSL-0001") {
+                saw_dsl = true;
+                assert!(inc.attack.iter().any(|a| a == "T1548.001"));
+            }
+        }
+    }
+    assert!(saw_dsl, "the YAML sequence rule never fired on the real chain");
 }

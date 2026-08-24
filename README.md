@@ -81,6 +81,8 @@ alerts once, not per event; and MITRE ATT&CK mapping.
   unprivileged and deterministically (this is how detections are developed and regression-tested)
 - `kernelsentinel baseline` — learn per-host normal from a clean capture; `run`/`replay --baseline`
   then downweights routine behavior (a plain `sudo` stops alerting) while novel behavior is untouched
+- `kernelsentinel rules` — validate YAML detection rules; `run`/`replay --rules DIR` loads custom
+  match/sequence rules that flow through the same engine (see [docs/WRITING_RULES.md](docs/WRITING_RULES.md))
 - `kernelsentinel tree`, `doctor`
 
 **Tested**: 26 tests, including detections replayed from **real kernel captures** committed as
@@ -266,7 +268,7 @@ exists once you correlate them per process.
 | M2 | File sensors (LSM, `bpf_d_path`), ptrace, memfd, module load | ✅ done & verified (all 6 sensors) |
 | M3 | Built-in detections, risk scoring, alerts, `investigate`, NDJSON — **first usable release** | ✅ done & validated |
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
-| M5 | YAML rule DSL | |
+| M5 | YAML rule DSL (match + sequence rules) | ✅ first increment |
 | M6 | Container & namespace awareness | 🚧 container id + context + escape detection |
 | M7 | Baselining ✅ first increment · YARA, optional enforcement · (NDJSON/SIEM done in M3) | 🚧 in progress |
 
@@ -321,6 +323,8 @@ Unless you state otherwise, contributions are accepted under these same terms.
 
 - **[docs/DETECTIONS.md](docs/DETECTIONS.md)** — every detection: what it catches, its ATT&CK
   technique and score, how to trigger it, and its known false positives and evasions.
+- **[docs/WRITING_RULES.md](docs/WRITING_RULES.md)** — add detections in YAML, no recompile: the
+  match/sequence rule DSL, conditions, and scoping.
 
 ## Reading
 

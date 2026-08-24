@@ -8,6 +8,7 @@ mod alert;
 mod record;
 pub mod attack;
 pub mod baseline;
+pub mod rule;
 mod detectors;
 mod score;
 mod signal;
@@ -21,6 +22,7 @@ pub use alert::render;
 pub use record::IncidentRecord;
 pub use score::{Context, Score, Severity};
 pub use baseline::Baseline;
+pub use rule::{load_dir as load_rules, Rule, RuleSet};
 pub use signal::Signal;
 
 /// One correlated detection: a lineage, its signals, and its score.
@@ -48,6 +50,8 @@ pub struct Engine {
     /// Learned per-host normal. When present, signals whose (id, exe) pair is
     /// known-normal are downweighted before scoring.
     baseline: Option<Baseline>,
+    /// User-defined YAML rules, evaluated alongside the built-in detectors.
+    rules: Option<RuleSet>,
 }
 
 impl Engine {
@@ -57,7 +61,13 @@ impl Engine {
             reported: HashMap::new(),
             min_severity,
             baseline: None,
+            rules: None,
         }
+    }
+
+    pub fn with_rules(mut self, rules: RuleSet) -> Self {
+        self.rules = Some(rules);
+        self
     }
 
     pub fn with_baseline(mut self, baseline: Baseline) -> Self {
@@ -85,7 +95,10 @@ impl Engine {
     /// Feed one event. Returns an incident if this event pushed a lineage into a
     /// new, higher severity band worth reporting.
     pub fn on_event(&mut self, ev: &Event, graph: &ProcessGraph) -> Option<Incident> {
-        let new_signals = detectors::detect(ev, graph);
+        let mut new_signals = detectors::detect(ev, graph);
+        if let Some(rules) = &mut self.rules {
+            new_signals.extend(rules.on_event(ev, graph));
+        }
         if new_signals.is_empty() {
             return None;
         }
@@ -174,6 +187,9 @@ impl Engine {
     pub fn reap(&mut self, graph: &ProcessGraph) {
         self.signals.retain(|key, _| graph.get(key).is_some());
         self.reported.retain(|key, _| graph.get(key).is_some());
+        if let Some(rules) = &mut self.rules {
+            rules.reap(graph);
+        }
     }
 
     /// Read-only assessment of a process's lineage: the combined signals and the
