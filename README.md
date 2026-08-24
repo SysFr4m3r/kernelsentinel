@@ -220,7 +220,7 @@ ingest key. `--journal` persists incidents across restarts; `--tls-cert/--tls-ke
 export KS_ADMIN_PASSWORD='choose-a-strong-password'
 kernelsentinel serve --bind 0.0.0.0:8088 \
   --keys /etc/kernelsentinel/agents.keys \
-  --journal /var/lib/kernelsentinel/incidents.ndjson \
+  --journal /var/lib/kernelsentinel/incidents.sqlite --retain-days 90 \
   --tls-cert /etc/kernelsentinel/server.pem --tls-key /etc/kernelsentinel/server.key
 ```
 
@@ -244,7 +244,11 @@ sudo kernelsentinel run --json \
 **Admins** open `https://central:8088`, sign in, and see the host list ranked by score. Clicking a
 host shows its incidents; **Mark resolved** acknowledges one (with a note) — resolving the worst
 incident drops that host's score to the next, which is how you work a host back to green. The
-dashboard has a light/dark toggle.
+**Audit log** (header link) shows who resolved what, from the durable sqlite history. The dashboard
+has a light/dark toggle.
+
+Persistence is a sqlite database (`--journal`); incidents, resolutions, and the audit trail survive
+restarts, and `--retain-days N` prunes old history on startup.
 
 > No TLS? The server binds `127.0.0.1` by default and warns loudly. Use `--tls-*`, or keep it on
 > localhost / behind a TLS-terminating reverse proxy — the ingest key travels in a header.

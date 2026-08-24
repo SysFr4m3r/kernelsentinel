@@ -3,34 +3,11 @@
 //! persistence (sqlite/file) is future work.
 
 use std::collections::HashMap;
-use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-
-/// One line of the NDJSON journal.
-#[derive(Serialize, Deserialize)]
-struct PersistLine {
-    #[serde(default)]
-    id: u64,
-    host: String,
-    #[serde(default)]
-    kernel: String,
-    #[serde(default)]
-    ip: String,
-    received: u64,
-    record: serde_json::Value,
-    #[serde(default)]
-    resolved: bool,
-    #[serde(default)]
-    resolved_by: String,
-    #[serde(default)]
-    resolved_at: u64,
-    #[serde(default)]
-    note: String,
-}
+use rusqlite::Connection;
+use serde::Serialize;
 
 /// One incident as received from an agent: the agent's own IncidentRecord JSON,
 /// kept opaque here (re-serialized to the dashboard as-is) plus the fields the
@@ -92,13 +69,40 @@ pub struct HostSummary {
     pub ip: String,
 }
 
+#[derive(Serialize)]
+pub struct AuditEntry {
+    pub host: String,
+    pub id: u64,
+    pub severity: String,
+    pub score: u32,
+    pub resolved_by: String,
+    pub resolved_at: u64,
+    pub note: String,
+    pub subject: String,
+}
+
+fn field_str(v: &serde_json::Value, key: &str, default: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn subject_comm(v: &serde_json::Value) -> String {
+    v.get("subject")
+        .and_then(|s| s.get("comm"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 pub struct Store {
+    /// In-memory working set (bounded) for fast fleet/host reads.
     hosts: Mutex<HashMap<String, HostState>>,
-    /// Append-only NDJSON journal so incidents survive a restart. None = memory
-    /// only. Each line is one persisted record; the store is rebuilt from it on
-    /// startup and the file is compacted to the retained set.
-    journal: Mutex<Option<std::fs::File>>,
-    journal_path: Option<PathBuf>,
+    /// sqlite connection for durable, queryable history. None = memory only.
+    /// The full history lives here (for the audit trail and retention); memory
+    /// holds only the recent per-host working set.
+    db: Option<Mutex<Connection>>,
     next_id: Mutex<u64>,
 }
 
@@ -112,50 +116,83 @@ impl Store {
     pub fn new() -> Self {
         Self {
             hosts: Mutex::new(HashMap::new()),
-            journal: Mutex::new(None),
-            journal_path: None,
+            db: None,
             next_id: Mutex::new(1),
         }
     }
 
-    /// A store backed by an NDJSON journal at `path`: load what is already there,
-    /// then append new incidents so reports survive a restart. On load the store
-    /// is capped per host, and the journal is compacted to exactly the retained
-    /// set so it cannot grow without bound.
-    pub fn persistent(path: &str) -> std::io::Result<Self> {
+    /// A store backed by a sqlite database at `path`: durable, queryable history
+    /// that survives restarts. On open it optionally prunes incidents older than
+    /// `retain_days` (0 = keep forever), then loads the recent per-host working
+    /// set into memory. Full history stays in sqlite for the audit trail.
+    pub fn persistent(path: &str, retain_days: u64) -> rusqlite::Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS incidents (
+                 id INTEGER PRIMARY KEY,
+                 host TEXT NOT NULL, kernel TEXT, ip TEXT,
+                 received INTEGER NOT NULL,
+                 severity TEXT NOT NULL, score INTEGER NOT NULL,
+                 record TEXT NOT NULL,
+                 resolved INTEGER NOT NULL DEFAULT 0,
+                 resolved_by TEXT DEFAULT '', resolved_at INTEGER DEFAULT 0,
+                 note TEXT DEFAULT ''
+             );
+             CREATE INDEX IF NOT EXISTS idx_host ON incidents(host);
+             CREATE INDEX IF NOT EXISTS idx_resolved ON incidents(resolved, resolved_at);",
+        )?;
+
+        if retain_days > 0 {
+            let cutoff = epoch().saturating_sub(retain_days * 86_400);
+            conn.execute("DELETE FROM incidents WHERE received < ?1", [cutoff as i64])?;
+        }
+
         let store = Store::new();
-        let pb = PathBuf::from(path);
 
-        if let Ok(text) = std::fs::read_to_string(&pb) {
-            for line in text.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(rec) = serde_json::from_str::<PersistLine>(line) {
-                    store.replay(rec);
-                }
-            }
-        }
-
-        // Compact: rewrite the journal from the (now bounded) in-memory state.
-        let mut f = std::fs::File::create(&pb)?;
+        // Load recent rows into the in-memory working set (ascending id so the
+        // per-host cap keeps the newest).
         {
-            let hosts = store.hosts.lock().unwrap();
-            for (host, state) in hosts.iter() {
-                for inc in &state.incidents {
-                    writeln!(
-                        f,
-                        "{}",
-                        serde_json::to_string(&persist_line(host, state, inc)).unwrap()
-                    )?;
-                }
+            let mut stmt = conn.prepare(
+                "SELECT id, host, kernel, ip, received, record, resolved, resolved_by,                  resolved_at, note FROM incidents ORDER BY id ASC",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)? as u64,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)? != 0,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, i64>(8)? as u64,
+                    r.get::<_, String>(9)?,
+                ))
+            })?;
+            let mut max_id = 0u64;
+            for row in rows.flatten() {
+                let (id, host, kernel, ip, received, record, resolved, by, at, note) = row;
+                max_id = max_id.max(id);
+                let record: serde_json::Value =
+                    serde_json::from_str(&record).unwrap_or(serde_json::Value::Null);
+                let inc = StoredIncident {
+                    id,
+                    severity: field_str(&record, "severity", "INFO"),
+                    score: record.get("score").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    record,
+                    received,
+                    resolved,
+                    resolved_by: by,
+                    resolved_at: at,
+                    note,
+                };
+                store.apply(&host, &kernel, &ip, received, inc);
             }
+            *store.next_id.lock().unwrap() = max_id + 1;
         }
-        f.flush()?;
 
         let mut store = store;
-        store.journal = Mutex::new(Some(std::fs::OpenOptions::new().append(true).open(&pb)?));
-        store.journal_path = Some(pb);
+        store.db = Some(Mutex::new(conn));
         Ok(store)
     }
 
@@ -184,58 +221,24 @@ impl Store {
             note: String::new(),
         };
 
-        // Journal (durability) then apply.
-        if let Ok(mut j) = self.journal.lock() {
-            if let Some(f) = j.as_mut() {
-                let line = PersistLine {
-                    id: inc.id,
-                    host: host.to_string(),
-                    kernel: kernel.to_string(),
-                    ip: ip.to_string(),
-                    received: now,
-                    record: inc.record.clone(),
-                    resolved: false,
-                    resolved_by: String::new(),
-                    resolved_at: 0,
-                    note: String::new(),
-                };
-                if let Ok(s) = serde_json::to_string(&line) {
-                    let _ = writeln!(f, "{s}");
-                }
-            }
+        // Durable write to sqlite (if persistent), then apply to memory.
+        if let Some(db) = &self.db {
+            let conn = db.lock().unwrap();
+            let _ = conn.execute(
+                "INSERT INTO incidents (id, host, kernel, ip, received, severity, score, record)                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    inc.id as i64,
+                    host,
+                    kernel,
+                    ip,
+                    now as i64,
+                    inc.severity,
+                    inc.score as i64,
+                    inc.record.to_string(),
+                ],
+            );
         }
         self.apply(host, kernel, ip, now, inc);
-    }
-
-    /// Reload one journal line into memory (no re-journaling).
-    fn replay(&self, rec: PersistLine) {
-        {
-            let mut n = self.next_id.lock().unwrap();
-            if rec.id >= *n {
-                *n = rec.id + 1;
-            }
-        }
-        let inc = StoredIncident {
-            id: rec.id,
-            severity: rec
-                .record
-                .get("severity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("INFO")
-                .to_string(),
-            score: rec
-                .record
-                .get("score")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32,
-            record: rec.record,
-            received: rec.received,
-            resolved: rec.resolved,
-            resolved_by: rec.resolved_by,
-            resolved_at: rec.resolved_at,
-            note: rec.note,
-        };
-        self.apply(&rec.host, &rec.kernel, &rec.ip, rec.received, inc);
     }
 
     fn apply(&self, host: &str, kernel: &str, ip: &str, now: u64, inc: StoredIncident) {
@@ -277,27 +280,71 @@ impl Store {
             }
         };
         if found {
-            self.rewrite_journal();
+            if let Some(db) = &self.db {
+                let conn = db.lock().unwrap();
+                let _ = conn.execute(
+                    "UPDATE incidents SET resolved = 1, resolved_by = ?1, resolved_at = ?2,                      note = ?3 WHERE id = ?4",
+                    rusqlite::params![by, epoch() as i64, note, id as i64],
+                );
+            }
         }
         found
     }
 
-    /// Rewrite the journal from memory (after a resolution). Resolutions are
-    /// infrequent admin actions, so O(n) is fine.
-    fn rewrite_journal(&self) {
-        let Some(path) = &self.journal_path else {
-            return;
+    /// The resolution audit trail: recently-resolved incidents across the fleet,
+    /// newest first. Queried from sqlite so it spans the full history, not just
+    /// the in-memory working set.
+    pub fn audit(&self, limit: usize) -> Vec<AuditEntry> {
+        let Some(db) = &self.db else {
+            // Memory-only fallback.
+            let hosts = self.hosts.lock().unwrap();
+            let mut out: Vec<AuditEntry> = hosts
+                .iter()
+                .flat_map(|(host, st)| {
+                    st.incidents
+                        .iter()
+                        .filter(|i| i.resolved)
+                        .map(move |i| AuditEntry {
+                            host: host.clone(),
+                            id: i.id,
+                            severity: i.severity.clone(),
+                            score: i.score,
+                            resolved_by: i.resolved_by.clone(),
+                            resolved_at: i.resolved_at,
+                            note: i.note.clone(),
+                            subject: subject_comm(&i.record),
+                        })
+                })
+                .collect();
+            out.sort_by_key(|a| std::cmp::Reverse(a.resolved_at));
+            out.truncate(limit);
+            return out;
         };
-        let hosts = self.hosts.lock().unwrap();
-        if let Ok(mut f) = std::fs::File::create(path) {
-            for (host, state) in hosts.iter() {
-                for inc in &state.incidents {
-                    if let Ok(s) = serde_json::to_string(&persist_line(host, state, inc)) {
-                        let _ = writeln!(f, "{s}");
-                    }
-                }
-            }
-            let _ = f.flush();
+        let conn = db.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT host, id, severity, score, resolved_by, resolved_at, note, record              FROM incidents WHERE resolved = 1 ORDER BY resolved_at DESC LIMIT ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([limit as i64], |r| {
+            let record: String = r.get(7)?;
+            let v: serde_json::Value =
+                serde_json::from_str(&record).unwrap_or(serde_json::Value::Null);
+            Ok(AuditEntry {
+                host: r.get(0)?,
+                id: r.get::<_, i64>(1)? as u64,
+                severity: r.get(2)?,
+                score: r.get::<_, i64>(3)? as u32,
+                resolved_by: r.get(4)?,
+                resolved_at: r.get::<_, i64>(5)? as u64,
+                note: r.get(6)?,
+                subject: subject_comm(&v),
+            })
+        });
+        match rows {
+            Ok(it) => it.flatten().collect(),
+            Err(_) => Vec::new(),
         }
     }
 
@@ -363,21 +410,6 @@ impl Store {
                 })
                 .collect()
         })
-    }
-}
-
-fn persist_line(host: &str, state: &HostState, inc: &StoredIncident) -> PersistLine {
-    PersistLine {
-        id: inc.id,
-        host: host.to_string(),
-        kernel: state.kernel.clone(),
-        ip: state.ip.clone(),
-        received: inc.received,
-        record: inc.record.clone(),
-        resolved: inc.resolved,
-        resolved_by: inc.resolved_by.clone(),
-        resolved_at: inc.resolved_at,
-        note: inc.note.clone(),
     }
 }
 
@@ -449,6 +481,50 @@ mod tests {
 
         // Resolving a missing incident fails.
         assert!(!s.resolve("h", 999, "admin", ""));
+    }
+
+    #[test]
+    fn sqlite_persists_and_audits_across_restart() {
+        let dir = std::env::temp_dir().join(format!("ks-db-{}.sqlite", std::process::id()));
+        let path = dir.to_str().unwrap();
+        let _ = std::fs::remove_file(path);
+
+        // First server life: ingest + resolve one.
+        {
+            let s = Store::persistent(path, 0).unwrap();
+            s.ingest(
+                "h1",
+                "6.8",
+                "10.0.0.1",
+                json!({"severity":"CRITICAL","score":100,"subject":{"comm":"chmod"}}),
+            );
+            s.ingest(
+                "h1",
+                "6.8",
+                "10.0.0.1",
+                json!({"severity":"LOW","score":40,"subject":{"comm":"id"}}),
+            );
+            assert!(s.resolve("h1", 1, "alice", "sanctioned"));
+            assert_eq!(
+                s.fleet()[0].score,
+                40,
+                "score drops to unresolved after resolve"
+            );
+            let audit = s.audit(10);
+            assert_eq!(audit.len(), 1);
+            assert_eq!(audit[0].resolved_by, "alice");
+            assert_eq!(audit[0].note, "sanctioned");
+        }
+        // Restart: reload from sqlite -- resolution + score survive.
+        {
+            let s = Store::persistent(path, 0).unwrap();
+            assert_eq!(s.fleet()[0].score, 40, "resolution must survive restart");
+            assert_eq!(s.audit(10).len(), 1, "audit trail must survive restart");
+            // next id continues past the loaded max.
+            s.ingest("h1", "", "", json!({"severity":"MEDIUM","score":55}));
+            assert_eq!(s.fleet()[0].score, 55);
+        }
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

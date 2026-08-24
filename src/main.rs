@@ -97,9 +97,12 @@ enum Command {
         /// Per-agent keys file (host key per line). Recommended over a shared key.
         #[arg(long)]
         keys: Option<String>,
-        /// NDJSON journal path so incidents survive a restart.
+        /// sqlite database path so incidents survive a restart.
         #[arg(long)]
         journal: Option<String>,
+        /// Prune incidents older than N days on startup (0 = keep forever).
+        #[arg(long, default_value_t = 0)]
+        retain_days: u64,
         /// TLS certificate chain (PEM). Enables HTTPS with --tls-key.
         #[arg(long)]
         tls_cert: Option<String>,
@@ -153,9 +156,10 @@ fn main() -> Result<()> {
             bind,
             keys,
             journal,
+            retain_days,
             tls_cert,
             tls_key,
-        } => serve_cmd(&bind, keys, journal, tls_cert, tls_key),
+        } => serve_cmd(&bind, keys, journal, retain_days, tls_cert, tls_key),
         Command::Ship { url, host, ca } => ship_cmd(&url, host, ca),
         Command::Rules { dir } => rules_cmd(&dir),
         Command::Run {
@@ -293,6 +297,7 @@ fn serve_cmd(
     bind: &str,
     keys: Option<String>,
     journal: Option<String>,
+    retain_days: u64,
     tls_cert: Option<String>,
     tls_key: Option<String>,
 ) -> Result<()> {
@@ -314,6 +319,7 @@ fn serve_cmd(
         ingest_key,
         agent_keys,
         journal,
+        retain_days,
         tls,
     })
 }

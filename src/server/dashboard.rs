@@ -41,6 +41,19 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .who{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted)}
 .avatar{width:26px;height:26px;border-radius:50%;background:var(--accent-dim);color:var(--accent);display:grid;place-items:center;font-weight:600;font-size:12px;font-family:"IBM Plex Mono",monospace}
 .who b{color:var(--ink);font-weight:600}
+.navlink{background:var(--panel);border:1px solid var(--line);color:var(--muted);font:inherit;font-size:12px;cursor:pointer;border-radius:8px;padding:6px 11px}
+.navlink:hover{color:var(--accent);border-color:var(--accent)}
+.navlink:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.audit{width:100%;border-collapse:collapse;font-size:12.5px}
+.audit th{text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:0 12px 9px}
+.audit td{padding:10px 12px;border-top:1px solid var(--line);vertical-align:top}
+.audit tr:hover td{background:var(--panel2)}
+.audit .sv{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:11px}
+.audit .who{font-weight:600;color:var(--ink)}
+.audit .whn{color:var(--faint);white-space:nowrap}
+.audit .nt{color:var(--muted)}
+.audit .hst{font-family:"IBM Plex Mono",monospace}
+.audit-wrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 6px;box-shadow:var(--shadow);overflow-x:auto}
 .themebtn{display:inline-grid;place-items:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);cursor:pointer;padding:0}
 .themebtn:hover{color:var(--accent);border-color:var(--accent)}
 .themebtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -165,6 +178,7 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
       <h1>Kernel<span>Sentinel</span></h1>
     </div>
     <span class="live"><span class="dot"></span><span id="agentcount">agents</span></span>
+    <button id="auditlink" class="navlink" type="button">Audit log</button>
     <button id="themebtn" class="themebtn" type="button" title="Toggle light / dark" aria-label="Toggle theme">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
         <circle class="sun" cx="12" cy="12" r="4.2"/>
@@ -192,6 +206,11 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
         <div class="detail empty" id="detail">Select an incident to see its lineage, signals, and ATT&amp;CK mapping.</div>
       </section>
     </div>
+  </div>
+  <div id="auditview" class="hidden">
+    <button class="back" id="auditback">← all hosts</button>
+    <div class="sect-h"><span>Resolution audit trail</span><span class="hint">who resolved what, newest first · from durable history</span></div>
+    <div class="audit-wrap"><table class="audit"><thead><tr><th>Resolved</th><th>Host</th><th>Incident</th><th>By</th><th>Note</th></tr></thead><tbody id="auditbody"></tbody></table></div>
   </div>
   <p class="foot">
     Fleet monitoring is read-only by design: each host runs the root collector, which ships NDJSON
@@ -290,6 +309,21 @@ async function resolveIncident(id,note){
   if(fresh){openHost(fresh);}else{document.getElementById('back').click();renderFleet();}
 }
 
+document.getElementById('auditlink').addEventListener('click',openAudit);
+document.getElementById('auditback').addEventListener('click',()=>{document.getElementById('auditview').classList.add('hidden');fleet.classList.remove('hidden');window.scrollTo(0,0);});
+async function openAudit(){
+  let rows=[];try{rows=await api('/api/audit');}catch(e){}
+  fleet.classList.add('hidden');hostview.classList.add('hidden');
+  document.getElementById('auditview').classList.remove('hidden');window.scrollTo(0,0);
+  const body=document.getElementById('auditbody');
+  if(!rows.length){body.innerHTML='<tr><td colspan="5" style="color:var(--faint);text-align:center;padding:30px">No incidents have been resolved yet.</td></tr>';return;}
+  body.innerHTML=rows.map(r=>{
+    const when=r.resolved_at?new Date(r.resolved_at*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'—';
+    return `<tr><td class="whn">${when}</td><td class="hst">${r.host}</td>
+      <td><span class="sv" style="color:${svVar(r.severity)}">${r.severity} ${r.score}</span> ${r.subject||''}</td>
+      <td class="who">${r.resolved_by||'admin'}</td><td class="nt">${r.note?'“'+r.note+'”':'—'}</td></tr>`;
+  }).join('');
+}
 boot();
 setInterval(()=>{if(document.getElementById('login').style.display==='none'||!document.getElementById('login').offsetParent){if(!hostview.classList.contains('hidden'))return;boot();}},15000);
 </script>

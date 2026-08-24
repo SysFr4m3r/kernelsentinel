@@ -35,8 +35,10 @@ pub struct Config {
     /// Per-agent keys (key -> host). When set, the key determines the host and
     /// the shared key is not accepted -- a leaked key cannot impersonate others.
     pub agent_keys: Option<AgentKeys>,
-    /// NDJSON journal path for persistence. None = in-memory only.
+    /// sqlite database path for persistence. None = in-memory only.
     pub journal: Option<String>,
+    /// Prune incidents older than this many days on startup (0 = keep forever).
+    pub retain_days: u64,
     /// TLS material. When set, the server speaks HTTPS.
     pub tls: Option<Tls>,
 }
@@ -88,8 +90,9 @@ pub fn serve(cfg: Config) -> Result<()> {
     }
     let store = Arc::new(match &cfg.journal {
         Some(path) => {
-            let s = Store::persistent(path).context("opening the incident journal")?;
-            eprintln!("kernelsentinel: persisting incidents to {path}");
+            let s = Store::persistent(path, cfg.retain_days)
+                .map_err(|e| anyhow::anyhow!("opening sqlite database {path}: {e}"))?;
+            eprintln!("kernelsentinel: persisting incidents to sqlite {path}");
             s
         }
         None => Store::new(),
@@ -216,6 +219,13 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
         (Method::Get, "/api/fleet") => {
             if authed(&req, sessions) {
                 json(200, &store.fleet())
+            } else {
+                text(401, "auth required")
+            }
+        }
+        (Method::Get, "/api/audit") => {
+            if authed(&req, sessions) {
+                json(200, &store.audit(200))
             } else {
                 text(401, "auth required")
             }
