@@ -305,3 +305,45 @@ fn container_events_carry_resolved_id_and_multiplier() {
     );
     assert!(container_incident, "container context multiplier never applied");
 }
+
+
+#[test]
+fn host_docker_sock_access_is_low() {
+    // Real capture: the host `docker` CLI connecting to /var/run/docker.sock.
+    // Routine host tooling -- must be LOW (baseline territory), not an alert.
+    let text = std::fs::read_to_string("tests/fixtures/docker_sock.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Info);
+    let mut saw_socket = false;
+    for line in text.lines() {
+        if line.trim().is_empty() { continue; }
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            if let Some(sig) = inc.signals.iter().find(|s| s.id == "runtime_socket_access") {
+                saw_socket = true;
+                assert_eq!(sig.score, 25, "host runtime-socket access should be low-scored");
+                assert!(sig.attack.contains(&"T1611"));
+            }
+        }
+    }
+    assert!(saw_socket, "the docker.sock connection should produce a signal");
+}
+
+#[test]
+fn containerized_docker_sock_access_is_high() {
+    // The escape case: a *containerized* process reaching the host runtime
+    // socket. Same event, but with a container set, it scores far higher --
+    // this is the container-escape primitive (T1611).
+    let mut g = ProcessGraph::new(1000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Info);
+    // fork so the process exists in a container, then connect to docker.sock.
+    let fork = serde_json::from_str::<Event>(r#"{"ts_ns":1000000000,"type":3,"tgid":1,"ppid":0,"start_boottime":0,"comm":"sh","child_pid":200,"child_start_boottime":1000000000,"container":"docker:abc123"}"#).unwrap();
+    let sock = serde_json::from_str::<Event>(r#"{"ts_ns":1001000000,"type":11,"tgid":200,"ppid":1,"start_boottime":1000000000,"comm":"sh","filename":"/var/run/docker.sock","container":"docker:abc123"}"#).unwrap();
+    g.apply(&fork);
+    e.on_event(&fork, &g);
+    g.apply(&sock);
+    let inc = e.on_event(&sock, &g).expect("containerized docker.sock access must alert");
+    let sig = inc.signals.iter().find(|s| s.id == "runtime_socket_access").unwrap();
+    assert_eq!(sig.score, 60, "containerized runtime-socket access is the escape primitive");
+}

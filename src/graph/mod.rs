@@ -266,7 +266,8 @@ impl ProcessGraph {
             | EventType::Setcap
             | EventType::Ptrace
             | EventType::ExecAnon
-            | EventType::Module => {}
+            | EventType::Module
+            | EventType::SockConnect => {}
             EventType::Unknown(_) => {}
         }
     }

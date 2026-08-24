@@ -35,6 +35,7 @@ struct {
 #define TMPFS_MAGIC          0x01021994
 #define ANON_INODE_FS_MAGIC  0x09041934
 #define PTRACE_MODE_ATTACH   0x02   /* the write-capable ptrace modes */
+#define AF_UNIX 1
 
 /* Paths the daemon asked us to watch. LPM_TRIE so one entry like "/etc/cron.d/"
  * matches every file beneath it, and the match happens in-kernel: shipping
@@ -529,6 +530,59 @@ int BPF_PROG(handle_module, struct module *mod)
 	}
 	fill_hdr(e, EV_MODULE);
 	bpf_probe_read_kernel_str(e->filename, 64, BPF_CORE_READ(mod, name));
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
+/* lsm/socket_connect fires when a process connects a socket. For AF_UNIX we
+ * read the target path from the (already kernel-copied) sockaddr and match it
+ * against the privileged control sockets -- the Docker/containerd sockets are a
+ * container-escape primitive: a process that can talk to them controls the host
+ * container runtime. T1611. Filtered in-kernel to those paths.
+ */
+SEC("lsm/socket_connect")
+int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
+{
+	struct event *e;
+	char path[108] = {};
+
+	if (BPF_CORE_READ(address, sa_family) != AF_UNIX)
+		return 0;
+	if (addrlen <= 2)
+		return 0;
+
+	struct sockaddr_un *un = (struct sockaddr_un *)address;
+	bpf_probe_read_kernel_str(path, sizeof(path), un->sun_path);
+
+	/* Match the runtime control sockets by the distinctive "docker.sock" or
+	 * "containerd.sock" name, via a bounded scan. An abstract socket has a
+	 * leading NUL, so path[0] would be 0 and the scan matches nothing. */
+	int matched = 0;
+	#pragma unroll
+	for (int i = 0; i + 11 < (int)sizeof(path); i++) {
+		/* "docker.sock" */
+		if (path[i] == 'd' && path[i+1] == 'o' && path[i+2] == 'c' &&
+		    path[i+3] == 'k' && path[i+4] == 'e' && path[i+5] == 'r' &&
+		    path[i+6] == '.' && path[i+7] == 's' && path[i+8] == 'o' &&
+		    path[i+9] == 'c' && path[i+10] == 'k')
+			matched = 1;
+		/* "containerd.sock" shares the ".sock" tail; match the "tainerd." stem */
+		if (path[i] == 't' && path[i+1] == 'a' && path[i+2] == 'i' &&
+		    path[i+3] == 'n' && path[i+4] == 'e' && path[i+5] == 'r' &&
+		    path[i+6] == 'd' && path[i+7] == '.')
+			matched = 1;
+	}
+	if (!matched)
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+	fill_hdr(e, EV_SOCK_CONNECT);
+	bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), un->sun_path);
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);
 	return 0;

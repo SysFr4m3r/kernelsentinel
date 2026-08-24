@@ -21,6 +21,7 @@ enum event_type {
 	EV_PTRACE      = 8,   /* ptrace against another process */
 	EV_EXEC_ANON   = 9,   /* execution from memfd / anonymous or deleted file */
 	EV_MODULE      = 10,  /* kernel module load */
+	EV_SOCK_CONNECT = 11, /* connect() to a watched unix socket */
 };
 
 /* flags */

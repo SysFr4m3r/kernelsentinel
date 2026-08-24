@@ -33,6 +33,7 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
         EventType::Ptrace => ptrace(ev, key, graph),
         EventType::FileOpen => sensitive_write(ev, key),
         EventType::Module => module_load(ev, key),
+        EventType::SockConnect => privileged_socket(ev, key),
         EventType::Exec => {
             let mut sigs = exec_from_suspicious_dir(ev, key, graph);
             sigs.extend(shell_from_network_daemon(ev, key, graph));
@@ -254,4 +255,25 @@ fn is_web_or_db_daemon(comm: &str) -> bool {
         "memcached",
     ];
     DAEMONS.iter().any(|d| comm == *d || comm.starts_with(d))
+}
+
+/// Connecting to the Docker/containerd control socket. A process that can talk
+/// to the runtime socket can create a privileged container and escape to the
+/// host, so this is the container-escape primitive (T1611). It scores far higher
+/// from inside a container -- host tooling (the docker CLI) connects here
+/// routinely and is best handled by the baseline, but a *containerized* process
+/// reaching the host runtime socket is the escape itself.
+fn privileged_socket(ev: &Event, key: ProcKey) -> Vec<Signal> {
+    let (score, detail) = if ev.container.is_empty() {
+        (25, format!("connected to the container runtime socket {}", ev.filename))
+    } else {
+        (
+            60,
+            format!(
+                "container {} connected to the host runtime socket {} (escape primitive)",
+                ev.container, ev.filename
+            ),
+        )
+    };
+    vec![Signal::new("runtime_socket_access", score, &["T1611"], key, ev.ts_ns, detail)]
 }

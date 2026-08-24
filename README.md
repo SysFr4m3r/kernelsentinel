@@ -60,6 +60,7 @@ test replaying a real capture.
 - Writes to watched paths — `ld.so.preload`, `authorized_keys`, cron, systemd, sudoers, shadow —
   filtered in-kernel by an LPM trie so the daemon never sees the firehose (`lsm/file_open` + `bpf_d_path`)
 - `ptrace` and cross-uid `/proc` memory reads (`lsm/ptrace_access_check`)
+- Docker/containerd control-socket connections (`lsm/socket_connect`) — the container-escape primitive
 - Fileless execution from memfd / anonymous files (`lsm/bprm_check_security`)
 - Kernel module load (`fexit/do_init_module`) — verified with a standard module
 
@@ -266,7 +267,7 @@ exists once you correlate them per process.
 | M3 | Built-in detections, risk scoring, alerts, `investigate`, NDJSON — **first usable release** | ✅ done & validated |
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL | |
-| M6 | Container & namespace awareness | 🚧 container id + context (in-kernel cgroup capture) |
+| M6 | Container & namespace awareness | 🚧 container id + context + escape detection |
 | M7 | Baselining ✅ first increment · YARA, optional enforcement · (NDJSON/SIEM done in M3) | 🚧 in progress |
 
 ## Planned detections

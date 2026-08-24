@@ -17,6 +17,7 @@ pub fn name(technique: &str) -> &'static str {
         "T1552" => "Unsecured Credentials",
         "T1552.001" => "Credentials In Files",
         "T1574.006" => "Dynamic Linker Hijacking",
+        "T1611" => "Escape to Host",
         "T1620" => "Reflective Code Loading",
         _ => "Unknown Technique",
     }

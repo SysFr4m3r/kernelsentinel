@@ -24,6 +24,7 @@ pub enum EventType {
     Ptrace,
     ExecAnon,
     Module,
+    SockConnect,
     Unknown(u16),
 }
 
@@ -40,6 +41,7 @@ impl From<u16> for EventType {
             8 => EventType::Ptrace,
             9 => EventType::ExecAnon,
             10 => EventType::Module,
+            11 => EventType::SockConnect,
             other => EventType::Unknown(other),
         }
     }

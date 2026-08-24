@@ -645,6 +645,7 @@ fn event_detail(ev: &Event) -> String {
                 warn
             )
         }
+        EventType::SockConnect => format!("SOCKET-CONNECT {}", ev.filename),
         EventType::Module => {
             let origin = ev.module_origin();
             if origin.is_empty() {
