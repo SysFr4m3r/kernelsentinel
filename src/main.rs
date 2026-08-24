@@ -168,20 +168,21 @@ fn replay(input: &str, json: bool, baseline: Option<String>) -> Result<()> {
         Box::new(std::io::BufReader::new(std::fs::File::open(input)?))
     };
 
-    // The capture carries boot-clock timestamps from another moment; render them
-    // relative to that capture's own first event rather than this machine's boot.
+    // A capture's boot-clock timestamps cannot be mapped to a correct wall-clock
+    // time here (the original offset was not recorded), so render them as
+    // time-since-boot rather than fabricate a local wall-clock reading.
     let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
     let mut engine = Engine::new(Severity::Low);
     if let Some(path) = &baseline {
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
         engine = engine.with_baseline(b);
     }
-    let clock = BootClock::new();
+    let clock = BootClock::boot_relative();
 
     if !json {
         emit(&format!(
             "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
-            "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
+            "TIME(boot)", "PID", "PPID", "UID", "COMM", "EVENT"
         ));
     }
 
@@ -268,7 +269,7 @@ fn investigate(pid: u32, capture: &str) -> Result<()> {
     let text = std::fs::read_to_string(capture)?;
     let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(u64::MAX / 2));
     let mut engine = Engine::new(Severity::Info);
-    let clock = BootClock::new();
+    let clock = BootClock::boot_relative();
 
     // Rebuild state, and collect this pid's own events for its timeline.
     let mut timeline: Vec<Event> = Vec::new();
@@ -442,16 +443,11 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
 
     let children = graph.children_of(key);
     let child_prefix = if prefix.is_empty() {
-        String::new()
+        "  ".to_string()
     } else if last {
         format!("{prefix}   ")
     } else {
         format!("{prefix}│  ")
-    };
-    let child_prefix = if prefix.is_empty() {
-        "  ".to_string()
-    } else {
-        child_prefix
     };
     for (i, child) in children.iter().enumerate() {
         print_subtree(graph, child, &child_prefix, i + 1 == children.len());
@@ -487,7 +483,7 @@ fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<Stri
     if !json {
         emit(&format!(
             "{:<12} {:<7} {:<7} {:<6} {:<16} {}",
-            "TIME(UTC)", "PID", "PPID", "UID", "COMM", "EVENT"
+            "TIME(boot)", "PID", "PPID", "UID", "COMM", "EVENT"
         ));
     }
 
@@ -532,6 +528,12 @@ fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<Stri
     ));
     if stats.drops > 0 {
         status("kernelsentinel: WARNING — dropped events mean blind spots");
+    }
+    if stats.decode_panics > 0 {
+        status(&format!(
+            "kernelsentinel: WARNING — {} events panicked while decoding (recovered)",
+            stats.decode_panics
+        ));
     }
     Ok(())
 }

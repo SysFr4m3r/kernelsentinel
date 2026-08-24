@@ -24,6 +24,8 @@ use skel::*;
 pub struct Stats {
     pub emitted: u64,
     pub drops: u64,
+    /// Events that panicked while decoding and were recovered (not aborted).
+    pub decode_panics: u64,
 }
 
 /// Load, attach, and pump events into `on_event` until `stop` is set.
@@ -81,7 +83,9 @@ where
         }
     }
 
-    Ok(read_stats(&skel.maps.stats))
+    let mut stats = read_stats(&skel.maps.stats);
+    stats.decode_panics = panics.get();
+    Ok(stats)
 }
 
 fn populate_watches(map: &impl MapCore, watches: &[Watch]) -> Result<usize> {
@@ -109,5 +113,6 @@ fn read_stats(map: &impl MapCore) -> Stats {
     Stats {
         emitted: get(0),
         drops: get(1),
+        decode_panics: 0,
     }
 }

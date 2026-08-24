@@ -198,7 +198,8 @@ pub fn cap_names(mask: u64) -> Vec<&'static str> {
         (16, "CAP_SYS_MODULE"),
         (19, "CAP_SYS_PTRACE"),
         (21, "CAP_SYS_ADMIN"),
-        (38, "CAP_BPF"),
+        (38, "CAP_PERFMON"),
+        (39, "CAP_BPF"),
     ];
     CAPS.iter()
         .filter(|(bit, _)| mask & (1u64 << bit) != 0)

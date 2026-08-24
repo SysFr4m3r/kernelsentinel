@@ -15,7 +15,7 @@ const DANGEROUS_CAPS: u64 = {
     const CAP_SYS_ADMIN: u64 = 1 << 21;
     const CAP_SYS_MODULE: u64 = 1 << 16;
     const CAP_SYS_PTRACE: u64 = 1 << 19;
-    const CAP_BPF: u64 = 1 << 38;
+    const CAP_BPF: u64 = 1 << 39;
     const CAP_DAC_READ_SEARCH: u64 = 1 << 2;
     CAP_SYS_ADMIN | CAP_SYS_MODULE | CAP_SYS_PTRACE | CAP_BPF | CAP_DAC_READ_SEARCH
 };

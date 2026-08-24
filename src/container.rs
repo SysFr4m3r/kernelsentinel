@@ -21,6 +21,13 @@ impl ContainerRef {
 /// Extract a container reference from a cgroup path component, if it names one.
 /// Handles the common runtimes across cgroup v1 and v2 layouts.
 pub fn parse_container(path: &str) -> Option<ContainerRef> {
+    // Fast path: container scopes carry a runtime prefix ("docker-", ...) so
+    // they contain '-', or are a bare >=32-char hex id. Host leaf names like
+    // "init.scope" or "user.slice" have neither -- skip the scan for them, since
+    // this runs on every event.
+    if !path.contains('-') && path.len() < 32 {
+        return None;
+    }
     for part in path.split('/') {
         // systemd-driver scopes: docker-<hex>.scope, cri-containerd-<hex>.scope,
         // libpod-<hex>.scope, crio-<hex>.scope.

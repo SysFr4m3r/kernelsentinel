@@ -17,6 +17,17 @@ impl BootClock {
         }
     }
 
+    /// A clock that renders a boot-clock timestamp as time-since-boot, not
+    /// wall-clock. For replaying a capture: the original wall-clock offset is not
+    /// recorded, so mapping the capture's boot timestamps through THIS machine's
+    /// boot epoch would print plausible-looking but wrong times. Boot-relative is
+    /// honest and identical on every machine that replays the same capture.
+    pub fn boot_relative() -> Self {
+        Self {
+            epoch: SystemTime::UNIX_EPOCH,
+        }
+    }
+
     pub fn to_wall(&self, ts_ns: u64) -> SystemTime {
         self.epoch + Duration::from_nanos(ts_ns)
     }
