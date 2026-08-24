@@ -209,51 +209,85 @@ MITRE ATT&CK:
 
 ## Run — fleet (central web panel)
 
-Monitor many hosts from one place. Each host runs the collector and **ships** its incidents to a
-central server; admins log in to a **read-only** dashboard that ranks hosts by score. Telemetry
-flows one way (host → central), so the dashboard can audit activity but never reach into a host.
+One binary, two roles chosen by subcommand: on monitored hosts it's the **agent**
+(`run` + `ship`); on the central box it's the **server** (`serve`). Telemetry flows
+one way — host → central — so the dashboard can audit activity but never reach into
+a host. (See [The binary](#the-binary) for why it's one binary.)
 
-**Central server.** Set an admin password and either per-agent keys (recommended) or a shared
-ingest key. `--journal` persists incidents across restarts; `--tls-cert/--tls-key` enable HTTPS.
+### On the central server
+
+Generate a TLS cert (or use one from your CA), and a per-host key for each agent.
+Then start the server:
 
 ```bash
-export KS_ADMIN_PASSWORD='choose-a-strong-password'
-kernelsentinel serve --bind 0.0.0.0:8088 \
+export KS_ADMIN_PASSWORD='choose-a-strong-admin-password'
+
+kernelsentinel serve \
+  --bind 0.0.0.0:8088 \
   --keys /etc/kernelsentinel/agents.keys \
-  --journal /var/lib/kernelsentinel/incidents.sqlite --retain-days 90 \
-  --tls-cert /etc/kernelsentinel/server.pem --tls-key /etc/kernelsentinel/server.key
+  --journal /var/lib/kernelsentinel/incidents.sqlite \
+  --retain-days 90 \
+  --tls-cert /etc/kernelsentinel/server.pem \
+  --tls-key  /etc/kernelsentinel/server.key
 ```
 
-The per-agent keys file is one `host key` per line. The key **determines** the host, so a leaked
-key can only ever write its own host's bucket — it cannot impersonate the fleet:
+`agents.keys` is one `hostname key` per line — the key **binds** the host, so a
+leaked key can only ever write its own host's data:
 
 ```text
-web-prod-01   b7f3…generate-with-a-csprng
-db-app-03     9c1a…another-key
+web-prod-01   4f8c1e…   # generate each with: openssl rand -hex 32
+db-app-03     9a2b7d…
 ```
 
-**Agent** (on each monitored host). Pipe live incidents straight to the server; `--ca` pins the
-server's certificate for HTTPS:
+Admins then open `https://central:8088`, sign in with the admin password, and get
+the host list ranked by score.
+
+### On each monitored VM
+
+Copy the binary and the server's certificate to the VM. Then pipe live incidents
+to the server — this is the agent:
 
 ```bash
-export KS_INGEST_KEY='this-hosts-key'
+export KS_INGEST_KEY='this-vms-key-from-agents.keys'
+
 sudo kernelsentinel run --json \
-  | kernelsentinel ship https://central:8088/api/ingest --ca /etc/kernelsentinel/server.pem
+  | kernelsentinel ship https://central:8088/api/ingest \
+      --host web-prod-01 \
+      --ca /etc/kernelsentinel/server.pem
 ```
 
-**Admins** open `https://central:8088`, sign in, and see the host list ranked by score. Clicking a
-host shows its incidents; **Mark resolved** acknowledges one (with a note) — resolving the worst
-incident drops that host's score to the next, which is how you work a host back to green. The
-**Audit log** (header link) shows who resolved what, from the durable sqlite history. The dashboard
-has a light/dark toggle.
+- `run --json` is the root collector emitting incidents as NDJSON.
+- `ship` forwards them to the server; `--ca` **pins** the server's certificate
+  (the agent trusts only that exact cert — no public CA can impersonate the server).
+- `--host` labels this VM (or omit it to use the system hostname).
 
-Persistence is a sqlite database (`--journal`); incidents, resolutions, and the audit trail survive
-restarts, and `--retain-days N` prunes old history on startup.
+Run it under systemd so it stays up. A minimal unit:
 
-> No TLS? The server binds `127.0.0.1` by default and warns loudly. Use `--tls-*`, or keep it on
-> localhost / behind a TLS-terminating reverse proxy — the ingest key travels in a header.
+```ini
+[Service]
+Environment=KS_INGEST_KEY=this-vms-key
+ExecStart=/bin/sh -c '/usr/local/bin/kernelsentinel run --json | /usr/local/bin/kernelsentinel ship https://central:8088/api/ingest --ca /etc/kernelsentinel/server.pem'
+Restart=always
+```
 
-## Custom detection rules
+> **No TLS yet?** For a quick localhost trial, drop the `--tls-*` and `--ca` flags
+> and use `http://`. The server then binds `127.0.0.1` and warns; never expose
+> plain HTTP off localhost — the ingest key travels in a header.
+
+### The binary
+
+It's **one binary** today. The same `kernelsentinel` is the agent (`run`/`ship`)
+on hosts and the server (`serve`) on the central box — you deploy the same file
+everywhere and pick the role with the subcommand. This keeps the build and
+distribution simple.
+
+The one caveat: the central server carries the eBPF collector code it never runs,
+and building from source needs the BPF toolchain. For a production central box
+that shouldn't have that toolchain, a **server-only build** (no eBPF) is the clean
+split — planned, not yet done. Until then, build once on a machine with the
+toolchain and copy the binary to the server.
+
+## Custom detection rules## Custom detection rules
 
 Add detections in YAML without recompiling — see [docs/WRITING_RULES.md](docs/WRITING_RULES.md):
 
