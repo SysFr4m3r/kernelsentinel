@@ -17,6 +17,23 @@ pub struct SignalRecord {
     pub attack: Vec<&'static str>,
     pub ts_ns: u64,
     pub pid: u32,
+    /// The command line of the process this signal fired on -- "which command
+    /// actually did this". A detail like "SUID gained: /tmp/.x" says what
+    /// happened; this says what ran.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cmdline: String,
+}
+
+/// One process in the lineage, with enough detail to read the chain as a story
+/// rather than a list of names.
+#[derive(Serialize)]
+pub struct LineageRecord {
+    pub pid: u32,
+    pub comm: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub exe: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cmdline: String,
 }
 
 #[derive(Serialize)]
@@ -36,6 +53,8 @@ pub struct SubjectRecord {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub exe: String,
     pub uid: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cmdline: String,
 }
 
 /// Stable NDJSON schema, version-tagged so downstream consumers can pin it.
@@ -48,8 +67,34 @@ pub struct IncidentRecord {
     pub score_breakdown: ScoreBreakdown,
     pub subject: SubjectRecord,
     pub lineage: Vec<String>,
+    /// Same chain as `lineage`, but structured and carrying each process's
+    /// command line. `lineage` stays as-is so v1 consumers keep working.
+    pub lineage_detail: Vec<LineageRecord>,
     pub attack: Vec<String>,
     pub signals: Vec<SignalRecord>,
+}
+
+/// Render a process's argv as a shell-ish one-liner. argv is bounded in-kernel
+/// (MAX_ARGV), so this is already short; cap it again so one pathological
+/// command cannot dominate an alert.
+fn cmdline_of(graph: &ProcessGraph, key: &crate::graph::ProcKey) -> String {
+    const MAX: usize = 200;
+    let Some(node) = graph.get(key) else {
+        return String::new();
+    };
+    if node.argv.is_empty() {
+        return String::new();
+    }
+    let joined = node.argv.join(" ");
+    if joined.len() > MAX {
+        let mut cut = MAX;
+        while cut > 0 && !joined.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}...", &joined[..cut])
+    } else {
+        joined
+    }
 }
 
 impl IncidentRecord {
@@ -61,6 +106,7 @@ impl IncidentRecord {
             comm: subject_node.map(|n| n.comm.clone()).unwrap_or_default(),
             exe: subject_node.map(|n| n.exe.clone()).unwrap_or_default(),
             uid: subject_node.map(|n| n.uid).unwrap_or(0),
+            cmdline: cmdline_of(graph, &inc.subject),
         };
 
         // Lineage root-first, matching the human renderer.
@@ -69,6 +115,18 @@ impl IncidentRecord {
             .iter()
             .rev()
             .map(|n| format!("{}({})", n.comm, n.key.pid))
+            .collect();
+
+        let lineage_detail: Vec<LineageRecord> = graph
+            .ancestry(&inc.subject)
+            .iter()
+            .rev()
+            .map(|n| LineageRecord {
+                pid: n.key.pid,
+                comm: n.comm.clone(),
+                exe: n.exe.clone(),
+                cmdline: cmdline_of(graph, &n.key),
+            })
             .collect();
 
         let signals = inc
@@ -81,6 +139,7 @@ impl IncidentRecord {
                 attack: s.attack.to_vec(),
                 ts_ns: s.ts_ns,
                 pid: s.key.pid,
+                cmdline: cmdline_of(graph, &s.key),
             })
             .collect();
 
@@ -100,6 +159,7 @@ impl IncidentRecord {
             },
             subject,
             lineage,
+            lineage_detail,
             attack: inc.attack.clone(),
             signals,
         }

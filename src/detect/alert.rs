@@ -43,7 +43,9 @@ pub fn render(inc: &Incident, graph: &ProcessGraph, clock: &BootClock) -> String
         out.push_str(&format!("  {}\n", chain.join(" -> ")));
     }
 
-    // Signals in causal order.
+    // Signals in causal order. The detail says what happened; the command line
+    // says what ran to make it happen -- without it "SUID gained: /tmp/.x"
+    // leaves the responder still hunting for the command.
     for s in &inc.signals {
         out.push_str(&format!(
             "    {} {:<22} {}  (+{})\n",
@@ -52,6 +54,11 @@ pub fn render(inc: &Incident, graph: &ProcessGraph, clock: &BootClock) -> String
             s.detail,
             s.score
         ));
+        if let Some(cmd) = graph.get(&s.key).map(|n| n.argv.join(" ")) {
+            if !cmd.is_empty() {
+                out.push_str(&format!("    {:>8} $ {}\n", "", cmd));
+            }
+        }
     }
 
     // Score breakdown.

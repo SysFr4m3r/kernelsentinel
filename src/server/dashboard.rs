@@ -125,6 +125,17 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .sig .id{font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:600;color:var(--accent)}
 .sig .txt{color:var(--muted);font-size:12px;min-width:0;overflow-wrap:anywhere}
 .sig .pts{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
+/* The command that produced a signal. Monospace, dimmed, prefixed with a
+   prompt glyph so it reads as "this is what ran" at a glance. */
+code.cmd{display:block;margin-top:5px;font-family:"IBM Plex Mono",monospace;font-size:11.5px;
+  color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-left:2px solid var(--accent);
+  border-radius:4px;padding:5px 8px;overflow-wrap:anywhere;white-space:pre-wrap}
+code.cmd::before{content:"$ ";color:var(--faint)}
+code.cmd.hero{margin-top:8px;font-size:12px}
+.cmds{margin-top:10px;display:flex;flex-direction:column;gap:5px}
+.cmdrow{display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:start}
+.cmdrow .cpid{font-size:11px;color:var(--faint);padding-top:8px;min-width:44px;text-align:right}
+.cmdrow code.cmd{margin-top:0}
 .math{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .math b{color:var(--ink)}.math .eq{color:var(--sv);font-weight:600;font-size:15px}.math .note{color:var(--faint);font-size:11px}
 .attgrid{display:flex;flex-direction:column;gap:7px}.att{display:flex;align-items:center;gap:10px}
@@ -313,7 +324,7 @@ async function openUsers(){
   let users=[];try{users=await api('/api/users');}catch(e){}
   showView(usersview);
   const body=document.getElementById('usersbody');
-  body.innerHTML=users.map(u=>`<tr><td class="hst">${u.username}</td><td>${u.role}</td><td style="text-align:right">${u.username===ME.username?'<span style="color:var(--faint);font-size:11px">you</span>':'<button class="udel" data-u="'+u.username+'">delete</button>'}</td></tr>`).join('');
+  body.innerHTML=users.map(u=>`<tr><td class="hst">${esc(u.username)}</td><td>${esc(u.role)}</td><td style="text-align:right">${u.username===ME.username?'<span style="color:var(--faint);font-size:11px">you</span>':'<button class="udel" data-u="'+esc(u.username)+'">delete</button>'}</td></tr>`).join('');
   body.querySelectorAll('.udel').forEach(b=>b.addEventListener('click',async()=>{
     const resp=await fetch('/api/users/delete',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:b.dataset.u})});
     if(resp.ok)openUsers();else alert(await resp.text());
@@ -330,12 +341,19 @@ function renderFleet(){
   const hostlist=document.getElementById('hostlist');
   if(!HOSTS.length){hostlist.innerHTML='<div class="stat" style="text-align:center;color:var(--faint)">No agents have reported yet. Point an agent at this server with <code>kernelsentinel ship</code>.</div>';return;}
   hostlist.innerHTML=HOSTS.map((h,i)=>{const sv=svVar(h.band);const bandtxt=h.score===0?'no findings':h.band;
-    return `<button class="host" data-i="${i}" style="--sv:${sv}">${gauge(h.score,sv)}<div class="hmeta"><div class="name">${h.host}</div><div class="role">${h.kernel||'linux'} <span class="ip">${h.ip?'· '+h.ip:''}</span></div></div><div class="hmini"><span class="band">${bandtxt}</span>${sevmini(h.counts)}<span class="hcount">${h.n?h.n+' incident'+(h.n>1?'s':''):'clean'} · ${tsago(h.last_seen)}</span></div></button>`;}).join('');
+    return `<button class="host" data-i="${i}" style="--sv:${sv}">${gauge(h.score,sv)}<div class="hmeta"><div class="name">${esc(h.host)}</div><div class="role">${esc(h.kernel||'linux')} <span class="ip">${h.ip?'· '+esc(h.ip):''}</span></div></div><div class="hmini"><span class="band">${bandtxt}</span>${sevmini(h.counts)}<span class="hcount">${h.n?h.n+' incident'+(h.n>1?'s':''):'clean'} · ${tsago(h.last_seen)}</span></div></button>`;}).join('');
 }
 function gauge(score,sv){const r=24,c=2*Math.PI*r,off=c*(1-score/100);return `<div class="gauge"><svg viewBox="0 0 56 56"><circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/><circle cx="28" cy="28" r="${r}" fill="none" stroke="${sv}" stroke-width="5" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="val" style="color:${sv}">${score}</span></div>`;}
 function sevmini(counts){counts=counts||{};return `<div class="sevmini">`+order.map(s=>`<i style="background:${counts[s]>0?svVar(s):'var(--line)'}" title="${s} ${counts[s]||0}"></i>`).join('')+`</div>`;}
 
 const fleet=document.getElementById('fleet'),hostview=document.getElementById('hostview'),auditview=document.getElementById('auditview'),usersview=document.getElementById('usersview');
+// Every string below originates on a monitored host: process names, file paths,
+// argv. A host is exactly what an attacker controls, so none of it may reach
+// innerHTML raw -- otherwise a file named `/tmp/<img onerror=...>` executes
+// script in the admin's authenticated session, which is a path from a
+// compromised host back into the panel. Escape at every interpolation.
+const ESCMAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>ESCMAP[c]);}
 function showView(el){[fleet,hostview,auditview,usersview].forEach(v=>v&&v.classList.add('hidden'));el.classList.remove('hidden');window.scrollTo(0,0);}
 document.getElementById('hostlist').addEventListener('click',e=>{const b=e.target.closest('.host');if(b)openHost(HOSTS[+b.dataset.i]);});
 document.getElementById('back').addEventListener('click',()=>showView(fleet));
@@ -346,21 +364,25 @@ async function openHost(h){
   let incs=[];try{incs=await api('/api/host/'+encodeURIComponent(h.host));}catch(e){}
   showView(hostview);
   const sv=svVar(h.band);const hb=document.getElementById('hostbar');hb.style.setProperty('--sv',sv);
-  hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${h.host}</div><div class="hr">${h.kernel||'linux'} ${h.ip?'· '+h.ip:''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span></div>`;
+  hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${esc(h.host)}</div><div class="hr">${esc(h.kernel||'linux')} ${h.ip?'· '+esc(h.ip):''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span></div>`;
   const feed=document.getElementById('feed');const det=document.getElementById('detail');
   document.getElementById('hicount').textContent=incs.length?`${incs.length} on this host`:'';
   if(!incs.length){feed.innerHTML='<div class="detail empty" style="position:static">No detections on this host in the current window. Agent healthy, reporting.</div>';det.className='detail empty';det.textContent='Nothing to inspect — this host is clean.';return;}
-  feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${t}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${(d.subject&&d.subject.comm)||'—'} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${d.severity}</span><span class="line mono">${line}</span><span class="chips">${chips}</span>${rtag}</button>`;}).join('');
+  feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.map(esc).join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${esc(t)}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}</span>${rtag}</button>`;}).join('');
   det.className='detail empty';det.textContent='Select an incident to see its lineage, signals, and ATT&CK mapping.';
   feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);}));
 }
-function renderInc(d){const det=document.getElementById('detail');det.className='detail';det.style.setProperty('--sv',svVar(d.severity));det.style.setProperty('--sv-bg',svBg(d.severity));const chain=(d.lineage||[]).length?d.lineage.map((n,i)=>{const tip=i===d.lineage.length-1;return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}">${n}</span>`;}).join(''):'<span class="node">process exited before lineage was captured</span>';const sigs=(d.signals||[]).slice().sort((a,b)=>a.ts_ns-b.ts_ns).map(s=>`<div class="sig"><span class="id">${s.id}</span><span class="txt">${s.detail}</span><span class="pts">+${s.score}</span></div>`).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${b.context_note})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${t}</span><span class="nm">${names[t]||t}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${d.subject&&d.subject.comm||'incident'}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+d.subject.exe:''} · uid ${d.subject?d.subject.uid:'?'}</div></div><div class="d-sv">${d.severity}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div></div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
+function renderInc(d){const det=document.getElementById('detail');det.className='detail';det.style.setProperty('--sv',svVar(d.severity));det.style.setProperty('--sv-bg',svBg(d.severity));const ld=(d.lineage_detail&&d.lineage_detail.length)?d.lineage_detail:null;
+  const chain=ld?ld.map((n,i)=>{const tip=i===ld.length-1;const cmd=n.cmdline||n.exe||'';return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}"${cmd?` title="${esc(cmd)}"`:''}>${esc(n.comm)}(${n.pid})</span>`;}).join('')
+    :((d.lineage||[]).length?d.lineage.map((n,i)=>{const tip=i===d.lineage.length-1;return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}">${esc(n)}</span>`;}).join(''):'<span class="node">process exited before lineage was captured</span>');
+  // The chain as commands: what an analyst actually wants to read.
+  const cmds=ld?ld.filter(n=>n.cmdline).map(n=>`<div class="cmdrow"><span class="cpid mono">${n.pid}</span><code class="cmd">${esc(n.cmdline)}</code></div>`).join(''):'';const sigs=(d.signals||[]).slice().sort((a,b)=>a.ts_ns-b.ts_ns).map(s=>`<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}</span><span class="pts">+${s.score}</span></div>`).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?d.subject.uid:'?'}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
   const rb=det.querySelector('.resolvebtn');
   if(rb)rb.addEventListener('click',()=>resolveIncident(d._id,det.querySelector('.rnote').value));}
 
 function resolveControl(d){
   if(d._resolved){const when=d._resolved_at?new Date(d._resolved_at*1000).toISOString().slice(0,16).replace('T',' '):'';
-    return `<div class="resolved-note">✓ <b>Resolved</b> by ${d._resolved_by||'admin'} ${when?'· '+when+' UTC':''}${d._note?' · “'+d._note+'”':''}</div>`;}
+    return `<div class="resolved-note">✓ <b>Resolved</b> by ${esc(d._resolved_by||'admin')} ${when?'· '+when+' UTC':''}${d._note?' · “'+esc(d._note)+'”':''}</div>`;}
   return `<div class="resolvebar"><input class="rnote" placeholder="Note (optional): false positive, acknowledged…"><button class="resolvebtn">Mark resolved</button></div>`;
 }
 async function resolveIncident(id,note){
@@ -383,9 +405,9 @@ async function openAudit(){
   if(!rows.length){body.innerHTML='<tr><td colspan="5" style="color:var(--faint);text-align:center;padding:30px">No incidents have been resolved yet.</td></tr>';return;}
   body.innerHTML=rows.map(r=>{
     const when=r.resolved_at?new Date(r.resolved_at*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'—';
-    return `<tr><td class="whn">${when}</td><td class="hst">${r.host}</td>
-      <td><span class="sv" style="color:${svVar(r.severity)}">${r.severity} ${r.score}</span> ${r.subject||''}</td>
-      <td class="who">${r.resolved_by||'admin'}</td><td class="nt">${r.note?'“'+r.note+'”':'—'}</td></tr>`;
+    return `<tr><td class="whn">${when}</td><td class="hst">${esc(r.host)}</td>
+      <td><span class="sv" style="color:${svVar(r.severity)}">${esc(r.severity)} ${r.score}</span> ${esc(r.subject||'')}</td>
+      <td class="who">${esc(r.resolved_by||'admin')}</td><td class="nt">${r.note?'“'+esc(r.note)+'”':'—'}</td></tr>`;
   }).join('');
 }
 boot();

@@ -142,6 +142,39 @@ fn ndjson_incident_record_is_valid_and_complete() {
     assert_eq!(v["subject"]["comm"], "chmod");
     assert!(v["lineage"].as_array().unwrap().len() >= 4);
     assert_eq!(v["signals"].as_array().unwrap().len(), 2);
+
+    // The responder's first question about a SUID alert is "which command did
+    // that?". The record must answer it: the subject's command line, and the
+    // command line of the process each signal fired on.
+    assert_eq!(v["subject"]["cmdline"], "chmod u+s /tmp/.x");
+    let suid = v["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "suid_create")
+        .expect("suid_create signal");
+    assert_eq!(suid["cmdline"], "chmod u+s /tmp/.x");
+    let esc = v["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "privilege_escalation")
+        .expect("privilege_escalation signal");
+    assert!(
+        esc["cmdline"].as_str().unwrap().starts_with("sudo "),
+        "escalation must name the sudo command that caused it, got {:?}",
+        esc["cmdline"]
+    );
+
+    // lineage_detail carries the same chain with commands attached.
+    let ld = v["lineage_detail"].as_array().unwrap();
+    assert_eq!(ld.len(), v["lineage"].as_array().unwrap().len());
+    assert!(
+        ld.iter().any(|n| n["cmdline"]
+            .as_str()
+            .is_some_and(|c| c.contains("chmod u+s"))),
+        "the chain must show the command that created the SUID binary"
+    );
     assert!(
         v["attack"]
             .as_array()

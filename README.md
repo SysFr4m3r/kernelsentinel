@@ -39,6 +39,10 @@ CRITICAL  risk 100/100  [T1059.004, T1620]
 
 Every number decomposes into named parts, because a score nobody can explain is one nobody acts on.
 
+Across a fleet, the same incidents land in a read-only web panel:
+
+![The KernelSentinel fleet dashboard: four hosts ranked by risk score](docs/img/fleet.png)
+
 ---
 
 ## Project status: working detection engine (M3), developed in public
@@ -242,7 +246,18 @@ db-app-03     9a2b7d…
 Admins then open `https://central:8088` and sign in as user **admin** with that password
 (seeded from KS_ADMIN_PASSWORD on first start). From the **Users** view an admin can add more
 accounts (admin or viewer role); each resolution records the real username. Sessions are signed
-tokens, so they survive a server restart.
+tokens, so they survive a server restart. The dashboard updates in real time — it holds a long-poll
+open and refreshes the moment an agent ships an incident.
+
+Opening an incident shows the lineage, the signals, the score arithmetic, the ATT&CK mapping — and
+**the command line of every process in the chain**, so "a SUID binary appeared" comes with the
+`modprobe dummy` / `chmod u+s /tmp/.x` that did it:
+
+![An incident detail view showing the process lineage, the command run at each step, both signals and the score breakdown](docs/img/incident.png)
+
+Every incident in both screenshots is a real detection, replayed from the capture fixtures committed
+under `tests/fixtures/` — you can reproduce the same output with `kernelsentinel replay`. Only the
+host names are invented, so the fleet view has more than one row.
 
 ### On each monitored VM
 
@@ -289,7 +304,7 @@ that shouldn't have that toolchain, a **server-only build** (no eBPF) is the cle
 split — planned, not yet done. Until then, build once on a machine with the
 toolchain and copy the binary to the server.
 
-## Custom detection rules## Custom detection rules
+## Custom detection rules
 
 Add detections in YAML without recompiling — see [docs/WRITING_RULES.md](docs/WRITING_RULES.md):
 
@@ -310,33 +325,63 @@ sudo kernelsentinel run --baseline host.baseline
 
 ## Architecture
 
+Single host: kernel events become a graph, the graph becomes scored incidents.
+
+```mermaid
+flowchart TD
+    subgraph K["kernel — eBPF CO-RE sensors"]
+        direction LR
+        A1["tracepoints<br/><small>exec · fork · exit</small>"]
+        A2["fentry / fexit<br/><small>commit_creds · do_init_module</small>"]
+        A3["LSM hooks<br/><small>file_open · path_chmod · inode_setxattr<br/>ptrace · bprm_check · socket_connect</small>"]
+    end
+
+    K -->|"ring buffer, 8&nbsp;MB, drop-counted"| G
+
+    subgraph U["userspace agent (Rust)"]
+        direction LR
+        G["process graph<br/><small>identity = (pid, start_boottime)</small>"]
+        C["credential history<br/>namespace / container tracking"]
+        G --- C
+    end
+
+    G --> D
+
+    subgraph E["detection engine"]
+        direction LR
+        D["built-in detectors + YAML rule DSL"]
+        S["lineage correlation → scoring<br/><small>base + chain bonus × context</small>"]
+        B["per-host baseline<br/><small>downweight learned-normal</small>"]
+        D --> B --> S
+    end
+
+    S --> OUT["incident<br/><small>severity · ATT&CK · signals · commands</small>"]
+    OUT --> T["terminal"] & N["NDJSON → SIEM"] & F["ship → fleet server"]
 ```
-┌──────────────────────────────────────────────┐
-│                 eBPF sensors                 │
-│                                              │
-│  exec   fork/exit   commit_creds   ptrace    │
-│  file_open   inode_setattr   setxattr        │
-│  memfd   module_load   setns   socket        │
-└───────────────────┬──────────────────────────┘
-                    │ ring buffer (8MB, drop-counted)
-                    ▼
-┌──────────────────────────────────────────────┐
-│              userspace agent (Rust)          │
-│                                              │
-│   process graph  ·  event correlation        │
-│   credential history  ·  namespace tracking  │
-└───────────────────┬──────────────────────────┘
-                    │
-                    ▼
-┌──────────────────────────────────────────────┐
-│              detection engine                │
-│                                              │
-│   built-in detections  ·  YAML rule DSL      │
-│   sequence matching    ·  risk scoring       │
-└───────────────────┬──────────────────────────┘
-                    │
-                    ▼
-              CLI  ·  NDJSON
+
+Fleet: telemetry moves **one way**. There is no channel from the panel back to a host,
+so a compromised dashboard cannot reach into the fleet.
+
+```mermaid
+flowchart LR
+    subgraph H1["monitored host"]
+        R1["kernelsentinel run --json"] --> P1["ship"]
+    end
+    subgraph H2["monitored host"]
+        R2["kernelsentinel run --json"] --> P2["ship"]
+    end
+
+    P1 -->|"HTTPS + pinned cert<br/>per-host key"| SRV
+    P2 -->|"HTTPS + pinned cert<br/>per-host key"| SRV
+
+    subgraph C["central server"]
+        SRV["serve"] --> DB[("sqlite<br/><small>incidents · users · audit</small>")]
+        SRV --> W["web panel<br/><small>read-only, admin auth</small>"]
+    end
+
+    W -.->|"no path back to a host<br/>— by design"| H1
+
+    linkStyle 6 stroke-dasharray:5 5,stroke:#c0392b,color:#c0392b
 ```
 
 ## Design notes
