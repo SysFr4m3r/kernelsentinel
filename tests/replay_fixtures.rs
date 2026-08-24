@@ -240,3 +240,68 @@ fn baseline_preserves_novel_attack_signal() {
     let (_, _, ids) = &incidents[0];
     assert!(ids.contains(&"suid_create".to_string()), "novel signal must survive baselining");
 }
+
+
+#[test]
+fn container_context_multiplier_applies() {
+    use kernelsentinel::graph::ProcKey;
+    // An escalation + SUID chain running inside a container must get the x1.1
+    // container context multiplier. Events carry a resolved container label.
+    let events = vec![
+        ev(r#"{"ts_ns":1000000000,"type":3,"tgid":100,"ppid":1,"start_boottime":900000000,"comm":"bash","child_pid":200,"child_start_boottime":1000000000,"container":"docker:abc123def456"}"#),
+        ev(r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261,"container":"docker:abc123def456"}"#),
+        ev(r#"{"ts_ns":1003000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551,"container":"docker:abc123def456"}"#),
+    ];
+    let mut g = ProcessGraph::new(1000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Low);
+    let mut multiplied = false;
+    for event in &events {
+        g.apply(event);
+        if let Some(inc) = e.on_event(event, &g) {
+            if inc.score.context_mult > 1.0 {
+                multiplied = true;
+            }
+        }
+    }
+    // The node must carry the container label, and the multiplier must have fired.
+    let node = g
+        .get(&ProcKey { pid: 200, start_boottime: 1000000000 })
+        .unwrap();
+    assert_eq!(node.container, "docker:abc123def456");
+    assert!(multiplied, "container context multiplier should apply inside a container");
+}
+
+fn ev(json: &str) -> Event {
+    serde_json::from_str(json).unwrap()
+}
+
+
+#[test]
+fn container_events_carry_resolved_id_and_multiplier() {
+    // Real capture of the SUID scenario inside an ephemeral --rm Docker
+    // container. The cgroup name was captured in-kernel (race-free), so events
+    // carry "docker:<id>" even though the container's cgroup is long gone. The
+    // container context multiplier must apply.
+    let text = std::fs::read_to_string("tests/fixtures/container_suid_tagged.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Low);
+    let mut container_incident = false;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: Event = serde_json::from_str(line).unwrap();
+        g.apply(&event);
+        if let Some(inc) = e.on_event(&event, &g) {
+            if inc.score.context_mult > 1.0 {
+                container_incident = true;
+            }
+        }
+    }
+    // Some node in the graph must carry a resolved docker container id.
+    assert!(
+        g.nodes().any(|n| n.container.starts_with("docker:")),
+        "no container id was resolved from the capture"
+    );
+    assert!(container_incident, "container context multiplier never applied");
+}

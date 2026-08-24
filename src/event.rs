@@ -6,6 +6,7 @@ use std::ffi::CStr;
 pub const TASK_COMM_LEN: usize = 16;
 pub const MAX_FILENAME: usize = 256;
 pub const MAX_ARGV: usize = 512;
+pub const MAX_CGROUP_NAME: usize = 64;
 
 pub const EV_F_TRUNCATED: u16 = 1 << 0;
 #[allow(dead_code)] // set by the path-resolving sensors in M2
@@ -80,6 +81,7 @@ pub struct RawEvent {
     pub comm: [u8; TASK_COMM_LEN],
     pub filename: [u8; MAX_FILENAME],
     pub argv: [u8; MAX_ARGV],
+    pub cgroup_name: [u8; MAX_CGROUP_NAME],
 }
 
 impl RawEvent {
@@ -101,6 +103,10 @@ impl RawEvent {
 
     pub fn comm(&self) -> String {
         cstr_lossy(&self.comm)
+    }
+
+    pub fn cgroup_name(&self) -> String {
+        cstr_lossy(&self.cgroup_name)
     }
 
     pub fn filename(&self) -> String {

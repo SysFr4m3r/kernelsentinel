@@ -91,6 +91,11 @@ pub struct Event {
     pub target_pid: u32,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub aux: u32,
+
+    /// Container label (runtime:id), resolved in userspace from cgroup_id at
+    /// capture time so it persists into a replayed capture.
+    #[serde(default, skip_serializing_if = "is_empty_str")]
+    pub container: String,
 }
 
 impl Event {
@@ -170,6 +175,9 @@ impl From<&RawEvent> for Event {
             degraded_path: r.degraded_path(),
             target_pid: r.target_pid,
             aux: r.aux,
+            container: crate::container::parse_container(&r.cgroup_name())
+                .map(|c| c.label())
+                .unwrap_or_default(),
         }
     }
 }

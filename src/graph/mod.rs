@@ -52,6 +52,7 @@ pub struct ProcNode {
     pub uid: u32,
     pub euid: u32,
     pub cgroup_id: u64,
+    pub container: String,
     pub cred_history: Vec<CredSnapshot>,
     pub started: u64,
     pub exited: Option<u64>,
@@ -70,6 +71,7 @@ impl ProcNode {
             uid: 0,
             euid: 0,
             cgroup_id: 0,
+            container: String::new(),
             cred_history: Vec::new(),
             started: key.start_boottime,
             exited: None,
@@ -288,6 +290,9 @@ impl ProcessGraph {
             cn.uid = ev.uid;
             cn.euid = ev.euid;
             cn.cgroup_id = ev.cgroup_id;
+            if !ev.container.is_empty() {
+                cn.container = ev.container.clone();
+            }
             // Inherited until the child execs; showing the parent's name is
             // more useful than showing nothing.
             if cn.comm.is_empty() {
@@ -311,6 +316,9 @@ impl ProcessGraph {
         node.uid = ev.uid;
         node.euid = ev.euid;
         node.cgroup_id = ev.cgroup_id;
+        if !ev.container.is_empty() {
+            node.container = ev.container.clone();
+        }
     }
 
     fn on_exit(&mut self, ev: &Event) {

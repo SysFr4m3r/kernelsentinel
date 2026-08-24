@@ -187,7 +187,7 @@ impl Engine {
         let in_container = lineage
             .iter()
             .filter_map(|k| graph.get(k))
-            .any(|n| n.cgroup_id != 0 && is_container_cgroup(n.cgroup_id));
+            .any(|n| !n.container.is_empty());
 
         // Network-daemon rooting: the oldest ancestor's name matches a known
         // network-facing service. Best-effort for M3; refined with real service
@@ -230,13 +230,6 @@ fn is_network_daemon(comm: &str) -> bool {
     DAEMONS.iter().any(|d| comm == *d)
 }
 
-/// A crude container-cgroup heuristic for M3. cgroup ids for containers are
-/// large kernfs ids; the real Docker/containerd resolution arrives in M6.
-fn is_container_cgroup(_cgroup_id: u64) -> bool {
-    // Deliberately conservative: return false until M6 provides real resolution,
-    // so the container multiplier never fires on a false guess.
-    false
-}
 
 #[cfg(test)]
 mod tests {

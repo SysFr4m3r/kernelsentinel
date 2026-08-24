@@ -314,6 +314,9 @@ fn investigate(pid: u32, capture: &str) -> Result<()> {
             emit(&format!("command    : {}", node.argv.join(" ")));
         }
         emit(&format!("uid        : {} (euid {})", node.uid, node.euid));
+        if !node.container.is_empty() {
+            emit(&format!("container  : {}", node.container));
+        }
         if let Some(exited) = node.exited {
             emit(&format!("exited     : {}", clock.format(exited)));
         }

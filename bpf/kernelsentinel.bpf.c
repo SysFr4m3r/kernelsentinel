@@ -116,6 +116,16 @@ static __always_inline void fill_hdr(struct event *e, __u16 type)
 	e->egid = BPF_CORE_READ(task, cred, egid.val);
 
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	/* Capture the leaf cgroup name in-kernel, where the cgroup is guaranteed to
+	 * exist. Resolving cgroup_id -> name in userspace races with container
+	 * teardown: an ephemeral --rm container's cgroup dir is gone before the
+	 * event is processed. Reading it here is race-free. Userspace parses the
+	 * container id out of names like "docker-<id>.scope". */
+	e->cgroup_name[0] = '\0';
+	const char *cname = BPF_CORE_READ(task, cgroups, dfl_cgrp, kn, name);
+	if (cname)
+		bpf_probe_read_kernel_str(e->cgroup_name, sizeof(e->cgroup_name), cname);
 }
 
 /* argv is read from the *new* mm after the exec has completed, so there is no

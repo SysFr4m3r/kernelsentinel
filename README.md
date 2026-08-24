@@ -266,7 +266,7 @@ exists once you correlate them per process.
 | M3 | Built-in detections, risk scoring, alerts, `investigate`, NDJSON — **first usable release** | ✅ done & validated |
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL | |
-| M6 | Container & namespace awareness | |
+| M6 | Container & namespace awareness | 🚧 container id + context (in-kernel cgroup capture) |
 | M7 | Baselining ✅ first increment · YARA, optional enforcement · (NDJSON/SIEM done in M3) | 🚧 in progress |
 
 ## Planned detections

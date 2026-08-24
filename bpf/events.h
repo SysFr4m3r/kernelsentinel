@@ -8,6 +8,7 @@
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME  256
 #define MAX_ARGV      512 /* must stay a power of two: masked for the verifier */
+#define MAX_CGROUP_NAME 64
 
 enum event_type {
 	EV_EXEC        = 1,
@@ -60,6 +61,7 @@ struct event {
 	char comm[TASK_COMM_LEN];
 	char filename[MAX_FILENAME]; /* EV_EXEC: exec target; EV_FILE_OPEN: opened path */
 	char argv[MAX_ARGV]; /* NUL-separated argv, truncated */
+	char cgroup_name[MAX_CGROUP_NAME]; /* leaf cgroup name, e.g. docker-<id>.scope */
 };
 
 /* Longest-prefix-match key for the watched-paths trie. Shared with userspace so
