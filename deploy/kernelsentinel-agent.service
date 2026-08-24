@@ -1,0 +1,14 @@
+[Unit]
+Description=KernelSentinel agent (eBPF collector + shipper)
+After=kernelsentinel-server.service
+Wants=kernelsentinel-server.service
+
+[Service]
+# Runs as root: the collector needs CAP_BPF/CAP_PERFMON to attach eBPF.
+EnvironmentFile=/etc/kernelsentinel/agent.env
+ExecStart=/bin/sh -c '/usr/local/bin/kernelsentinel run --json | /usr/local/bin/kernelsentinel ship https://localhost:8088/api/ingest --ca /etc/kernelsentinel/server.pem'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

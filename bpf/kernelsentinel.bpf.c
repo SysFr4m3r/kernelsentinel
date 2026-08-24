@@ -541,6 +541,19 @@ int BPF_PROG(handle_module, struct module *mod)
  * container-escape primitive: a process that can talk to them controls the host
  * container runtime. T1611. Filtered in-kernel to those paths.
  */
+/* Fixed-length, fixed-position prefix compare with no branching in the loop --
+ * the verifier sees a straight line of `n` comparisons (cheap), unlike a
+ * scanning loop over every offset (state explosion). n is a compile-time
+ * constant; all indices are < the 108-byte buffer. */
+static __always_inline int prefix_eq(const char *p, const char *pre, int n)
+{
+	int ok = 1;
+#pragma unroll
+	for (int i = 0; i < n; i++)
+		ok &= (p[i] == pre[i]);
+	return ok;
+}
+
 SEC("lsm/socket_connect")
 int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
@@ -555,27 +568,15 @@ int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *addres
 	struct sockaddr_un *un = (struct sockaddr_un *)address;
 	bpf_probe_read_kernel_str(path, sizeof(path), un->sun_path);
 
-	/* Match the runtime control sockets by the distinctive "docker.sock" or
-	 * "containerd.sock" name, via a bounded scan. An abstract socket has a
-	 * leading NUL, so path[0] would be 0 and the scan matches nothing. */
-	int matched = 0;
-	#pragma unroll
-	for (int i = 0; i + 8 <= (int)sizeof(path); i++) {
-		/* "docker.sock" (11 bytes) -- guard the read to the buffer end so a
-		 * match in the final bytes is not skipped, closing a path-padding
-		 * evasion where the socket name is pushed past the scan bound. */
-		if (i + 11 <= (int)sizeof(path) &&
-		    path[i] == 'd' && path[i+1] == 'o' && path[i+2] == 'c' &&
-		    path[i+3] == 'k' && path[i+4] == 'e' && path[i+5] == 'r' &&
-		    path[i+6] == '.' && path[i+7] == 's' && path[i+8] == 'o' &&
-		    path[i+9] == 'c' && path[i+10] == 'k')
-			matched = 1;
-		/* "containerd.sock" shares the ".sock" tail; match the "tainerd." stem */
-		if (path[i] == 't' && path[i+1] == 'a' && path[i+2] == 'i' &&
-		    path[i+3] == 'n' && path[i+4] == 'e' && path[i+5] == 'r' &&
-		    path[i+6] == 'd' && path[i+7] == '.')
-			matched = 1;
-	}
+	/* Match the runtime control sockets by fixed path prefixes. A scanning
+	 * loop over every position blows up the verifier (state explosion ->
+	 * "BPF program too large"); fixed-position prefix comparisons are a
+	 * straight line it accepts cheaply. These cover the standard socket
+	 * locations for docker and containerd. */
+	int matched = prefix_eq(path, "/run/docker.sock", 16) ||
+		      prefix_eq(path, "/var/run/docker.sock", 20) ||
+		      prefix_eq(path, "/run/containerd/", 16) ||
+		      prefix_eq(path, "/run/crio/", 10);
 	if (!matched)
 		return 0;
 

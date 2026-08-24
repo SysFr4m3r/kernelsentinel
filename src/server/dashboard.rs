@@ -123,7 +123,7 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .sig{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px dashed var(--line)}
 .sig:last-child{border-bottom:0}
 .sig .id{font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:600;color:var(--accent)}
-.sig .txt{color:var(--muted);font-size:12px;min-width:0}
+.sig .txt{color:var(--muted);font-size:12px;min-width:0;overflow-wrap:anywhere}
 .sig .pts{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
 .math{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .math b{color:var(--ink)}.math .eq{color:var(--sv);font-weight:600;font-size:15px}.math .note{color:var(--faint);font-size:11px}

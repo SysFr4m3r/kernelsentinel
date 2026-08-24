@@ -44,10 +44,9 @@ pub fn ship(
         batch.push_str(&line);
         batch.push('\n');
         sent += 1;
-        // Ship in small batches so a live stream shows up promptly.
-        if batch.len() > 16 * 1024 {
-            flush(&mut batch)?;
-        }
+        // Flush per incident: incidents are infrequent, so ship each promptly
+        // rather than buffering (a live `run --json | ship` must not sit silent).
+        flush(&mut batch)?;
     }
     flush(&mut batch)?;
     eprintln!("kernelsentinel: shipped {sent} incident(s) to {url}");

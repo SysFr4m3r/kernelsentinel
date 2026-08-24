@@ -1,0 +1,27 @@
+[Unit]
+Description=KernelSentinel fleet server (central web panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kernelsentinel
+Group=kernelsentinel
+EnvironmentFile=/etc/kernelsentinel/server.env
+ExecStart=/usr/local/bin/kernelsentinel serve \
+  --bind 0.0.0.0:8088 \
+  --keys /etc/kernelsentinel/agents.keys \
+  --journal /var/lib/kernelsentinel/incidents.sqlite \
+  --retain-days 90 \
+  --tls-cert /etc/kernelsentinel/server.pem \
+  --tls-key /etc/kernelsentinel/server.key
+Restart=always
+RestartSec=2
+# Hardening: the server is unprivileged and only writes its data dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/kernelsentinel
+
+[Install]
+WantedBy=multi-user.target
