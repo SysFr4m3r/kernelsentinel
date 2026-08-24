@@ -138,14 +138,16 @@ impl Engine {
             return None;
         }
 
-        // Deduplicate by lineage root: report only when we cross into a band
-        // higher than anything already reported for this chain.
-        let root = *lineage.last().unwrap();
-        let prev = self.reported.get(&root).copied();
+        // Deduplicate by the subject -- the process this evaluation fired on --
+        // not by the lineage root. The root is the topmost *currently-known*
+        // ancestor, which changes when that ancestor is reaped or when a later
+        // ancestor extends the lineage; keying on it lets the same incident
+        // re-alert under a new key. The subject's key is stable for its life.
+        let prev = self.reported.get(&subject).copied();
         if prev.is_some_and(|p| score.severity <= p) {
             return None;
         }
-        self.reported.insert(root, score.severity);
+        self.reported.insert(subject, score.severity);
 
         let mut attack: Vec<String> = signals
             .iter()
@@ -163,6 +165,15 @@ impl Engine {
             score,
             attack,
         })
+    }
+
+    /// Prune detection state for processes no longer in the graph. The graph is
+    /// reaped and hard-capped; without this the engine's `signals` and
+    /// `reported` maps grow unbounded for the life of the daemon, accumulating
+    /// one entry per process ever seen. Call after `graph.reap`.
+    pub fn reap(&mut self, graph: &ProcessGraph) {
+        self.signals.retain(|key, _| graph.get(key).is_some());
+        self.reported.retain(|key, _| graph.get(key).is_some());
     }
 
     /// Read-only assessment of a process's lineage: the combined signals and the

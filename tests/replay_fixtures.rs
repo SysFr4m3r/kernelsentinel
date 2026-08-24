@@ -347,3 +347,34 @@ fn containerized_docker_sock_access_is_high() {
     let sig = inc.signals.iter().find(|s| s.id == "runtime_socket_access").unwrap();
     assert_eq!(sig.score, 60, "containerized runtime-socket access is the escape primitive");
 }
+
+
+#[test]
+fn engine_reap_bounds_state_with_the_graph() {
+    // The engine's signal/report maps must not outgrow the graph. After a
+    // process is reaped from the graph, engine.reap must drop its state too,
+    // or a long-running daemon leaks memory per process ever seen.
+    use kernelsentinel::graph::ProcKey;
+    let mut g = ProcessGraph::new(1000, Duration::from_secs(5));
+    let mut e = Engine::new(Severity::Low);
+
+    // A process is forked (so it exists in the graph), fires a signal, then
+    // exits and ages past retention.
+    let fork = serde_json::from_str::<Event>(r#"{"ts_ns":999000000,"type":3,"tgid":1,"ppid":0,"start_boottime":0,"comm":"bash","child_pid":200,"child_start_boottime":1000000000}"#).unwrap();
+    let suid = serde_json::from_str::<Event>(r#"{"ts_ns":1000000000,"type":6,"tgid":200,"ppid":1,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261}"#).unwrap();
+    let exit = serde_json::from_str::<Event>(r#"{"ts_ns":1001000000,"type":2,"tgid":200,"ppid":1,"start_boottime":1000000000}"#).unwrap();
+    g.apply(&fork);
+    g.apply(&suid);
+    e.on_event(&suid, &g);
+    g.apply(&exit);
+
+    assert!(e.assess(ProcKey { pid: 200, start_boottime: 1000000000 }, &g).0.len() > 0);
+
+    // Reap well past the 5s retention window, then reap the engine.
+    g.reap(10_000_000_000);
+    e.reap(&g);
+
+    // The reaped process's signals are gone from engine state.
+    let (signals, _) = e.assess(ProcKey { pid: 200, start_boottime: 1000000000 }, &g);
+    assert!(signals.is_empty(), "engine retained signals for a reaped process");
+}

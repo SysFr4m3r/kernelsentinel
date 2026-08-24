@@ -560,9 +560,12 @@ int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *addres
 	 * leading NUL, so path[0] would be 0 and the scan matches nothing. */
 	int matched = 0;
 	#pragma unroll
-	for (int i = 0; i + 11 < (int)sizeof(path); i++) {
-		/* "docker.sock" */
-		if (path[i] == 'd' && path[i+1] == 'o' && path[i+2] == 'c' &&
+	for (int i = 0; i + 8 <= (int)sizeof(path); i++) {
+		/* "docker.sock" (11 bytes) -- guard the read to the buffer end so a
+		 * match in the final bytes is not skipped, closing a path-padding
+		 * evasion where the socket name is pushed past the scan bound. */
+		if (i + 11 <= (int)sizeof(path) &&
+		    path[i] == 'd' && path[i+1] == 'o' && path[i+2] == 'c' &&
 		    path[i+3] == 'k' && path[i+4] == 'e' && path[i+5] == 'r' &&
 		    path[i+6] == '.' && path[i+7] == 's' && path[i+8] == 'o' &&
 		    path[i+9] == 'c' && path[i+10] == 'k')

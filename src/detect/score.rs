@@ -67,16 +67,20 @@ pub fn score(signals: &[Signal], ctx: Context) -> Score {
         };
     }
 
-    let base: u32 = signals.iter().map(|s| s.score).sum();
+    // Base is the sum of the highest score per *kind*, not per signal. The same
+    // kind firing on several processes in one lineage (e.g. two sudos each
+    // escalating) is one reason to worry, not N -- and this keeps `base`
+    // consistent with the distinct-kind chain bonus below.
+    use std::collections::HashMap;
+    let mut per_kind: HashMap<&str, u32> = HashMap::new();
+    for s in signals {
+        let e = per_kind.entry(s.id).or_insert(0);
+        *e = (*e).max(s.score);
+    }
+    let base: u32 = per_kind.values().sum();
+    let distinct = per_kind.len() as u32;
 
-    // Count *distinct* detection kinds; three ptrace signals are not three
-    // independent reasons to worry.
-    let mut kinds: Vec<&str> = signals.iter().map(|s| s.id).collect();
-    kinds.sort_unstable();
-    kinds.dedup();
-    let distinct = kinds.len() as u32;
-
-    let max = signals.iter().map(|s| s.score).max().unwrap_or(0);
+    let max = per_kind.values().copied().max().unwrap_or(0);
     let chain_bonus = if distinct > 1 {
         (distinct - 1) * max / 2
     } else {

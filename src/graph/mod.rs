@@ -348,6 +348,9 @@ impl ProcessGraph {
         }
         node.uid = ev.uid;
         node.euid = ev.euid;
+        if !ev.container.is_empty() {
+            node.container = ev.container.clone();
+        }
         // Bounded: a process flapping credentials must not grow without limit.
         if node.cred_history.len() < 64 {
             node.cred_history.push(snap);

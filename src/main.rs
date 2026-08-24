@@ -205,6 +205,7 @@ fn replay(input: &str, json: bool, baseline: Option<String>) -> Result<()> {
                 }
                 if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
                     graph.reap(ev.ts_ns);
+                    engine.reap(&graph);
                     last_reap = ev.ts_ns;
                 }
                 if !json {
@@ -512,6 +513,7 @@ fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<Stri
         // single-threaded; an idle host has nothing to reap anyway.
         if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
             graph.reap(ev.ts_ns);
+            engine.reap(&graph);
             last_reap = ev.ts_ns;
         }
         if !json {
