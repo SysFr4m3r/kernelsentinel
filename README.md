@@ -278,7 +278,7 @@ kernel module loading · `ptrace` into another process · `/proc/<pid>/{mem,envi
 shells spawned from network-facing daemons · execution from `/tmp`, `/dev/shm`, and memfd ·
 namespace manipulation · Docker socket access · container escape shapes.
 
-Each will be documented in `docs/DETECTIONS.md` with its known false positives **and known evasions**.
+Each is documented in **[docs/DETECTIONS.md](docs/DETECTIONS.md)** with its ATT&CK technique, score, how to trigger it, and its known false positives **and known evasions**.
 
 ## Limitations
 
@@ -316,6 +316,11 @@ Dual-licensed, split by directory:
   ([`LICENSE-APACHE`](LICENSE-APACHE), [`LICENSE-MIT`](LICENSE-MIT)) — the Rust ecosystem convention.
 
 Unless you state otherwise, contributions are accepted under these same terms.
+
+## Documentation
+
+- **[docs/DETECTIONS.md](docs/DETECTIONS.md)** — every detection: what it catches, its ATT&CK
+  technique and score, how to trigger it, and its known false positives and evasions.
 
 ## Reading
 
