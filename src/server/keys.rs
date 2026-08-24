@@ -6,8 +6,10 @@
 //!
 //! Keys file format, one host per line (blank lines and `#` comments ignored):
 //!
-//!     web-prod-01   b7f3...key
-//!     db-app-03     9c1a...key
+//! ```text
+//! web-prod-01   b7f3...key
+//! db-app-03     9c1a...key
+//! ```
 
 use std::collections::HashMap;
 
