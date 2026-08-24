@@ -42,13 +42,13 @@ impl Report {
 }
 
 pub fn run() -> Report {
-    let mut checks = Vec::new();
-
-    checks.push(("kernel", kernel_check()));
-    checks.push(("btf", btf_check()));
-    checks.push(("privileges", priv_check()));
-    checks.push(("bpf lsm", lsm_check()));
-    checks.push(("memlock", memlock_check()));
+    let checks = vec![
+        ("kernel", kernel_check()),
+        ("btf", btf_check()),
+        ("privileges", priv_check()),
+        ("bpf lsm", lsm_check()),
+        ("memlock", memlock_check()),
+    ];
 
     Report { checks }
 }
@@ -59,7 +59,9 @@ fn kernel_check() -> Status {
         Some((maj, min)) if (maj, min) >= (5, 8) => {
             Status::Ok(format!("{release} (ring buffer available)"))
         }
-        Some(_) => Status::Fail(format!("{release} — kernel 5.8+ required for BPF_MAP_TYPE_RINGBUF")),
+        Some(_) => Status::Fail(format!(
+            "{release} — kernel 5.8+ required for BPF_MAP_TYPE_RINGBUF"
+        )),
         None => Status::Warn(format!("{release} — could not parse version")),
     }
 }

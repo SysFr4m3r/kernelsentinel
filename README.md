@@ -1,5 +1,7 @@
 # KernelSentinel
 
+[![CI](https://github.com/SysFr4m3r/kernelsentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/SysFr4m3r/kernelsentinel/actions/workflows/ci.yml)
+
 **Runtime detection engine for Linux post-exploitation and privilege-escalation behavior, using eBPF.**
 
 Most process monitors hand you a firehose of syscalls and leave the thinking to you. KernelSentinel is

@@ -55,11 +55,11 @@ pub fn label_for(path: &str) -> &'static str {
 pub fn default_watches() -> Vec<Watch> {
     let mut w = vec![
         Watch::write("/etc/ld.so.preload"),
-        Watch::write("/etc/cron"),        // crontab, cron.d/, cron.daily/, ...
+        Watch::write("/etc/cron"), // crontab, cron.d/, cron.daily/, ...
         Watch::write("/etc/systemd/"),
         Watch::write("/usr/lib/systemd/"),
         Watch::write("/lib/systemd/"),
-        Watch::write("/etc/sudoers"),     // sudoers and sudoers.d/
+        Watch::write("/etc/sudoers"), // sudoers and sudoers.d/
         Watch::write("/etc/shadow"),
         Watch::write("/etc/passwd"),
         Watch::write("/root/.ssh/"),
@@ -113,7 +113,10 @@ mod tests {
     #[test]
     fn encode_key_rejects_overlong_prefix() {
         let long = "/".repeat(MAX_WATCH_PATH);
-        assert!(encode_key(&long).is_none(), "must not overflow the key buffer");
+        assert!(
+            encode_key(&long).is_none(),
+            "must not overflow the key buffer"
+        );
     }
 
     #[test]
@@ -128,8 +131,14 @@ mod tests {
     #[test]
     fn label_matches_on_substring() {
         assert_eq!(label_for("/etc/cron.d/evil"), "cron");
-        assert_eq!(label_for("/home/kali/.ssh/authorized_keys"), "authorized_keys");
-        assert_eq!(label_for("/etc/ld.so.preload"), "ld.so.preload (linker hijack)");
+        assert_eq!(
+            label_for("/home/kali/.ssh/authorized_keys"),
+            "authorized_keys"
+        );
+        assert_eq!(
+            label_for("/etc/ld.so.preload"),
+            "ld.so.preload (linker hijack)"
+        );
     }
 
     #[test]

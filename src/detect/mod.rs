@@ -5,11 +5,11 @@
 //! event, which is the whole point of the project.
 
 mod alert;
-mod record;
 pub mod attack;
 pub mod baseline;
-pub mod rule;
 mod detectors;
+mod record;
+pub mod rule;
 mod score;
 mod signal;
 
@@ -19,10 +19,10 @@ use crate::decoded::Event;
 use crate::graph::{ProcKey, ProcessGraph};
 
 pub use alert::render;
-pub use record::IncidentRecord;
-pub use score::{Context, Score, Severity};
 pub use baseline::Baseline;
-pub use rule::{load_dir as load_rules, Rule, RuleSet};
+pub use record::IncidentRecord;
+pub use rule::{Rule, RuleSet, load_dir as load_rules};
+pub use score::{Context, Score, Severity};
 pub use signal::Signal;
 
 /// One correlated detection: a lineage, its signals, and its score.
@@ -196,7 +196,11 @@ impl Engine {
     /// score, with no dedup/reporting side effects. For `investigate`.
     pub fn assess(&self, subject: ProcKey, graph: &ProcessGraph) -> (Vec<Signal>, Score) {
         let lineage: Vec<ProcKey> = graph.ancestry(&subject).iter().map(|n| n.key).collect();
-        let lineage = if lineage.is_empty() { vec![subject] } else { lineage };
+        let lineage = if lineage.is_empty() {
+            vec![subject]
+        } else {
+            lineage
+        };
         let mut signals: Vec<Signal> = Vec::new();
         for key in &lineage {
             if let Some(s) = self.signals.get(key) {
@@ -252,11 +256,17 @@ impl Severity {
 
 fn is_network_daemon(comm: &str) -> bool {
     const DAEMONS: &[&str] = &[
-        "nginx", "apache2", "httpd", "sshd", "postgres", "mysqld", "redis-server", "node",
+        "nginx",
+        "apache2",
+        "httpd",
+        "sshd",
+        "postgres",
+        "mysqld",
+        "redis-server",
+        "node",
     ];
-    DAEMONS.iter().any(|d| comm == *d)
+    DAEMONS.contains(&comm)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -286,9 +296,15 @@ mod tests {
     // root. This must surface as one CRITICAL incident carrying the whole chain.
     fn suid_chain() -> Vec<Event> {
         vec![
-            ev(r#"{"ts_ns":1000000000,"type":3,"tgid":100,"ppid":50,"start_boottime":900000000,"comm":"bash","child_pid":200,"child_start_boottime":1000000000}"#),
-            ev(r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261}"#),
-            ev(r#"{"ts_ns":1003000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#),
+            ev(
+                r#"{"ts_ns":1000000000,"type":3,"tgid":100,"ppid":50,"start_boottime":900000000,"comm":"bash","child_pid":200,"child_start_boottime":1000000000}"#,
+            ),
+            ev(
+                r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261}"#,
+            ),
+            ev(
+                r#"{"ts_ns":1003000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#,
+            ),
         ]
     }
 
@@ -300,7 +316,10 @@ mod tests {
             .map(|i| i.score.total)
             .max()
             .expect("chain must produce at least one incident");
-        assert!(worst >= 90, "SUID + escalation chain should be critical, got {worst}");
+        assert!(
+            worst >= 90,
+            "SUID + escalation chain should be critical, got {worst}"
+        );
         // The reported incident must carry BOTH signals -- that is the point.
         let critical = incidents.iter().max_by_key(|i| i.score.total).unwrap();
         let ids: Vec<&str> = critical.signals.iter().map(|s| s.id).collect();
@@ -344,12 +363,21 @@ mod tests {
     #[test]
     fn web_daemon_spawning_shell_is_flagged() {
         let events = vec![
-            ev(r#"{"ts_ns":1000000000,"type":3,"tgid":800,"ppid":1,"start_boottime":500000000,"comm":"nginx","child_pid":900,"child_start_boottime":1000000000,"uid":33}"#),
-            ev(r#"{"ts_ns":1001000000,"type":1,"tgid":900,"ppid":800,"start_boottime":1000000000,"comm":"sh","filename":"/bin/sh","uid":33}"#),
+            ev(
+                r#"{"ts_ns":1000000000,"type":3,"tgid":800,"ppid":1,"start_boottime":500000000,"comm":"nginx","child_pid":900,"child_start_boottime":1000000000,"uid":33}"#,
+            ),
+            ev(
+                r#"{"ts_ns":1001000000,"type":1,"tgid":900,"ppid":800,"start_boottime":1000000000,"comm":"sh","filename":"/bin/sh","uid":33}"#,
+            ),
         ];
         let incidents = run(&events, Severity::Medium);
         assert_eq!(incidents.len(), 1, "nginx->sh should alert");
-        assert!(incidents[0].signals.iter().any(|s| s.id == "shell_from_network_daemon"));
+        assert!(
+            incidents[0]
+                .signals
+                .iter()
+                .any(|s| s.id == "shell_from_network_daemon")
+        );
         // The network-daemon context multiplier must have been applied.
         assert!(incidents[0].score.context_mult > 1.0);
     }
@@ -358,10 +386,17 @@ mod tests {
     fn sshd_spawning_shell_is_not_flagged() {
         // sshd's whole job is to spawn login shells; this must never alert.
         let events = vec![
-            ev(r#"{"ts_ns":1000000000,"type":3,"tgid":700,"ppid":1,"start_boottime":500000000,"comm":"sshd","child_pid":950,"child_start_boottime":1000000000,"uid":0}"#),
-            ev(r#"{"ts_ns":1001000000,"type":1,"tgid":950,"ppid":700,"start_boottime":1000000000,"comm":"bash","filename":"/bin/bash","uid":1000}"#),
+            ev(
+                r#"{"ts_ns":1000000000,"type":3,"tgid":700,"ppid":1,"start_boottime":500000000,"comm":"sshd","child_pid":950,"child_start_boottime":1000000000,"uid":0}"#,
+            ),
+            ev(
+                r#"{"ts_ns":1001000000,"type":1,"tgid":950,"ppid":700,"start_boottime":1000000000,"comm":"bash","filename":"/bin/bash","uid":1000}"#,
+            ),
         ];
-        assert!(run(&events, Severity::Low).is_empty(), "sshd->bash is a normal login");
+        assert!(
+            run(&events, Severity::Low).is_empty(),
+            "sshd->bash is a normal login"
+        );
     }
 
     #[test]

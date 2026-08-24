@@ -8,6 +8,12 @@ pub struct BootClock {
     epoch: SystemTime,
 }
 
+impl Default for BootClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BootClock {
     pub fn new() -> Self {
         let boot = clock_gettime(libc::CLOCK_BOOTTIME);

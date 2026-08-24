@@ -2,10 +2,10 @@
 
 pub mod clock;
 pub mod container;
-pub mod doctor;
 pub mod decoded;
 pub mod detect;
+pub mod doctor;
 pub mod event;
 pub mod graph;
-pub mod watchlist;
 pub mod sensors;
+pub mod watchlist;

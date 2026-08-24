@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install BPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libbpf-dev
+          # bpftool ships under different package names across Ubuntu releases.
+          sudo apt-get install -y bpftool \
+            || sudo apt-get install -y linux-tools-generic linux-tools-common \
+            || true
+
+      - name: Generate vmlinux.h from the runner's BTF
+        # vmlinux.h is host-specific and gitignored; CO-RE lets us generate it
+        # from the runner's own kernel BTF, exactly as a developer would locally.
+        run: |
+          test -f /sys/kernel/btf/vmlinux || { echo "runner kernel has no BTF"; exit 1; }
+          BPFTOOL="$(command -v bpftool || true)"
+          [ -x "$BPFTOOL" ] || BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)"
+          [ -x "$BPFTOOL" ] || BPFTOOL=/usr/sbin/bpftool
+          echo "using bpftool: $BPFTOOL"; "$BPFTOOL" version
+          sudo "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          wc -l bpf/vmlinux.h
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Test
+        # The detection tests replay real captures unprivileged and
+        # deterministically -- no root, no BPF attach required.
+        run: cargo test --verbose
+
+      - name: Validate shipped rules
+        run: cargo run --quiet -- rules --dir rules

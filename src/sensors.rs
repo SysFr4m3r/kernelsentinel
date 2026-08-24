@@ -107,7 +107,10 @@ fn read_stats(map: &impl MapCore) -> Stats {
         map.lookup(&idx.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
             .ok()
             .flatten()
-            .and_then(|v| v.get(..8).map(|b| u64::from_ne_bytes(b.try_into().unwrap())))
+            .and_then(|v| {
+                v.get(..8)
+                    .map(|b| u64::from_ne_bytes(b.try_into().unwrap()))
+            })
             .unwrap_or(0)
     };
     Stats {

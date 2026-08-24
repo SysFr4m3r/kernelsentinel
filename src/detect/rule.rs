@@ -164,7 +164,10 @@ impl Rule {
     /// Structural validation beyond what serde enforces.
     pub fn validate(&self) -> Result<(), String> {
         if self.r#match.is_none() && self.sequence.is_empty() {
-            return Err(format!("rule '{}': needs a `match` or a `sequence`", self.name));
+            return Err(format!(
+                "rule '{}': needs a `match` or a `sequence`",
+                self.name
+            ));
         }
         if self.r#match.is_some() && !self.sequence.is_empty() {
             return Err(format!(
@@ -175,7 +178,10 @@ impl Rule {
         let all: Vec<&Condition> = self.r#match.iter().chain(self.sequence.iter()).collect();
         for c in all {
             if parse_event_type(&c.event).is_none() {
-                return Err(format!("rule '{}': unknown event type '{}'", self.name, c.event));
+                return Err(format!(
+                    "rule '{}': unknown event type '{}'",
+                    self.name, c.event
+                ));
             }
         }
         if let Some(w) = &self.within {
@@ -212,10 +218,9 @@ fn parse_duration_ns(s: &str) -> Option<u64> {
         (n, 1_000_000u64)
     } else if let Some(n) = s.strip_suffix('s') {
         (n, 1_000_000_000)
-    } else if let Some(n) = s.strip_suffix('m') {
-        (n, 60_000_000_000)
     } else {
-        return None;
+        let n = s.strip_suffix('m')?;
+        (n, 60_000_000_000)
     };
     num.trim().parse::<u64>().ok().map(|v| v * mult)
 }
@@ -235,63 +240,12 @@ pub fn load_dir(dir: &str) -> Result<Vec<Rule>, String> {
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("reading {}: {e}", path.display()))?;
-        let rule: Rule = serde_yaml::from_str(&text)
-            .map_err(|e| format!("parsing {}: {e}", path.display()))?;
+        let rule: Rule =
+            serde_yaml::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))?;
         rule.validate()?;
         rules.push(rule);
     }
     Ok(rules)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ev(json: &str) -> Event {
-        serde_json::from_str(json).unwrap()
-    }
-
-    #[test]
-    fn single_event_condition_matches() {
-        let c: Condition = serde_yaml::from_str("event: exec\nfilename_prefix: /tmp/").unwrap();
-        assert!(c.matches(&ev(r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0,"filename":"/tmp/x"}"#)));
-        assert!(!c.matches(&ev(r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0,"filename":"/usr/bin/ls"}"#)));
-        // wrong event type
-        assert!(!c.matches(&ev(r#"{"ts_ns":1,"type":2,"tgid":1,"ppid":0,"start_boottime":0}"#)));
-    }
-
-    #[test]
-    fn to_root_and_container_conditions() {
-        let c: Condition = serde_yaml::from_str("event: cred_change\nto_root: true").unwrap();
-        assert!(c.matches(&ev(r#"{"ts_ns":1,"type":4,"tgid":1,"ppid":0,"start_boottime":0,"euid":0,"old_euid":1000}"#)));
-        assert!(!c.matches(&ev(r#"{"ts_ns":1,"type":4,"tgid":1,"ppid":0,"start_boottime":0,"euid":0,"old_euid":0}"#)));
-
-        let c2: Condition = serde_yaml::from_str("event: exec\nin_container: true").unwrap();
-        assert!(c2.matches(&ev(r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0,"container":"docker:abc"}"#)));
-        assert!(!c2.matches(&ev(r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0}"#)));
-    }
-
-    #[test]
-    fn duration_parsing() {
-        assert_eq!(parse_duration_ns("30s"), Some(30_000_000_000));
-        assert_eq!(parse_duration_ns("500ms"), Some(500_000_000));
-        assert_eq!(parse_duration_ns("2m"), Some(120_000_000_000));
-        assert_eq!(parse_duration_ns("nonsense"), None);
-    }
-
-    #[test]
-    fn validation_rejects_bad_rules() {
-        let no_body: Rule = serde_yaml::from_str("name: x\nscore: 10").unwrap();
-        assert!(no_body.validate().is_err());
-        let both: Rule = serde_yaml::from_str(
-            "name: x\nscore: 10\nmatch:\n  event: exec\nsequence:\n  - event: exit",
-        )
-        .unwrap();
-        assert!(both.validate().is_err());
-        let bad_event: Rule =
-            serde_yaml::from_str("name: x\nscore: 10\nmatch:\n  event: nope").unwrap();
-        assert!(bad_event.validate().is_err());
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,8 +254,8 @@ mod tests {
 
 use std::collections::HashMap;
 
-use crate::graph::{ProcKey, ProcessGraph};
 use super::signal::Signal;
+use crate::graph::{ProcKey, ProcessGraph};
 
 /// One in-flight sequence match: how far through the steps, and when it started.
 struct Partial {
@@ -460,7 +414,71 @@ impl RuleSet {
     /// Drop sequence state for processes gone from the graph (bounds memory,
     /// mirroring Engine::reap).
     pub fn reap(&mut self, graph: &ProcessGraph) {
-        self.partials
-            .retain(|(_, key), _| graph.get(key).is_some());
+        self.partials.retain(|(_, key), _| graph.get(key).is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(json: &str) -> Event {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn single_event_condition_matches() {
+        let c: Condition = serde_yaml::from_str("event: exec\nfilename_prefix: /tmp/").unwrap();
+        assert!(c.matches(&ev(
+            r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0,"filename":"/tmp/x"}"#
+        )));
+        assert!(!c.matches(&ev(
+            r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0,"filename":"/usr/bin/ls"}"#
+        )));
+        // wrong event type
+        assert!(!c.matches(&ev(
+            r#"{"ts_ns":1,"type":2,"tgid":1,"ppid":0,"start_boottime":0}"#
+        )));
+    }
+
+    #[test]
+    fn to_root_and_container_conditions() {
+        let c: Condition = serde_yaml::from_str("event: cred_change\nto_root: true").unwrap();
+        assert!(c.matches(&ev(
+            r#"{"ts_ns":1,"type":4,"tgid":1,"ppid":0,"start_boottime":0,"euid":0,"old_euid":1000}"#
+        )));
+        assert!(!c.matches(&ev(
+            r#"{"ts_ns":1,"type":4,"tgid":1,"ppid":0,"start_boottime":0,"euid":0,"old_euid":0}"#
+        )));
+
+        let c2: Condition = serde_yaml::from_str("event: exec\nin_container: true").unwrap();
+        assert!(c2.matches(&ev(
+            r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0,"container":"docker:abc"}"#
+        )));
+        assert!(!c2.matches(&ev(
+            r#"{"ts_ns":1,"type":1,"tgid":1,"ppid":0,"start_boottime":0}"#
+        )));
+    }
+
+    #[test]
+    fn duration_parsing() {
+        assert_eq!(parse_duration_ns("30s"), Some(30_000_000_000));
+        assert_eq!(parse_duration_ns("500ms"), Some(500_000_000));
+        assert_eq!(parse_duration_ns("2m"), Some(120_000_000_000));
+        assert_eq!(parse_duration_ns("nonsense"), None);
+    }
+
+    #[test]
+    fn validation_rejects_bad_rules() {
+        let no_body: Rule = serde_yaml::from_str("name: x\nscore: 10").unwrap();
+        assert!(no_body.validate().is_err());
+        let both: Rule = serde_yaml::from_str(
+            "name: x\nscore: 10\nmatch:\n  event: exec\nsequence:\n  - event: exit",
+        )
+        .unwrap();
+        assert!(both.validate().is_err());
+        let bad_event: Rule =
+            serde_yaml::from_str("name: x\nscore: 10\nmatch:\n  event: nope").unwrap();
+        assert!(bad_event.validate().is_err());
     }
 }

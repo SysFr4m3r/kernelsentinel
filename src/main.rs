@@ -1,4 +1,3 @@
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -11,7 +10,7 @@ use kernelsentinel::clock::BootClock;
 use kernelsentinel::decoded::Event;
 use kernelsentinel::detect::{self, Baseline, Engine, IncidentRecord, RuleSet, Severity};
 use kernelsentinel::event::{EventType, RawEvent};
-use kernelsentinel::graph::{scan, ProcKey, ProcessGraph};
+use kernelsentinel::graph::{ProcKey, ProcessGraph, scan};
 use kernelsentinel::{doctor, sensors};
 
 #[derive(Parser)]
@@ -110,7 +109,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Record { out } => record(&out),
-        Command::Replay { input, json, baseline, rules } => replay(&input, json, baseline, rules),
+        Command::Replay {
+            input,
+            json,
+            baseline,
+            rules,
+        } => replay(&input, json, baseline, rules),
         Command::Baseline { capture, out } => baseline_build(&capture, &out),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
@@ -142,7 +146,9 @@ fn record(out: &str) -> Result<()> {
         Box::new(std::io::BufWriter::new(std::fs::File::create(out)?))
     };
     let self_pid = std::process::id();
-    status(&format!("kernelsentinel: recording to {out} (ctrl-c to stop)"));
+    status(&format!(
+        "kernelsentinel: recording to {out} (ctrl-c to stop)"
+    ));
 
     let mut count = 0u64;
     let stats = sensors::run(&STOP, |raw: RawEvent| {
@@ -284,7 +290,10 @@ fn baseline_build(capture: &str, out: &str) -> Result<()> {
         };
         graph.apply(&ev);
         for sig in detect::signals_for_event(&ev, &graph) {
-            let exe = graph.get(&sig.key).map(|node| node.exe.clone()).unwrap_or_default();
+            let exe = graph
+                .get(&sig.key)
+                .map(|node| node.exe.clone())
+                .unwrap_or_default();
             baseline.observe(sig.id, &exe);
         }
         n += 1;
@@ -414,13 +423,23 @@ fn investigate(pid: u32, capture: &str) -> Result<()> {
         // This process's own event timeline.
         if !timeline.is_empty() {
             emit("\ntimeline:");
-            for ev in timeline.iter().filter(|e| e.start_boottime == subject.start_boottime) {
-                emit(&format!("  {}  {}", clock.format(ev.ts_ns), event_detail(ev)));
+            for ev in timeline
+                .iter()
+                .filter(|e| e.start_boottime == subject.start_boottime)
+            {
+                emit(&format!(
+                    "  {}  {}",
+                    clock.format(ev.ts_ns),
+                    event_detail(ev)
+                ));
             }
         }
 
         // ATT&CK techniques from the lineage's signals.
-        let mut techniques: Vec<&str> = signals.iter().flat_map(|s| s.attack.iter().copied()).collect();
+        let mut techniques: Vec<&str> = signals
+            .iter()
+            .flat_map(|s| s.attack.iter().copied())
+            .collect();
         techniques.sort();
         techniques.dedup();
         if !techniques.is_empty() {
@@ -476,10 +495,7 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
     } else {
         String::new()
     };
-    println!(
-        "{prefix}{connector}{} ({}){cred}",
-        node.comm, node.key.pid
-    );
+    println!("{prefix}{connector}{} ({}){cred}", node.comm, node.key.pid);
 
     let children = graph.children_of(key);
     let child_prefix = if prefix.is_empty() {
@@ -494,7 +510,13 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
     }
 }
 
-fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<String>, rules: Option<String>) -> Result<()> {
+fn run(
+    max_processes: usize,
+    retain_secs: u64,
+    json: bool,
+    baseline: Option<String>,
+    rules: Option<String>,
+) -> Result<()> {
     let report = doctor::run();
     if report.fatal() {
         report.print();
@@ -510,12 +532,18 @@ fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<Stri
     let mut engine = Engine::new(Severity::Medium);
     if let Some(path) = &baseline {
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
-        status(&format!("kernelsentinel: applying baseline ({} known patterns)", b.len()));
+        status(&format!(
+            "kernelsentinel: applying baseline ({} known patterns)",
+            b.len()
+        ));
         engine = engine.with_baseline(b);
     }
     if let Some(dir) = &rules {
         let loaded = detect::load_rules(dir).map_err(anyhow::Error::msg)?;
-        status(&format!("kernelsentinel: loaded {} custom rules from {dir}", loaded.len()));
+        status(&format!(
+            "kernelsentinel: loaded {} custom rules from {dir}",
+            loaded.len()
+        ));
         engine = engine.with_rules(RuleSet::new(loaded));
     }
     let boot = scan::bootstrap(&mut graph);
@@ -589,7 +617,11 @@ fn run(max_processes: usize, retain_secs: u64, json: bool, baseline: Option<Stri
 /// pipe just means the reader left, so signal a clean stop and move on.
 fn emit(line: &str) {
     let mut out = std::io::stdout().lock();
-    if out.write_all(line.as_bytes()).and_then(|_| out.write_all(b"\n")).is_err() {
+    if out
+        .write_all(line.as_bytes())
+        .and_then(|_| out.write_all(b"\n"))
+        .is_err()
+    {
         STOP.store(true, Ordering::SeqCst);
     }
 }
@@ -656,13 +688,21 @@ fn event_detail(ev: &Event) -> String {
         }
         EventType::FileOpen => {
             let path = &ev.filename;
-            let mode = if ev.opened_for_write() { "write" } else { "read" };
+            let mode = if ev.opened_for_write() {
+                "write"
+            } else {
+                "read"
+            };
             let label = kernelsentinel::watchlist::label_for(path);
             format!("open[{mode}] {path}  <{label}>")
         }
         EventType::FileMode => {
             let path = &ev.filename;
-            let warn = if ev.degraded_path { " [path degraded]" } else { "" };
+            let warn = if ev.degraded_path {
+                " [path degraded]"
+            } else {
+                ""
+            };
             // Only the permission bits are meaningful to a reader here.
             format!(
                 "SUID-CREATE {} gained {} (0{:o} -> 0{:o}){}",
@@ -678,7 +718,11 @@ fn event_detail(ev: &Event) -> String {
             format!("SETCAP file capabilities set on {}{}", ev.filename, warn)
         }
         EventType::Ptrace => {
-            let kind = if ev.ptrace_is_attach() { "ATTACH" } else { "read" };
+            let kind = if ev.ptrace_is_attach() {
+                "ATTACH"
+            } else {
+                "read"
+            };
             format!(
                 "PTRACE[{kind}] -> pid {} ({})",
                 ev.target_pid,
@@ -686,7 +730,11 @@ fn event_detail(ev: &Event) -> String {
             )
         }
         EventType::ExecAnon => {
-            let warn = if ev.degraded_path { " [path degraded]" } else { "" };
+            let warn = if ev.degraded_path {
+                " [path degraded]"
+            } else {
+                ""
+            };
             format!(
                 "FILELESS-EXEC from {} {}{}",
                 ev.exec_source(),

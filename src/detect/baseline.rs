@@ -59,7 +59,8 @@ impl Baseline {
 
     /// Is this (signal, exe) pair part of the learned-normal set?
     pub fn known(&self, signal: &str, exe: &str) -> bool {
-        self.index.contains_key(&(signal.to_string(), exe.to_string()))
+        self.index
+            .contains_key(&(signal.to_string(), exe.to_string()))
     }
 
     /// Fold the index into the serializable `entries` before saving.
@@ -73,9 +74,8 @@ impl Baseline {
                 count: *count,
             })
             .collect();
-        self.entries.sort_by(|a, b| {
-            a.signal.cmp(&b.signal).then_with(|| a.exe.cmp(&b.exe))
-        });
+        self.entries
+            .sort_by(|a, b| a.signal.cmp(&b.signal).then_with(|| a.exe.cmp(&b.exe)));
     }
 
     /// Rebuild the lookup index after deserializing.
@@ -89,8 +89,7 @@ impl Baseline {
 
     pub fn save(&mut self, path: &str) -> std::io::Result<()> {
         self.flatten();
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, json)
     }
 

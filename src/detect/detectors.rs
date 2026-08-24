@@ -92,7 +92,14 @@ fn privilege_escalation(ev: &Event, key: ProcKey) -> Vec<Signal> {
         detail.push_str(&format!("gained {names}"));
     }
 
-    vec![Signal::new("privilege_escalation", 40, &["T1068"], key, ev.ts_ns, detail)]
+    vec![Signal::new(
+        "privilege_escalation",
+        40,
+        &["T1068"],
+        key,
+        ev.ts_ns,
+        detail,
+    )]
 }
 
 fn setcap(ev: &Event, key: ProcKey) -> Vec<Signal> {
@@ -229,7 +236,9 @@ fn shell_name(path: &str) -> &str {
 }
 
 fn is_shell(path: &str) -> bool {
-    const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "ksh", "fish", "csh", "tcsh"];
+    const SHELLS: &[&str] = &[
+        "sh", "bash", "dash", "zsh", "ash", "ksh", "fish", "csh", "tcsh",
+    ];
     SHELLS.contains(&shell_name(path))
 }
 
@@ -265,7 +274,10 @@ fn is_web_or_db_daemon(comm: &str) -> bool {
 /// reaching the host runtime socket is the escape itself.
 fn privileged_socket(ev: &Event, key: ProcKey) -> Vec<Signal> {
     let (score, detail) = if ev.container.is_empty() {
-        (25, format!("connected to the container runtime socket {}", ev.filename))
+        (
+            25,
+            format!("connected to the container runtime socket {}", ev.filename),
+        )
     } else {
         (
             60,
@@ -275,5 +287,12 @@ fn privileged_socket(ev: &Event, key: ProcKey) -> Vec<Signal> {
             ),
         )
     };
-    vec![Signal::new("runtime_socket_access", score, &["T1611"], key, ev.ts_ns, detail)]
+    vec![Signal::new(
+        "runtime_socket_access",
+        score,
+        &["T1611"],
+        key,
+        ev.ts_ns,
+        detail,
+    )]
 }

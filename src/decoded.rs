@@ -19,10 +19,10 @@ fn is_zero_u64(v: &u64) -> bool {
 fn is_false(v: &bool) -> bool {
     !*v
 }
-fn is_empty_str(v: &String) -> bool {
+fn is_empty_str(v: &str) -> bool {
     v.is_empty()
 }
-fn is_empty_vec(v: &Vec<String>) -> bool {
+fn is_empty_vec(v: &[String]) -> bool {
     v.is_empty()
 }
 

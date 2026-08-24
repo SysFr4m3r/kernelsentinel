@@ -42,7 +42,9 @@ pub fn bootstrap(graph: &mut ProcessGraph) -> ScanResult {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let Ok(pid) = name.parse::<u32>() else { continue };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
 
         match scan_one(pid, ns_per_tick) {
             Some((node, ppid)) => {

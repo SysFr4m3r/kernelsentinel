@@ -160,7 +160,9 @@ impl ProcessGraph {
         // Bounded: a corrupted parent link must not spin forever.
         for _ in 0..64 {
             let Some(k) = cur else { break };
-            let Some(node) = self.nodes.get(&k) else { break };
+            let Some(node) = self.nodes.get(&k) else {
+                break;
+            };
             chain.push(node);
             cur = node.parent;
         }
@@ -363,10 +365,7 @@ impl ProcessGraph {
         let expired: Vec<ProcKey> = self
             .nodes
             .values()
-            .filter(|n| {
-                n.exited
-                    .is_some_and(|e| now_ns.saturating_sub(e) > retain)
-            })
+            .filter(|n| n.exited.is_some_and(|e| now_ns.saturating_sub(e) > retain))
             .map(|n| n.key)
             .collect();
         for key in expired {
@@ -472,8 +471,14 @@ mod tests {
     fn fork_builds_parent_child_edges() {
         let mut g = graph();
         g.apply(&fork_ev(100, 1, 200, 2, 10));
-        let parent = ProcKey { pid: 100, start_boottime: 1 };
-        let child = ProcKey { pid: 200, start_boottime: 2 };
+        let parent = ProcKey {
+            pid: 100,
+            start_boottime: 1,
+        };
+        let child = ProcKey {
+            pid: 200,
+            start_boottime: 2,
+        };
         assert_eq!(g.get(&child).unwrap().parent, Some(parent));
         assert_eq!(g.children_of(&parent), vec![child]);
     }
@@ -486,8 +491,14 @@ mod tests {
         // Same PID, different start time: a genuinely different process.
         g.apply(&fork_ev(1, 0, 200, 900, 30));
         assert_eq!(g.len(), 3, "reused PID must not collapse into one node");
-        let old = ProcKey { pid: 200, start_boottime: 100 };
-        let new = ProcKey { pid: 200, start_boottime: 900 };
+        let old = ProcKey {
+            pid: 200,
+            start_boottime: 100,
+        };
+        let new = ProcKey {
+            pid: 200,
+            start_boottime: 900,
+        };
         assert!(g.get(&old).unwrap().exited.is_some());
         assert!(g.get(&new).unwrap().alive());
     }
@@ -497,7 +508,10 @@ mod tests {
         let mut g = graph();
         // Scanner saw a tick-truncated start time.
         let mut node = ProcNode::new(
-            ProcKey { pid: 500, start_boottime: 10_000_000 },
+            ProcKey {
+                pid: 500,
+                start_boottime: 10_000_000,
+            },
             Origin::Scanned,
         );
         node.comm = "victim".into();
@@ -506,7 +520,11 @@ mod tests {
         // BPF reports the exact nanosecond value for the same process.
         g.apply(&exit_ev(500, 10_004_321, 50));
 
-        assert_eq!(g.len(), 1, "scanned and observed must reconcile to one node");
+        assert_eq!(
+            g.len(),
+            1,
+            "scanned and observed must reconcile to one node"
+        );
         assert_eq!(g.stats().adopted, 1);
     }
 
@@ -514,7 +532,10 @@ mod tests {
     fn distant_start_time_is_not_adopted() {
         let mut g = graph();
         g.insert_scanned(ProcNode::new(
-            ProcKey { pid: 500, start_boottime: 10_000_000 },
+            ProcKey {
+                pid: 500,
+                start_boottime: 10_000_000,
+            },
             Origin::Scanned,
         ));
         // A second past the scanned value is a different process, not drift.
@@ -532,7 +553,13 @@ mod tests {
         assert_eq!(g.len(), 2);
         g.reap(9_000_000_000); // 8s later: expired
         assert_eq!(g.stats().reaped, 1);
-        assert!(g.get(&ProcKey { pid: 200, start_boottime: 2 }).is_none());
+        assert!(
+            g.get(&ProcKey {
+                pid: 200,
+                start_boottime: 2
+            })
+            .is_none()
+        );
     }
 
     #[test]
@@ -552,8 +579,14 @@ mod tests {
         let mut g = graph();
         g.apply(&fork_ev(1, 0, 2, 1, 10));
         // Force a cycle that could only arise from corruption.
-        let a = ProcKey { pid: 1, start_boottime: 0 };
-        let b = ProcKey { pid: 2, start_boottime: 1 };
+        let a = ProcKey {
+            pid: 1,
+            start_boottime: 0,
+        };
+        let b = ProcKey {
+            pid: 2,
+            start_boottime: 1,
+        };
         g.nodes.get_mut(&a).unwrap().parent = Some(b);
         assert!(g.ancestry(&b).len() <= 64);
     }
@@ -563,9 +596,15 @@ mod tests {
         let mut g = graph();
         g.apply(&fork_ev(1, 0, 2, 1, 10));
         g.apply(&fork_ev(2, 1, 3, 2, 20));
-        let mid = ProcKey { pid: 2, start_boottime: 1 };
+        let mid = ProcKey {
+            pid: 2,
+            start_boottime: 1,
+        };
         g.remove(mid);
-        let leaf = ProcKey { pid: 3, start_boottime: 2 };
+        let leaf = ProcKey {
+            pid: 3,
+            start_boottime: 2,
+        };
         assert_eq!(g.get(&leaf).unwrap().parent, None);
         assert!(g.roots().contains(&leaf));
     }

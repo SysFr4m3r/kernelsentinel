@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use kernelsentinel::decoded::Event;
-use kernelsentinel::detect::{load_rules, signals_for_event, Baseline, Engine, IncidentRecord, RuleSet, Severity};
+use kernelsentinel::detect::{
+    Baseline, Engine, IncidentRecord, RuleSet, Severity, load_rules, signals_for_event,
+};
 use kernelsentinel::graph::ProcessGraph;
 
 fn replay(path: &str, min: Severity) -> Vec<(Severity, u32, Vec<String>)> {
@@ -111,7 +113,6 @@ fn investigate_data_path_surfaces_the_chain() {
     assert!(ids.contains(&"privilege_escalation"), "signals: {ids:?}");
 }
 
-
 #[test]
 fn ndjson_incident_record_is_valid_and_complete() {
     // The critical incident from the host capture must serialize to valid JSON
@@ -141,9 +142,14 @@ fn ndjson_incident_record_is_valid_and_complete() {
     assert_eq!(v["subject"]["comm"], "chmod");
     assert!(v["lineage"].as_array().unwrap().len() >= 4);
     assert_eq!(v["signals"].as_array().unwrap().len(), 2);
-    assert!(v["attack"].as_array().unwrap().iter().any(|a| a == "T1548.001"));
+    assert!(
+        v["attack"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "T1548.001")
+    );
 }
-
 
 #[test]
 fn module_load_fires_and_captures_the_name() {
@@ -163,15 +169,21 @@ fn module_load_fires_and_captures_the_name() {
         g.apply(&ev);
         if let Some(inc) = e.on_event(&ev, &g) {
             if let Some(sig) = inc.signals.iter().find(|s| s.id == "module_load") {
-                assert!(sig.detail.contains("dummy"), "module name lost: {}", sig.detail);
+                assert!(
+                    sig.detail.contains("dummy"),
+                    "module name lost: {}",
+                    sig.detail
+                );
                 assert!(sig.attack.contains(&"T1547.006"));
                 saw_module = true;
             }
         }
     }
-    assert!(saw_module, "module_load signal never fired on a real module-load capture");
+    assert!(
+        saw_module,
+        "module_load signal never fired on a real module-load capture"
+    );
 }
-
 
 // Build a baseline of (signal, exe) pairs from a clean capture.
 fn learn(path: &str) -> Baseline {
@@ -192,7 +204,11 @@ fn learn(path: &str) -> Baseline {
     b
 }
 
-fn replay_with(path: &str, min: Severity, baseline: Option<Baseline>) -> Vec<(Severity, u32, Vec<String>)> {
+fn replay_with(
+    path: &str,
+    min: Severity,
+    baseline: Option<Baseline>,
+) -> Vec<(Severity, u32, Vec<String>)> {
     let text = std::fs::read_to_string(path).unwrap();
     let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
     let mut e = Engine::new(min);
@@ -222,10 +238,20 @@ fn baseline_suppresses_routine_sudo_modprobe() {
     assert!(baseline.known("privilege_escalation", "/usr/bin/sudo"));
 
     let without = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, None);
-    assert!(!without.is_empty(), "routine sudo modprobe is CRITICAL without a baseline");
+    assert!(
+        !without.is_empty(),
+        "routine sudo modprobe is CRITICAL without a baseline"
+    );
 
-    let with = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, Some(baseline));
-    assert!(with.is_empty(), "baseline should suppress routine sudo modprobe, got {with:?}");
+    let with = replay_with(
+        "tests/fixtures/module_load.ndjson",
+        Severity::Medium,
+        Some(baseline),
+    );
+    assert!(
+        with.is_empty(),
+        "baseline should suppress routine sudo modprobe, got {with:?}"
+    );
 }
 
 #[test]
@@ -235,12 +261,18 @@ fn baseline_preserves_novel_attack_signal() {
     // the routine escalation is downweighted. The incident survives -- baselining
     // must suppress the routine part without hiding the novel part.
     let baseline = learn("tests/fixtures/module_load.ndjson");
-    let incidents = replay_with("tests/fixtures/host_sudo_suid.ndjson", Severity::Medium, Some(baseline));
+    let incidents = replay_with(
+        "tests/fixtures/host_sudo_suid.ndjson",
+        Severity::Medium,
+        Some(baseline),
+    );
     assert_eq!(incidents.len(), 1, "the real SUID chain must still alert");
     let (_, _, ids) = &incidents[0];
-    assert!(ids.contains(&"suid_create".to_string()), "novel signal must survive baselining");
+    assert!(
+        ids.contains(&"suid_create".to_string()),
+        "novel signal must survive baselining"
+    );
 }
-
 
 #[test]
 fn container_context_multiplier_applies() {
@@ -248,9 +280,15 @@ fn container_context_multiplier_applies() {
     // An escalation + SUID chain running inside a container must get the x1.1
     // container context multiplier. Events carry a resolved container label.
     let events = vec![
-        ev(r#"{"ts_ns":1000000000,"type":3,"tgid":100,"ppid":1,"start_boottime":900000000,"comm":"bash","child_pid":200,"child_start_boottime":1000000000,"container":"docker:abc123def456"}"#),
-        ev(r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261,"container":"docker:abc123def456"}"#),
-        ev(r#"{"ts_ns":1003000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551,"container":"docker:abc123def456"}"#),
+        ev(
+            r#"{"ts_ns":1000000000,"type":3,"tgid":100,"ppid":1,"start_boottime":900000000,"comm":"bash","child_pid":200,"child_start_boottime":1000000000,"container":"docker:abc123def456"}"#,
+        ),
+        ev(
+            r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261,"container":"docker:abc123def456"}"#,
+        ),
+        ev(
+            r#"{"ts_ns":1003000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551,"container":"docker:abc123def456"}"#,
+        ),
     ];
     let mut g = ProcessGraph::new(1000, Duration::from_secs(3600));
     let mut e = Engine::new(Severity::Low);
@@ -265,16 +303,21 @@ fn container_context_multiplier_applies() {
     }
     // The node must carry the container label, and the multiplier must have fired.
     let node = g
-        .get(&ProcKey { pid: 200, start_boottime: 1000000000 })
+        .get(&ProcKey {
+            pid: 200,
+            start_boottime: 1000000000,
+        })
         .unwrap();
     assert_eq!(node.container, "docker:abc123def456");
-    assert!(multiplied, "container context multiplier should apply inside a container");
+    assert!(
+        multiplied,
+        "container context multiplier should apply inside a container"
+    );
 }
 
 fn ev(json: &str) -> Event {
     serde_json::from_str(json).unwrap()
 }
-
 
 #[test]
 fn container_events_carry_resolved_id_and_multiplier() {
@@ -303,9 +346,11 @@ fn container_events_carry_resolved_id_and_multiplier() {
         g.nodes().any(|n| n.container.starts_with("docker:")),
         "no container id was resolved from the capture"
     );
-    assert!(container_incident, "container context multiplier never applied");
+    assert!(
+        container_incident,
+        "container context multiplier never applied"
+    );
 }
-
 
 #[test]
 fn host_docker_sock_access_is_low() {
@@ -316,18 +361,26 @@ fn host_docker_sock_access_is_low() {
     let mut e = Engine::new(Severity::Info);
     let mut saw_socket = false;
     for line in text.lines() {
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         let ev: Event = serde_json::from_str(line).unwrap();
         g.apply(&ev);
         if let Some(inc) = e.on_event(&ev, &g) {
             if let Some(sig) = inc.signals.iter().find(|s| s.id == "runtime_socket_access") {
                 saw_socket = true;
-                assert_eq!(sig.score, 25, "host runtime-socket access should be low-scored");
+                assert_eq!(
+                    sig.score, 25,
+                    "host runtime-socket access should be low-scored"
+                );
                 assert!(sig.attack.contains(&"T1611"));
             }
         }
     }
-    assert!(saw_socket, "the docker.sock connection should produce a signal");
+    assert!(
+        saw_socket,
+        "the docker.sock connection should produce a signal"
+    );
 }
 
 #[test]
@@ -343,11 +396,19 @@ fn containerized_docker_sock_access_is_high() {
     g.apply(&fork);
     e.on_event(&fork, &g);
     g.apply(&sock);
-    let inc = e.on_event(&sock, &g).expect("containerized docker.sock access must alert");
-    let sig = inc.signals.iter().find(|s| s.id == "runtime_socket_access").unwrap();
-    assert_eq!(sig.score, 60, "containerized runtime-socket access is the escape primitive");
+    let inc = e
+        .on_event(&sock, &g)
+        .expect("containerized docker.sock access must alert");
+    let sig = inc
+        .signals
+        .iter()
+        .find(|s| s.id == "runtime_socket_access")
+        .unwrap();
+    assert_eq!(
+        sig.score, 60,
+        "containerized runtime-socket access is the escape primitive"
+    );
 }
-
 
 #[test]
 fn engine_reap_bounds_state_with_the_graph() {
@@ -362,23 +423,44 @@ fn engine_reap_bounds_state_with_the_graph() {
     // exits and ages past retention.
     let fork = serde_json::from_str::<Event>(r#"{"ts_ns":999000000,"type":3,"tgid":1,"ppid":0,"start_boottime":0,"comm":"bash","child_pid":200,"child_start_boottime":1000000000}"#).unwrap();
     let suid = serde_json::from_str::<Event>(r#"{"ts_ns":1000000000,"type":6,"tgid":200,"ppid":1,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261}"#).unwrap();
-    let exit = serde_json::from_str::<Event>(r#"{"ts_ns":1001000000,"type":2,"tgid":200,"ppid":1,"start_boottime":1000000000}"#).unwrap();
+    let exit = serde_json::from_str::<Event>(
+        r#"{"ts_ns":1001000000,"type":2,"tgid":200,"ppid":1,"start_boottime":1000000000}"#,
+    )
+    .unwrap();
     g.apply(&fork);
     g.apply(&suid);
     e.on_event(&suid, &g);
     g.apply(&exit);
 
-    assert!(e.assess(ProcKey { pid: 200, start_boottime: 1000000000 }, &g).0.len() > 0);
+    assert!(
+        !e.assess(
+            ProcKey {
+                pid: 200,
+                start_boottime: 1000000000
+            },
+            &g
+        )
+        .0
+        .is_empty()
+    );
 
     // Reap well past the 5s retention window, then reap the engine.
     g.reap(10_000_000_000);
     e.reap(&g);
 
     // The reaped process's signals are gone from engine state.
-    let (signals, _) = e.assess(ProcKey { pid: 200, start_boottime: 1000000000 }, &g);
-    assert!(signals.is_empty(), "engine retained signals for a reaped process");
+    let (signals, _) = e.assess(
+        ProcKey {
+            pid: 200,
+            start_boottime: 1000000000,
+        },
+        &g,
+    );
+    assert!(
+        signals.is_empty(),
+        "engine retained signals for a reaped process"
+    );
 }
-
 
 #[test]
 fn yaml_dsl_rule_detects_the_escalation_chain() {
@@ -394,7 +476,9 @@ fn yaml_dsl_rule_detects_the_escalation_chain() {
 
     let mut saw_dsl = false;
     for line in text.lines() {
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         let ev: Event = serde_json::from_str(line).unwrap();
         g.apply(&ev);
         if let Some(inc) = e.on_event(&ev, &g) {
@@ -404,5 +488,8 @@ fn yaml_dsl_rule_detects_the_escalation_chain() {
             }
         }
     }
-    assert!(saw_dsl, "the YAML sequence rule never fired on the real chain");
+    assert!(
+        saw_dsl,
+        "the YAML sequence rule never fired on the real chain"
+    );
 }
