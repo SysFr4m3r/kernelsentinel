@@ -10,9 +10,11 @@
 //!   - bind to a loopback/explicit address; put TLS in front for real deployment.
 
 mod dashboard;
+mod keys;
 mod ship;
 mod store;
 
+pub use keys::{AgentKeys, generate_key};
 pub use ship::{hostname, ship};
 pub use store::{Store, band};
 
@@ -28,8 +30,22 @@ pub struct Config {
     pub addr: String,
     /// Admin dashboard password. Required.
     pub admin_password: String,
-    /// Shared key agents present to POST incidents. Required.
+    /// Shared fallback key (used only when no per-agent keys file is set).
     pub ingest_key: String,
+    /// Per-agent keys (key -> host). When set, the key determines the host and
+    /// the shared key is not accepted -- a leaked key cannot impersonate others.
+    pub agent_keys: Option<AgentKeys>,
+    /// NDJSON journal path for persistence. None = in-memory only.
+    pub journal: Option<String>,
+    /// TLS material. When set, the server speaks HTTPS.
+    pub tls: Option<Tls>,
+}
+
+pub struct Tls {
+    /// Path to the PEM certificate chain.
+    pub cert: String,
+    /// Path to the PEM private key.
+    pub key: String,
 }
 
 struct Sessions {
@@ -61,24 +77,61 @@ impl Sessions {
 }
 
 pub fn serve(cfg: Config) -> Result<()> {
-    if cfg.admin_password.is_empty() || cfg.ingest_key.is_empty() {
+    if cfg.admin_password.is_empty() {
+        anyhow::bail!("refusing to start without an admin password (set KS_ADMIN_PASSWORD)");
+    }
+    if cfg.agent_keys.is_none() && cfg.ingest_key.is_empty() {
         anyhow::bail!(
-            "refusing to start without an admin password and an ingest key \
-             (set KS_ADMIN_PASSWORD and KS_INGEST_KEY)"
+            "refusing to start without agent authentication: set --keys <file> \
+             (per-agent keys, recommended) or KS_INGEST_KEY (single shared key)"
         );
     }
-    let store = Arc::new(Store::new());
+    let store = Arc::new(match &cfg.journal {
+        Some(path) => {
+            let s = Store::persistent(path).context("opening the incident journal")?;
+            eprintln!("kernelsentinel: persisting incidents to {path}");
+            s
+        }
+        None => Store::new(),
+    });
+    if let Some(k) = &cfg.agent_keys {
+        eprintln!("kernelsentinel: {} per-agent key(s) loaded", k.len());
+    }
     let sessions = Arc::new(Sessions::new());
     let cfg = Arc::new(cfg);
 
-    let server = Server::http(&cfg.addr)
-        .map_err(|e| anyhow::anyhow!("binding {}: {e}", cfg.addr))
-        .context("starting HTTP server")?;
-    eprintln!(
-        "kernelsentinel: fleet server on http://{} (admin dashboard + agent ingest)",
-        cfg.addr
-    );
-    eprintln!("kernelsentinel: put TLS in front of this before exposing it beyond localhost");
+    let server = match &cfg.tls {
+        Some(tls) => {
+            let certificate = std::fs::read(&tls.cert)
+                .with_context(|| format!("reading TLS cert {}", tls.cert))?;
+            let private_key =
+                std::fs::read(&tls.key).with_context(|| format!("reading TLS key {}", tls.key))?;
+            let s = Server::https(
+                &cfg.addr,
+                tiny_http::SslConfig {
+                    certificate,
+                    private_key,
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("binding {} (https): {e}", cfg.addr))?;
+            eprintln!("kernelsentinel: fleet server on https://{} (TLS)", cfg.addr);
+            s
+        }
+        None => {
+            let s = Server::http(&cfg.addr)
+                .map_err(|e| anyhow::anyhow!("binding {}: {e}", cfg.addr))
+                .context("starting HTTP server")?;
+            eprintln!(
+                "kernelsentinel: fleet server on http://{} (NO TLS)",
+                cfg.addr
+            );
+            eprintln!(
+                "kernelsentinel: WARNING -- no TLS. Use --tls-cert/--tls-key, or keep this on                  localhost only. The ingest key travels in a header."
+            );
+            s
+        }
+    };
+    eprintln!("kernelsentinel: admin dashboard + agent ingest ready");
 
     for req in server.incoming_requests() {
         let (cfg, store, sessions) = (cfg.clone(), store.clone(), sessions.clone());
@@ -102,11 +155,25 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
     let resp: Response<std::io::Cursor<Vec<u8>>> = match (&method, path.as_str()) {
         // Agent -> server. Key-authenticated, one way in.
         (Method::Post, "/api/ingest") => {
-            if !check_ingest_key(&req, cfg) {
-                let _ = req.respond(text(401, "invalid ingest key"));
-                return;
-            }
-            let host = header(&req, "X-Sentinel-Host").unwrap_or_else(|| "unknown".into());
+            let presented = header(&req, "X-Sentinel-Key").unwrap_or_default();
+            // With per-agent keys the KEY determines the host -- a self-declared
+            // header is ignored, so a leaked key can only write its own bucket.
+            let host = match &cfg.agent_keys {
+                Some(keys) => match keys.resolve(&presented) {
+                    Some(h) => h.to_string(),
+                    None => {
+                        let _ = req.respond(text(401, "unknown agent key"));
+                        return;
+                    }
+                },
+                None => {
+                    if !ct_eq(&presented, &cfg.ingest_key) {
+                        let _ = req.respond(text(401, "invalid ingest key"));
+                        return;
+                    }
+                    header(&req, "X-Sentinel-Host").unwrap_or_else(|| "unknown".into())
+                }
+            };
             let kernel = header(&req, "X-Sentinel-Kernel").unwrap_or_default();
             let ip = header(&req, "X-Sentinel-Ip").unwrap_or_default();
             let mut body = String::new();
@@ -174,10 +241,6 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
 
 fn authed(req: &Request, sessions: &Sessions) -> bool {
     cookie(req, "ks_session").is_some_and(|t| sessions.valid(&t))
-}
-
-fn check_ingest_key(req: &Request, cfg: &Config) -> bool {
-    header(req, "X-Sentinel-Key").is_some_and(|k| ct_eq(&k, &cfg.ingest_key))
 }
 
 // --- helpers ---

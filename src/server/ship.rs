@@ -3,19 +3,26 @@
 //! the only direction. There is deliberately no client that accepts commands
 //! from the server.
 //!
-//! v1 speaks plain HTTP for a localhost demo; a real deployment MUST wrap this
-//! in TLS (a reverse proxy, or a TLS client). The ingest key travels in a
-//! header, so without TLS it is only as private as the network path.
+//! Speaks http:// (localhost/dev) or https:// with a pinned server certificate
+//! (--ca). The ingest key travels in a header, so use https for anything beyond
+//! localhost.
 
 use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
 /// Read NDJSON incidents from `reader` and POST each batch to `url`
 /// (`http://host:port`). `key` authenticates the agent; `host` labels it.
-pub fn ship(url: &str, key: &str, host: &str, reader: impl BufRead) -> Result<()> {
-    let (hostport, path) = split_url(url)?;
+pub fn ship(
+    url: &str,
+    key: &str,
+    host: &str,
+    ca: Option<&str>,
+    reader: impl BufRead,
+) -> Result<()> {
+    let (scheme, hostport, path) = split_url(url)?;
     let kernel = read_first_line("/proc/sys/kernel/osrelease");
 
     let mut sent = 0u64;
@@ -24,7 +31,7 @@ pub fn ship(url: &str, key: &str, host: &str, reader: impl BufRead) -> Result<()
         if batch.is_empty() {
             return Ok(());
         }
-        post(&hostport, &path, key, host, &kernel, batch)?;
+        post(scheme, &hostport, &path, key, host, &kernel, ca, batch)?;
         batch.clear();
         Ok(())
     };
@@ -47,20 +54,49 @@ pub fn ship(url: &str, key: &str, host: &str, reader: impl BufRead) -> Result<()
     Ok(())
 }
 
-fn post(hostport: &str, path: &str, key: &str, host: &str, kernel: &str, body: &str) -> Result<()> {
-    let mut stream =
-        TcpStream::connect(hostport).with_context(|| format!("connecting to {hostport}"))?;
+#[derive(Clone, Copy)]
+enum Scheme {
+    Http,
+    Https,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn post(
+    scheme: Scheme,
+    hostport: &str,
+    path: &str,
+    key: &str,
+    host: &str,
+    kernel: &str,
+    ca: Option<&str>,
+    body: &str,
+) -> Result<()> {
     let req = format!(
         "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Sentinel-Key: {key}\r\n\
          X-Sentinel-Host: {host}\r\nX-Sentinel-Kernel: {kernel}\r\n\
          Content-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream
-        .write_all(req.as_bytes())
-        .context("sending request")?;
-    let mut resp = String::new();
-    stream.read_to_string(&mut resp).ok();
+    let mut sock =
+        TcpStream::connect(hostport).with_context(|| format!("connecting to {hostport}"))?;
+    let resp = match scheme {
+        Scheme::Http => {
+            sock.write_all(req.as_bytes()).context("sending request")?;
+            let mut r = String::new();
+            sock.read_to_string(&mut r).ok();
+            r
+        }
+        Scheme::Https => {
+            let ca = ca.context("https requires --ca <server-cert.pem> to pin the server")?;
+            let name = hostport.split(':').next().unwrap_or(hostport);
+            let mut conn = tls_conn(ca, name)?;
+            let mut stream = rustls::Stream::new(&mut conn, &mut sock);
+            stream.write_all(req.as_bytes()).context("TLS write")?;
+            let mut r = String::new();
+            let _ = stream.read_to_string(&mut r);
+            r
+        }
+    };
     let status = resp.lines().next().unwrap_or("");
     if !status.contains(" 200") {
         anyhow::bail!("server rejected the batch: {status}");
@@ -68,10 +104,58 @@ fn post(hostport: &str, path: &str, key: &str, host: &str, kernel: &str, body: &
     Ok(())
 }
 
-fn split_url(url: &str) -> Result<(String, String)> {
-    let rest = url
-        .strip_prefix("http://")
-        .context("ship URL must start with http:// (v1 is plain HTTP; front with TLS)")?;
+/// A rustls client that trusts ONLY the exact pinned certificate in `ca`. This
+/// is true certificate pinning -- the right trust model for a fixed fleet: the
+/// server must present exactly this cert, so no public CA (or a rogue one) can
+/// forge it. Identity is the cert, not the hostname.
+fn tls_conn(ca: &str, server_name: &str) -> Result<rustls::ClientConnection> {
+    let pem = std::fs::read(ca).with_context(|| format!("reading pinned cert {ca}"))?;
+    let der = rustls_pemfile::certs(&mut &pem[..])
+        .context("parsing pinned cert")?
+        .into_iter()
+        .next()
+        .context("pinned cert file has no certificate")?;
+
+    let config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_custom_certificate_verifier(Arc::new(Pinned(der)))
+        .with_no_client_auth();
+    // The pin makes the SNI name irrelevant to trust; use it only for the handshake.
+    let name = rustls::ServerName::try_from(server_name)
+        .unwrap_or_else(|_| rustls::ServerName::try_from("localhost").unwrap());
+    rustls::ClientConnection::new(Arc::new(config), name).context("TLS setup")
+}
+
+/// Verifier that accepts the server iff it presents exactly the pinned cert.
+struct Pinned(Vec<u8>);
+impl rustls::client::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp: &[u8],
+        _now: std::time::SystemTime,
+    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
+        if end_entity.0 == self.0 {
+            Ok(rustls::client::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "server certificate does not match the pinned cert".into(),
+            ))
+        }
+    }
+}
+
+fn split_url(url: &str) -> Result<(Scheme, String, String)> {
+    let (scheme, rest, default_port) = if let Some(r) = url.strip_prefix("https://") {
+        (Scheme::Https, r, "443")
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (Scheme::Http, r, "80")
+    } else {
+        anyhow::bail!("ship URL must start with http:// or https://");
+    };
     let (hostport, path) = match rest.find('/') {
         Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
         None => (rest.to_string(), "/api/ingest".to_string()),
@@ -79,9 +163,9 @@ fn split_url(url: &str) -> Result<(String, String)> {
     let hostport = if hostport.contains(':') {
         hostport
     } else {
-        format!("{hostport}:80")
+        format!("{hostport}:{default_port}")
     };
-    Ok((hostport, path))
+    Ok((scheme, hostport, path))
 }
 
 fn read_first_line(path: &str) -> String {
@@ -106,14 +190,13 @@ mod tests {
 
     #[test]
     fn url_splitting() {
+        let (_, hp, path) = split_url("http://10.0.0.5:8443/api/ingest").unwrap();
         assert_eq!(
-            split_url("http://10.0.0.5:8443/api/ingest").unwrap(),
-            ("10.0.0.5:8443".into(), "/api/ingest".into())
+            (hp.as_str(), path.as_str()),
+            ("10.0.0.5:8443", "/api/ingest")
         );
-        assert_eq!(
-            split_url("http://central").unwrap(),
-            ("central:80".into(), "/api/ingest".into())
-        );
-        assert!(split_url("https://x").is_err());
+        let (_, hp, path) = split_url("https://central/api/ingest").unwrap();
+        assert_eq!((hp.as_str(), path.as_str()), ("central:443", "/api/ingest"));
+        assert!(split_url("ftp://x").is_err());
     }
 }

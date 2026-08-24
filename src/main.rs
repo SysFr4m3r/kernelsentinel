@@ -91,18 +91,33 @@ enum Command {
     /// Run the central fleet server: agents ingest here, admins view the
     /// dashboard. Reads KS_ADMIN_PASSWORD and KS_INGEST_KEY from the environment.
     Serve {
-        /// Address to bind, host:port. Keep it loopback unless TLS fronts it.
+        /// Address to bind, host:port. Keep it loopback unless TLS is enabled.
         #[arg(long, default_value = "127.0.0.1:8088")]
         bind: String,
+        /// Per-agent keys file (host key per line). Recommended over a shared key.
+        #[arg(long)]
+        keys: Option<String>,
+        /// NDJSON journal path so incidents survive a restart.
+        #[arg(long)]
+        journal: Option<String>,
+        /// TLS certificate chain (PEM). Enables HTTPS with --tls-key.
+        #[arg(long)]
+        tls_cert: Option<String>,
+        /// TLS private key (PEM).
+        #[arg(long)]
+        tls_key: Option<String>,
     },
     /// Ship incident NDJSON (from `run --json` / `replay --json` on stdin) to a
     /// central fleet server. Host -> central only; no control channel back.
     Ship {
-        /// Server ingest URL, e.g. http://central:8088/api/ingest
+        /// Server ingest URL, e.g. https://central:8088/api/ingest
         url: String,
         /// This host's label (default: the system hostname).
         #[arg(long)]
         host: Option<String>,
+        /// Pinned server certificate (PEM) for https URLs.
+        #[arg(long)]
+        ca: Option<String>,
     },
     /// Validate and list the YAML detection rules in a directory.
     Rules {
@@ -134,8 +149,14 @@ fn main() -> Result<()> {
         Command::Baseline { capture, out } => baseline_build(&capture, &out),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
-        Command::Serve { bind } => serve_cmd(&bind),
-        Command::Ship { url, host } => ship_cmd(&url, host),
+        Command::Serve {
+            bind,
+            keys,
+            journal,
+            tls_cert,
+            tls_key,
+        } => serve_cmd(&bind, keys, journal, tls_cert, tls_key),
+        Command::Ship { url, host, ca } => ship_cmd(&url, host, ca),
         Command::Rules { dir } => rules_cmd(&dir),
         Command::Run {
             max_processes,
@@ -268,25 +289,43 @@ fn replay(input: &str, json: bool, baseline: Option<String>, rules: Option<Strin
 }
 
 /// Run the central fleet server.
-fn serve_cmd(bind: &str) -> Result<()> {
-    use kernelsentinel::server::{Config, serve};
+fn serve_cmd(
+    bind: &str,
+    keys: Option<String>,
+    journal: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+) -> Result<()> {
+    use kernelsentinel::server::{AgentKeys, Config, Tls, serve};
     let admin_password = std::env::var("KS_ADMIN_PASSWORD").unwrap_or_default();
     let ingest_key = std::env::var("KS_INGEST_KEY").unwrap_or_default();
+    let agent_keys = match keys {
+        Some(path) => Some(AgentKeys::load(&path).map_err(anyhow::Error::msg)?),
+        None => None,
+    };
+    let tls = match (tls_cert, tls_key) {
+        (Some(c), Some(k)) => Some(Tls { cert: c, key: k }),
+        (None, None) => None,
+        _ => anyhow::bail!("--tls-cert and --tls-key must be given together"),
+    };
     serve(Config {
         addr: bind.to_string(),
         admin_password,
         ingest_key,
+        agent_keys,
+        journal,
+        tls,
     })
 }
 
 /// Ship incident NDJSON from stdin to a central server.
-fn ship_cmd(url: &str, host: Option<String>) -> Result<()> {
+fn ship_cmd(url: &str, host: Option<String>, ca: Option<String>) -> Result<()> {
     use kernelsentinel::server::{hostname, ship};
     let key = std::env::var("KS_INGEST_KEY")
-        .map_err(|_| anyhow::anyhow!("set KS_INGEST_KEY to the server's ingest key"))?;
+        .map_err(|_| anyhow::anyhow!("set KS_INGEST_KEY to this agent's ingest key"))?;
     let host = host.unwrap_or_else(hostname);
     let stdin = std::io::stdin();
-    ship(url, &key, &host, stdin.lock())
+    ship(url, &key, &host, ca.as_deref(), stdin.lock())
 }
 
 /// Validate and list the rules in a directory.

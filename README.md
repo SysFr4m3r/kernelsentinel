@@ -87,7 +87,9 @@ alerts once, not per event; and MITRE ATT&CK mapping.
   match/sequence rules that flow through the same engine (see [docs/WRITING_RULES.md](docs/WRITING_RULES.md))
 - **Fleet monitoring**: `kernelsentinel serve` runs a central web panel; agents `ship` their incidents
   to it and admins log in to a read-only dashboard that ranks hosts by score. Data flows one way
-  (host → central), so the dashboard can audit activity but never reach into a host
+  (host → central), so the dashboard can audit activity but never reach into a host. Supports
+  per-agent keys (a leaked key can't impersonate other hosts), a persistence journal (reports
+  survive restarts), and TLS with client-side certificate pinning
 - `kernelsentinel tree`, `doctor`
 
 **Tested**: 26 tests, including detections replayed from **real kernel captures** committed as

@@ -3,10 +3,24 @@
 //! persistence (sqlite/file) is future work.
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// One line of the NDJSON journal.
+#[derive(Serialize, Deserialize)]
+struct PersistLine {
+    host: String,
+    #[serde(default)]
+    kernel: String,
+    #[serde(default)]
+    ip: String,
+    received: u64,
+    record: serde_json::Value,
+}
 
 /// One incident as received from an agent: the agent's own IncidentRecord JSON,
 /// kept opaque here (re-serialized to the dashboard as-is) plus the fields the
@@ -59,6 +73,11 @@ pub struct HostSummary {
 
 pub struct Store {
     hosts: Mutex<HashMap<String, HostState>>,
+    /// Append-only NDJSON journal so incidents survive a restart. None = memory
+    /// only. Each line is one persisted record; the store is rebuilt from it on
+    /// startup and the file is compacted to the retained set.
+    journal: Mutex<Option<std::fs::File>>,
+    journal_path: Option<PathBuf>,
 }
 
 impl Default for Store {
@@ -71,18 +90,89 @@ impl Store {
     pub fn new() -> Self {
         Self {
             hosts: Mutex::new(HashMap::new()),
+            journal: Mutex::new(None),
+            journal_path: None,
         }
+    }
+
+    /// A store backed by an NDJSON journal at `path`: load what is already there,
+    /// then append new incidents so reports survive a restart. On load the store
+    /// is capped per host, and the journal is compacted to exactly the retained
+    /// set so it cannot grow without bound.
+    pub fn persistent(path: &str) -> std::io::Result<Self> {
+        let store = Store::new();
+        let pb = PathBuf::from(path);
+
+        if let Ok(text) = std::fs::read_to_string(&pb) {
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(rec) = serde_json::from_str::<PersistLine>(line) {
+                    store.ingest_inner(&rec.host, &rec.kernel, &rec.ip, rec.record, rec.received);
+                }
+            }
+        }
+
+        // Compact: rewrite the journal from the (now bounded) in-memory state.
+        let mut f = std::fs::File::create(&pb)?;
+        {
+            let hosts = store.hosts.lock().unwrap();
+            for (host, state) in hosts.iter() {
+                for inc in &state.incidents {
+                    let line = PersistLine {
+                        host: host.clone(),
+                        kernel: state.kernel.clone(),
+                        ip: state.ip.clone(),
+                        received: inc.received,
+                        record: inc.record.clone(),
+                    };
+                    writeln!(f, "{}", serde_json::to_string(&line).unwrap())?;
+                }
+            }
+        }
+        f.flush()?;
+
+        let mut store = store;
+        store.journal = Mutex::new(Some(std::fs::OpenOptions::new().append(true).open(&pb)?));
+        store.journal_path = Some(pb);
+        Ok(store)
     }
 
     /// Record one incident from `host`. `record` is the agent's incident JSON.
     pub fn ingest(&self, host: &str, kernel: &str, ip: &str, record: serde_json::Value) {
+        // Journal first (durability), then apply to memory.
+        if let Ok(mut j) = self.journal.lock() {
+            if let Some(f) = j.as_mut() {
+                let line = PersistLine {
+                    host: host.to_string(),
+                    kernel: kernel.to_string(),
+                    ip: ip.to_string(),
+                    received: epoch(),
+                    record: record.clone(),
+                };
+                if let Ok(s) = serde_json::to_string(&line) {
+                    let _ = writeln!(f, "{s}");
+                }
+            }
+        }
+        self.ingest_inner(host, kernel, ip, record, epoch());
+    }
+
+    fn ingest_inner(
+        &self,
+        host: &str,
+        kernel: &str,
+        ip: &str,
+        record: serde_json::Value,
+        now: u64,
+    ) {
         let severity = record
             .get("severity")
             .and_then(|v| v.as_str())
             .unwrap_or("INFO")
             .to_string();
         let score = record.get("score").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let now = epoch();
 
         let mut hosts = self.hosts.lock().unwrap();
         let state = hosts.entry(host.to_string()).or_default();
