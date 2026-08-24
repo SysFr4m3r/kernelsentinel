@@ -239,8 +239,10 @@ web-prod-01   4f8c1e…   # generate each with: openssl rand -hex 32
 db-app-03     9a2b7d…
 ```
 
-Admins then open `https://central:8088`, sign in with the admin password, and get
-the host list ranked by score.
+Admins then open `https://central:8088` and sign in as user **admin** with that password
+(seeded from KS_ADMIN_PASSWORD on first start). From the **Users** view an admin can add more
+accounts (admin or viewer role); each resolution records the real username. Sessions are signed
+tokens, so they survive a server restart.
 
 ### On each monitored VM
 

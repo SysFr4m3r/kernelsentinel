@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use argon2::Argon2;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use rusqlite::Connection;
 use serde::Serialize;
 
@@ -121,6 +123,10 @@ impl Store {
         }
     }
 
+    pub fn has_db(&self) -> bool {
+        self.db.is_some()
+    }
+
     /// A store backed by a sqlite database at `path`: durable, queryable history
     /// that survives restarts. On open it optionally prunes incidents older than
     /// `retain_days` (0 = keep forever), then loads the recent per-host working
@@ -139,7 +145,12 @@ impl Store {
                  note TEXT DEFAULT ''
              );
              CREATE INDEX IF NOT EXISTS idx_host ON incidents(host);
-             CREATE INDEX IF NOT EXISTS idx_resolved ON incidents(resolved, resolved_at);",
+             CREATE INDEX IF NOT EXISTS idx_resolved ON incidents(resolved, resolved_at);
+             CREATE TABLE IF NOT EXISTS users (
+                 username TEXT PRIMARY KEY, pw_hash TEXT NOT NULL,
+                 role TEXT NOT NULL DEFAULT 'admin', created_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
 
         if retain_days > 0 {
@@ -291,6 +302,122 @@ impl Store {
         found
     }
 
+    /// The HMAC secret for signing session tokens: read from the config table,
+    /// generated and stored on first use, so tokens survive a restart. Without a
+    /// database (in-memory mode) a fresh secret is returned each start.
+    pub fn session_secret(&self) -> Vec<u8> {
+        if let Some(db) = &self.db {
+            let conn = db.lock().unwrap();
+            if let Ok(v) = conn.query_row("SELECT value FROM config WHERE key='secret'", [], |r| {
+                r.get::<_, String>(0)
+            }) {
+                if let Some(b) = unhex(&v) {
+                    return b;
+                }
+            }
+            let secret = random_bytes(32);
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES ('secret', ?1)",
+                [hex(&secret)],
+            );
+            return secret;
+        }
+        random_bytes(32)
+    }
+
+    /// Are there any user accounts? (used to seed the first admin)
+    pub fn has_users(&self) -> bool {
+        let Some(db) = &self.db else { return false };
+        let conn = db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get::<_, i64>(0))
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    /// Verify a username/password; returns the role on success. Runs argon2
+    /// even for an unknown user (against a dummy hash) so a missing account and
+    /// a wrong password take the same time.
+    pub fn verify_user(&self, username: &str, password: &str) -> Option<String> {
+        let Some(db) = &self.db else { return None };
+        let conn = db.lock().unwrap();
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT pw_hash, role FROM users WHERE username = ?1",
+                [username],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .ok();
+        match row {
+            Some((hash, role)) if verify_pw(password, &hash) => Some(role),
+            Some(_) => None,
+            None => {
+                // Dummy verify against a real hash to equalize timing (so a
+                // missing user is not distinguishable from a wrong password).
+                let _ = verify_pw(password, dummy_hash());
+                None
+            }
+        }
+    }
+
+    /// Create a user. Fails if the database is absent or the name is taken.
+    pub fn create_user(&self, username: &str, password: &str, role: &str) -> Result<(), String> {
+        if username.is_empty() || password.len() < 8 {
+            return Err("username required and password must be >= 8 chars".into());
+        }
+        let role = if role == "viewer" { "viewer" } else { "admin" };
+        let Some(db) = &self.db else {
+            return Err("user accounts require --journal (a database)".into());
+        };
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (username, pw_hash, role, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![username, hash_pw(password), role, epoch() as i64],
+        )
+        .map(|_| ())
+        .map_err(|e| format!("could not create user (name taken?): {e}"))
+    }
+
+    pub fn list_users(&self) -> Vec<(String, String)> {
+        let Some(db) = &self.db else {
+            return Vec::new();
+        };
+        let conn = db.lock().unwrap();
+        let mut stmt = match conn.prepare("SELECT username, role FROM users ORDER BY username") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
+        rows.map(|it| it.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Delete a user unless it is the last remaining admin (never lock yourself
+    /// out).
+    pub fn delete_user(&self, username: &str) -> Result<(), String> {
+        let Some(db) = &self.db else {
+            return Err("no database".into());
+        };
+        let conn = db.lock().unwrap();
+        let admins: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE role='admin'", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0);
+        let is_admin: bool = conn
+            .query_row(
+                "SELECT role FROM users WHERE username=?1",
+                [username],
+                |r| r.get::<_, String>(0),
+            )
+            .map(|role| role == "admin")
+            .unwrap_or(false);
+        if is_admin && admins <= 1 {
+            return Err("cannot delete the last admin".into());
+        }
+        conn.execute("DELETE FROM users WHERE username=?1", [username])
+            .map(|_| ())
+            .map_err(|e| format!("{e}"))
+    }
+
     /// The resolution audit trail: recently-resolved incidents across the fleet,
     /// newest first. Queried from sqlite so it spans the full history, not just
     /// the in-memory working set.
@@ -411,6 +538,51 @@ impl Store {
                 .collect()
         })
     }
+}
+
+/// A real argon2 hash computed once, for constant-time dummy verifies.
+fn dummy_hash() -> &'static str {
+    use std::sync::OnceLock;
+    static H: OnceLock<String> = OnceLock::new();
+    H.get_or_init(|| hash_pw("not-a-real-password-placeholder"))
+}
+
+fn hash_pw(pw: &str) -> String {
+    // 16 random salt bytes from the OS CSPRNG, encoded for argon2.
+    let salt = SaltString::encode_b64(&random_bytes(16)).expect("valid salt");
+    Argon2::default()
+        .hash_password(pw.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .unwrap_or_default()
+}
+
+fn verify_pw(pw: &str, hash: &str) -> bool {
+    PasswordHash::new(hash)
+        .map(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
+        .unwrap_or(false)
+}
+
+fn random_bytes(n: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = vec![0u8; n];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut buf);
+    }
+    buf
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 fn epoch() -> u64 {

@@ -139,6 +139,13 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .resolvebtn:hover{filter:brightness(1.08)}
 .resolved-note{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
 .resolved-note b{color:var(--ok)}
+.adduser{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;box-shadow:var(--shadow)}
+.adduser input,.adduser select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);font:inherit;font-size:12px}
+.adduser input{flex:1;min-width:120px}
+.uerr{color:var(--crit);font-size:12px}
+.udel{background:none;border:1px solid var(--line);color:var(--muted);border-radius:7px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer}
+.udel:hover{border-color:var(--crit);color:var(--crit)}
+.who .avatar{cursor:default}
 .foot{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:11.5px;line-height:1.65}
 .foot code{font-family:"IBM Plex Mono",monospace;color:var(--muted);background:var(--panel2);padding:1px 5px;border-radius:4px}
 
@@ -163,7 +170,8 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
       <path d="M8 12.2l2.6 2.6L16 9.4" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <h2>Kernel<span>Sentinel</span></h2>
     <p>Sign in to view fleet reports</p>
-    <input type="password" id="pw" placeholder="Admin password" autocomplete="current-password" autofocus>
+    <input type="text" id="lu" placeholder="Username" autocomplete="username" autofocus>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password">
     <button type="submit">Sign in</button>
     <div class="err" id="loginerr"></div>
   </form>
@@ -178,6 +186,7 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
       <h1>Kernel<span>Sentinel</span></h1>
     </div>
     <span class="live"><span class="dot"></span><span id="agentcount">agents</span></span>
+    <button id="userslink" class="navlink hidden" type="button">Users</button>
     <button id="auditlink" class="navlink" type="button">Audit log</button>
     <button id="themebtn" class="themebtn" type="button" title="Toggle light / dark" aria-label="Toggle theme">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -186,7 +195,7 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
         <path class="moon" d="M20 13.5A7.5 7.5 0 0 1 10.5 4 7.5 7.5 0 1 0 20 13.5Z" fill="currentColor" stroke="none"/>
       </svg>
     </button>
-    <div class="who"><span>signed in as</span><b>admin@soc</b><span class="avatar">A</span></div>
+    <div class="who"><span>signed in as</span><b id="whoami">—</b><button id="logoutbtn" class="navlink" type="button" title="Sign out">Sign out</button><span class="avatar" id="avatar">?</span></div>
   </header>
   <div id="fleet">
     <div class="summary" id="fstats"></div>
@@ -211,6 +220,12 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
     <button class="back" id="auditback">← all hosts</button>
     <div class="sect-h"><span>Resolution audit trail</span><span class="hint">who resolved what, newest first · from durable history</span></div>
     <div class="audit-wrap"><table class="audit"><thead><tr><th>Resolved</th><th>Host</th><th>Incident</th><th>By</th><th>Note</th></tr></thead><tbody id="auditbody"></tbody></table></div>
+  </div>
+  <div id="usersview" class="hidden">
+    <button class="back" id="usersback">← all hosts</button>
+    <div class="sect-h"><span>Users</span><span class="hint">admins manage accounts · viewers can see reports but not manage users</span></div>
+    <div class="audit-wrap" style="margin-bottom:16px"><table class="audit"><thead><tr><th>Username</th><th>Role</th><th></th></tr></thead><tbody id="usersbody"></tbody></table></div>
+    <div class="adduser"><input id="nu" placeholder="Username"><input id="np" type="password" placeholder="Password (min 8)"><select id="nr"><option value="admin">admin</option><option value="viewer">viewer</option></select><button id="addbtn" class="resolvebtn" type="button">Add user</button><span id="userserr" class="uerr"></span></div>
   </div>
   <p class="foot">
     Fleet monitoring is read-only by design: each host runs the root collector, which ships NDJSON
@@ -243,17 +258,41 @@ async function api(path){const r=await fetch(path,{credentials:'same-origin'});i
 
 document.getElementById('loginform').addEventListener('submit',async e=>{
   e.preventDefault();
-  const pw=document.getElementById('pw').value;
+  const u=document.getElementById('lu').value;const pw=document.getElementById('pw').value;
   const r=await fetch('/api/login',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'password='+encodeURIComponent(pw)});
+    body:'username='+encodeURIComponent(u)+'&password='+encodeURIComponent(pw)});
   if(r.ok){document.getElementById('login').style.display='none';boot();}
   else{document.getElementById('loginerr').textContent='Incorrect password';}
 });
 
+let ME={username:'',role:''};
 async function boot(){
   try{HOSTS=await api('/api/fleet');}catch(e){if(e==='auth'){document.getElementById('login').style.display='grid';return;}HOSTS=[];}
+  try{ME=await api('/api/me');}catch(e){}
+  document.getElementById('whoami').textContent=ME.username||'—';
+  document.getElementById('avatar').textContent=(ME.username||'?').slice(0,1).toUpperCase();
+  document.getElementById('userslink').classList.toggle('hidden',ME.role!=='admin');
   renderFleet();
+}
+document.getElementById('logoutbtn').addEventListener('click',async()=>{await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.reload();});
+document.getElementById('userslink').addEventListener('click',openUsers);
+document.getElementById('usersback').addEventListener('click',()=>showView(fleet));
+document.getElementById('addbtn').addEventListener('click',async()=>{
+  const u=document.getElementById('nu').value,pw=document.getElementById('np').value,r=document.getElementById('nr').value;
+  const resp=await fetch('/api/users',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:pw,role:r})});
+  if(resp.ok){document.getElementById('nu').value='';document.getElementById('np').value='';document.getElementById('userserr').textContent='';openUsers();}
+  else{document.getElementById('userserr').textContent=await resp.text();}
+});
+async function openUsers(){
+  let users=[];try{users=await api('/api/users');}catch(e){}
+  showView(usersview);
+  const body=document.getElementById('usersbody');
+  body.innerHTML=users.map(u=>`<tr><td class="hst">${u.username}</td><td>${u.role}</td><td style="text-align:right">${u.username===ME.username?'<span style="color:var(--faint);font-size:11px">you</span>':'<button class="udel" data-u="'+u.username+'">delete</button>'}</td></tr>`).join('');
+  body.querySelectorAll('.udel').forEach(b=>b.addEventListener('click',async()=>{
+    const resp=await fetch('/api/users/delete',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:b.dataset.u})});
+    if(resp.ok)openUsers();else alert(await resp.text());
+  }));
 }
 function tsago(sec){if(!sec)return '—';const d=Math.max(0,Math.floor(Date.now()/1000-sec));
   if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago';}
@@ -271,15 +310,16 @@ function renderFleet(){
 function gauge(score,sv){const r=24,c=2*Math.PI*r,off=c*(1-score/100);return `<div class="gauge"><svg viewBox="0 0 56 56"><circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/><circle cx="28" cy="28" r="${r}" fill="none" stroke="${sv}" stroke-width="5" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="val" style="color:${sv}">${score}</span></div>`;}
 function sevmini(counts){counts=counts||{};return `<div class="sevmini">`+order.map(s=>`<i style="background:${counts[s]>0?svVar(s):'var(--line)'}" title="${s} ${counts[s]||0}"></i>`).join('')+`</div>`;}
 
-const fleet=document.getElementById('fleet'),hostview=document.getElementById('hostview');
+const fleet=document.getElementById('fleet'),hostview=document.getElementById('hostview'),auditview=document.getElementById('auditview'),usersview=document.getElementById('usersview');
+function showView(el){[fleet,hostview,auditview,usersview].forEach(v=>v&&v.classList.add('hidden'));el.classList.remove('hidden');window.scrollTo(0,0);}
 document.getElementById('hostlist').addEventListener('click',e=>{const b=e.target.closest('.host');if(b)openHost(HOSTS[+b.dataset.i]);});
-document.getElementById('back').addEventListener('click',()=>{hostview.classList.add('hidden');fleet.classList.remove('hidden');window.scrollTo(0,0);});
+document.getElementById('back').addEventListener('click',()=>showView(fleet));
 
 let currentHost=null;
 async function openHost(h){
   currentHost=h;
   let incs=[];try{incs=await api('/api/host/'+encodeURIComponent(h.host));}catch(e){}
-  fleet.classList.add('hidden');hostview.classList.remove('hidden');window.scrollTo(0,0);
+  showView(hostview);
   const sv=svVar(h.band);const hb=document.getElementById('hostbar');hb.style.setProperty('--sv',sv);
   hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${h.host}</div><div class="hr">${h.kernel||'linux'} ${h.ip?'· '+h.ip:''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span></div>`;
   const feed=document.getElementById('feed');const det=document.getElementById('detail');
@@ -313,8 +353,7 @@ document.getElementById('auditlink').addEventListener('click',openAudit);
 document.getElementById('auditback').addEventListener('click',()=>{document.getElementById('auditview').classList.add('hidden');fleet.classList.remove('hidden');window.scrollTo(0,0);});
 async function openAudit(){
   let rows=[];try{rows=await api('/api/audit');}catch(e){}
-  fleet.classList.add('hidden');hostview.classList.add('hidden');
-  document.getElementById('auditview').classList.remove('hidden');window.scrollTo(0,0);
+  showView(auditview);
   const body=document.getElementById('auditbody');
   if(!rows.length){body.innerHTML='<tr><td colspan="5" style="color:var(--faint);text-align:center;padding:30px">No incidents have been resolved yet.</td></tr>';return;}
   body.innerHTML=rows.map(r=>{

@@ -11,6 +11,7 @@
 
 mod dashboard;
 mod keys;
+mod session;
 mod ship;
 mod store;
 
@@ -20,8 +21,6 @@ pub use store::{Store, band};
 
 use std::io::Read;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -50,34 +49,6 @@ pub struct Tls {
     pub key: String,
 }
 
-struct Sessions {
-    /// token -> expiry instant.
-    live: Mutex<Vec<(String, Instant)>>,
-}
-
-impl Sessions {
-    fn new() -> Self {
-        Self {
-            live: Mutex::new(Vec::new()),
-        }
-    }
-    fn issue(&self) -> String {
-        let token = random_token();
-        let mut live = self.live.lock().unwrap();
-        live.push((
-            token.clone(),
-            Instant::now() + Duration::from_secs(8 * 3600),
-        ));
-        token
-    }
-    fn valid(&self, token: &str) -> bool {
-        let mut live = self.live.lock().unwrap();
-        let now = Instant::now();
-        live.retain(|(_, exp)| *exp > now);
-        live.iter().any(|(t, _)| ct_eq(t, token))
-    }
-}
-
 pub fn serve(cfg: Config) -> Result<()> {
     if cfg.admin_password.is_empty() {
         anyhow::bail!("refusing to start without an admin password (set KS_ADMIN_PASSWORD)");
@@ -100,7 +71,22 @@ pub fn serve(cfg: Config) -> Result<()> {
     if let Some(k) = &cfg.agent_keys {
         eprintln!("kernelsentinel: {} per-agent key(s) loaded", k.len());
     }
-    let sessions = Arc::new(Sessions::new());
+
+    // Session-signing secret (persisted, so logins survive a restart).
+    let secret = Arc::new(store.session_secret());
+
+    // Seed the first admin from KS_ADMIN_PASSWORD if there are no users yet.
+    if !store.has_users() && !cfg.admin_password.is_empty() {
+        match store.create_user("admin", &cfg.admin_password, "admin") {
+            Ok(()) => eprintln!("kernelsentinel: seeded admin user 'admin' from KS_ADMIN_PASSWORD"),
+            Err(e) => eprintln!("kernelsentinel: could not seed admin: {e}"),
+        }
+    }
+    if !store.has_db() {
+        eprintln!(
+            "kernelsentinel: NOTE -- without --journal, user accounts are unavailable;              falling back to the single KS_ADMIN_PASSWORD login (user 'admin')."
+        );
+    }
     let cfg = Arc::new(cfg);
 
     let server = match &cfg.tls {
@@ -137,11 +123,11 @@ pub fn serve(cfg: Config) -> Result<()> {
     eprintln!("kernelsentinel: admin dashboard + agent ingest ready");
 
     for req in server.incoming_requests() {
-        let (cfg, store, sessions) = (cfg.clone(), store.clone(), sessions.clone());
+        let (cfg, store, secret) = (cfg.clone(), store.clone(), secret.clone());
         // Each request is handled to completion (respond consumes it). A panic
         // in one handler must not take the server down.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle(req, &cfg, &store, &sessions)
+            handle(req, &cfg, &store, &secret)
         }));
         if outcome.is_err() {
             eprintln!("kernelsentinel: recovered from a panic handling a request");
@@ -150,7 +136,7 @@ pub fn serve(cfg: Config) -> Result<()> {
     Ok(())
 }
 
-fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
+fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8]) {
     let method = req.method().clone();
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
@@ -159,8 +145,6 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
         // Agent -> server. Key-authenticated, one way in.
         (Method::Post, "/api/ingest") => {
             let presented = header(&req, "X-Sentinel-Key").unwrap_or_default();
-            // With per-agent keys the KEY determines the host -- a self-declared
-            // header is ignored, so a leaked key can only write its own bucket.
             let host = match &cfg.agent_keys {
                 Some(keys) => match keys.resolve(&presented) {
                     Some(h) => h.to_string(),
@@ -194,83 +178,151 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, sessions: &Sessions) {
             text(200, &format!("accepted {n}"))
         }
 
-        // Admin login -> session cookie.
+        // Admin login: username + password -> a signed session cookie.
         (Method::Post, "/api/login") => {
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body).ok();
-            let pw = form_field(&body, "password").unwrap_or_default();
-            if !pw.is_empty() && ct_eq(&pw, &cfg.admin_password) {
-                let token = sessions.issue();
-                let mut r = text(200, "ok");
-                r.add_header(
-                    Header::from_bytes(
-                        &b"Set-Cookie"[..],
-                        format!("ks_session={token}; HttpOnly; SameSite=Strict; Path=/").as_bytes(),
-                    )
-                    .unwrap(),
-                );
-                r
+            let username = form_field(&body, "username").unwrap_or_default();
+            let password = form_field(&body, "password").unwrap_or_default();
+            // Back-compat: no accounts DB -> single admin from KS_ADMIN_PASSWORD.
+            let role = if store.has_db() {
+                store.verify_user(&username, &password)
+            } else if !cfg.admin_password.is_empty()
+                && username == "admin"
+                && ct_eq(&password, &cfg.admin_password)
+            {
+                Some("admin".to_string())
             } else {
-                text(401, "invalid credentials")
+                None
+            };
+            match role {
+                Some(role) => {
+                    let token = session::issue(secret, &username, &role, 8 * 3600);
+                    let mut r = text(200, "ok");
+                    r.add_header(
+                        Header::from_bytes(
+                            &b"Set-Cookie"[..],
+                            format!(
+                                "ks_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+                                8 * 3600
+                            )
+                            .as_bytes(),
+                        )
+                        .unwrap(),
+                    );
+                    r
+                }
+                None => text(401, "invalid credentials"),
             }
+        }
+        (Method::Post, "/api/logout") => {
+            let mut r = text(200, "ok");
+            r.add_header(
+                Header::from_bytes(
+                    &b"Set-Cookie"[..],
+                    &b"ks_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"[..],
+                )
+                .unwrap(),
+            );
+            r
         }
 
-        // Everything below requires an admin session.
-        (Method::Get, "/api/fleet") => {
-            if authed(&req, sessions) {
-                json(200, &store.fleet())
-            } else {
-                text(401, "auth required")
-            }
-        }
-        (Method::Get, "/api/audit") => {
-            if authed(&req, sessions) {
-                json(200, &store.audit(200))
-            } else {
-                text(401, "auth required")
-            }
-        }
-        (Method::Get, p) if p.starts_with("/api/host/") => {
-            if !authed(&req, sessions) {
-                text(401, "auth required")
-            } else {
+        // Who am I (drives the dashboard's admin-only UI).
+        (Method::Get, "/api/me") => match session(&req, secret) {
+            Some((username, role)) => json(
+                200,
+                &serde_json::json!({"username": username, "role": role}),
+            ),
+            None => text(401, "auth required"),
+        },
+
+        (Method::Get, "/api/fleet") => match session(&req, secret) {
+            Some(_) => json(200, &store.fleet()),
+            None => text(401, "auth required"),
+        },
+        (Method::Get, "/api/audit") => match session(&req, secret) {
+            Some(_) => json(200, &store.audit(200)),
+            None => text(401, "auth required"),
+        },
+        (Method::Get, p) if p.starts_with("/api/host/") => match session(&req, secret) {
+            None => text(401, "auth required"),
+            Some(_) => {
                 let host = p.trim_start_matches("/api/host/");
                 match store.host_incidents(host) {
                     Some(incs) => json(200, &incs),
                     None => text(404, "no such host"),
                 }
             }
-        }
-        // Resolve an incident. A WRITE, but only to the central record -- never
-        // to a host. Admin session required; the SameSite=Strict session cookie
-        // blocks cross-site POSTs.
-        (Method::Post, "/api/resolve") => {
-            if !authed(&req, sessions) {
-                text(401, "auth required")
-            } else {
+        },
+        // Resolve an incident -- records the actual signed-in username.
+        (Method::Post, "/api/resolve") => match session(&req, secret) {
+            None => text(401, "auth required"),
+            Some((username, _)) => {
                 let mut body = String::new();
                 req.as_reader().read_to_string(&mut body).ok();
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let host = v.get("host").and_then(|x| x.as_str()).unwrap_or("");
                 let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
                 let note = v.get("note").and_then(|x| x.as_str()).unwrap_or("");
-                if store.resolve(host, id, "admin", note) {
+                if store.resolve(host, id, &username, note) {
                     text(200, "resolved")
                 } else {
                     text(404, "no such incident")
                 }
             }
-        }
+        },
 
-        // Dashboard (a client-side gate swaps to login when the session is absent).
+        // --- user management (admin only) ---
+        (Method::Get, "/api/users") => match session(&req, secret) {
+            Some((_, role)) if role == "admin" => {
+                let users: Vec<_> = store
+                    .list_users()
+                    .into_iter()
+                    .map(|(u, r)| serde_json::json!({"username": u, "role": r}))
+                    .collect();
+                json(200, &users)
+            }
+            _ => text(403, "admin only"),
+        },
+        (Method::Post, "/api/users") => match session(&req, secret) {
+            Some((_, role)) if role == "admin" => {
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).ok();
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let u = v.get("username").and_then(|x| x.as_str()).unwrap_or("");
+                let p = v.get("password").and_then(|x| x.as_str()).unwrap_or("");
+                let r = v.get("role").and_then(|x| x.as_str()).unwrap_or("admin");
+                match store.create_user(u, p, r) {
+                    Ok(()) => text(200, "created"),
+                    Err(e) => text(400, &e),
+                }
+            }
+            _ => text(403, "admin only"),
+        },
+        (Method::Post, "/api/users/delete") => match session(&req, secret) {
+            Some((_, role)) if role == "admin" => {
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).ok();
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let u = v.get("username").and_then(|x| x.as_str()).unwrap_or("");
+                match store.delete_user(u) {
+                    Ok(()) => text(200, "deleted"),
+                    Err(e) => text(400, &e),
+                }
+            }
+            _ => text(403, "admin only"),
+        },
+
         (Method::Get, "/") | (Method::Get, "/index.html") => html(200, dashboard::PAGE),
         _ => text(404, "not found"),
     };
     let _ = req.respond(resp);
 }
 
-fn authed(req: &Request, sessions: &Sessions) -> bool {
-    cookie(req, "ks_session").is_some_and(|t| sessions.valid(&t))
+/// Resolve the signed session cookie to (username, role), if valid.
+fn session(req: &Request, secret: &[u8]) -> Option<(String, String)> {
+    let token = cookie(req, "ks_session")?;
+    session::validate(secret, &token)
 }
 
 // --- helpers ---
