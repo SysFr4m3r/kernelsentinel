@@ -8,6 +8,8 @@ pub mod doctor;
 pub mod event;
 pub mod graph;
 pub mod heartbeat;
+pub mod http;
+pub mod notify;
 pub mod sensors;
 pub mod server;
 pub mod watchlist;

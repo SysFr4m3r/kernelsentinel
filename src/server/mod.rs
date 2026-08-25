@@ -29,6 +29,7 @@ use anyhow::{Context, Result};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::heartbeat::HeartbeatRecord;
+use crate::notify;
 
 pub struct Config {
     pub addr: String,
@@ -45,6 +46,13 @@ pub struct Config {
     pub retain_days: u64,
     /// TLS material. When set, the server speaks HTTPS.
     pub tls: Option<Tls>,
+    /// Outbound alert sinks. Configured from the command line only -- a URL the
+    /// server fetches is an SSRF primitive, so it stays out of the web UI.
+    pub alerts: Vec<notify::Sink>,
+    /// Lowest severity worth delivering.
+    pub alert_min_severity: String,
+    /// Cap on alerts delivered per minute (0 = no cap).
+    pub alert_max_per_min: u32,
 }
 
 pub struct Tls {
@@ -114,6 +122,29 @@ pub fn serve(cfg: Config) -> Result<()> {
             "kernelsentinel: NOTE -- without --journal, user accounts are unavailable;              falling back to the single KS_ADMIN_PASSWORD login (user 'admin')."
         );
     }
+    // Alert delivery. Built before the listener so a misconfigured sink is
+    // reported at startup rather than on the first incident.
+    let mut cfg = cfg;
+    let sinks = std::mem::take(&mut cfg.alerts);
+    let notifier = if sinks.is_empty() {
+        eprintln!(
+            "kernelsentinel: NOTE -- no alert delivery configured; findings appear in the \
+             dashboard only. See --alert-webhook / --alert-syslog."
+        );
+        None
+    } else {
+        eprintln!(
+            "kernelsentinel: alerting at {} and above via {} sink(s), max {}/min",
+            cfg.alert_min_severity,
+            sinks.len(),
+            cfg.alert_max_per_min
+        );
+        Some(Arc::new(notify::Notifier::spawn(
+            sinks,
+            &cfg.alert_min_severity,
+            cfg.alert_max_per_min,
+        )))
+    };
     let cfg = Arc::new(cfg);
 
     let server = match &cfg.tls {
@@ -151,10 +182,11 @@ pub fn serve(cfg: Config) -> Result<()> {
 
     for req in server.incoming_requests() {
         let (cfg, store, secret, bus) = (cfg.clone(), store.clone(), secret.clone(), bus.clone());
+        let notifier = notifier.clone();
         // Each request is handled to completion (respond consumes it). A panic
         // in one handler must not take the server down.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle(req, &cfg, &store, &secret, &bus)
+            handle(req, &cfg, &store, &secret, &bus, notifier.as_deref())
         }));
         if outcome.is_err() {
             eprintln!("kernelsentinel: recovered from a panic handling a request");
@@ -163,7 +195,53 @@ pub fn serve(cfg: Config) -> Result<()> {
     Ok(())
 }
 
-fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8], bus: &Arc<Broadcaster>) {
+/// Flatten an incident record into the fields an alert needs. The subject's
+/// command line is included deliberately: an alert that says only "a SUID binary
+/// appeared" sends the responder back to the dashboard to find out what ran.
+fn alert_from(host: &str, v: &serde_json::Value) -> notify::Alert {
+    let subject = v
+        .get("subject")
+        .and_then(|s| s.get("comm"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("incident")
+        .to_string();
+    let cmdline = v
+        .get("subject")
+        .and_then(|s| s.get("cmdline"))
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let attack = v
+        .get("attack")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    notify::Alert {
+        host: host.to_string(),
+        severity: v
+            .get("severity")
+            .and_then(|s| s.as_str())
+            .unwrap_or("INFO")
+            .to_string(),
+        score: v.get("score").and_then(|s| s.as_u64()).unwrap_or(0) as u32,
+        subject,
+        cmdline,
+        attack,
+    }
+}
+
+fn handle(
+    mut req: Request,
+    cfg: &Config,
+    store: &Store,
+    secret: &[u8],
+    bus: &Arc<Broadcaster>,
+    notifier: Option<&notify::Notifier>,
+) {
     let method = req.method().clone();
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
@@ -209,7 +287,13 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8], bus: &Ar
                         beats += 1;
                     }
                 } else {
-                    store.ingest(&host, &kernel, &ip, v);
+                    // Push before storing is tempting (lower latency) but a
+                    // delivery that outruns the write would point at a finding
+                    // the dashboard cannot yet show.
+                    store.ingest(&host, &kernel, &ip, v.clone());
+                    if let Some(tx) = notifier {
+                        tx.notify(alert_from(&host, &v));
+                    }
                     n += 1;
                 }
             }

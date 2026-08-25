@@ -249,6 +249,34 @@ accounts (admin or viewer role); each resolution records the real username. Sess
 tokens, so they survive a server restart. The dashboard updates in real time — it holds a long-poll
 open and refreshes the moment an agent ships an incident.
 
+### Alert delivery
+
+A finding that only reaches a dashboard is one nobody sees until somebody thinks to look. The server
+can push incidents to a chat webhook and to syslog:
+
+```bash
+kernelsentinel serve --bind 0.0.0.0:8088 \
+  --alert-webhook https://hooks.example.com/services/XXX \
+  --alert-syslog \
+  --alert-min-severity HIGH \
+  --alert-max-per-min 30
+```
+
+The webhook body carries a Slack/Mattermost-compatible `text` field alongside structured fields, so a
+chat hook works out of the box without giving up machine-readable detail — and the alert names the
+**command**, not just the finding:
+
+```
+CRITICAL 100/100 on web-01 — chmod: chmod u+s /tmp/.x [T1068, T1548.001]
+```
+
+HTTPS webhooks verify against the system trust store; `--alert-webhook-ca` pins a certificate
+instead. Delivery runs on its own thread behind a bounded queue, so **a dead webhook cannot slow or
+block ingest** — an alerting failure degrades to a logged error, never to backpressure on monitoring.
+`--alert-max-per-min` caps delivery so an incident storm cannot become an alert storm; suppressed
+alerts are counted and summarized rather than dropped silently. Sinks are configured on the command
+line only: a URL the server fetches is an SSRF primitive, so it stays out of reach of the web UI.
+
 Agents check in every 60s even when they have nothing to report, so the panel can tell a **healthy
 host from a dead agent** — silence is otherwise identical to safety. A host that stops reporting is
 ranked as needing attention rather than shown as clean, and the check-in carries the ring-buffer
@@ -448,7 +476,7 @@ exists once you correlate them per process.
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL (match + sequence rules) | ✅ first increment |
 | M6 | Container & namespace awareness | 🚧 container id + context + escape detection |
-| M7 | Baselining ✅ · agent heartbeat + drop telemetry ✅ · YARA, optional enforcement | 🚧 in progress |
+| M7 | Baselining ✅ · heartbeat + drop telemetry ✅ · alert delivery ✅ · YARA, optional enforcement | 🚧 in progress |
 
 ## Planned detections
 

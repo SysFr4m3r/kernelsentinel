@@ -109,6 +109,25 @@ enum Command {
         /// TLS private key (PEM).
         #[arg(long)]
         tls_key: Option<String>,
+        /// POST alerts as JSON to this URL (Slack/Mattermost-compatible body).
+        #[arg(long)]
+        alert_webhook: Option<String>,
+        /// Pin the webhook's certificate (PEM) instead of using system roots.
+        #[arg(long)]
+        alert_webhook_ca: Option<String>,
+        /// Also send alerts to the local syslog socket.
+        #[arg(long)]
+        alert_syslog: bool,
+        /// Syslog datagram socket path.
+        #[arg(long, default_value = "/dev/log")]
+        alert_syslog_socket: String,
+        /// Lowest severity worth alerting on: INFO|LOW|MEDIUM|HIGH|CRITICAL.
+        #[arg(long, default_value = "HIGH")]
+        alert_min_severity: String,
+        /// Cap alerts delivered per minute (0 = no cap); the rest are counted
+        /// and summarized so a storm cannot drown the channel.
+        #[arg(long, default_value_t = 30)]
+        alert_max_per_min: u32,
     },
     /// Ship incident NDJSON (from `run --json` / `replay --json` on stdin) to a
     /// central fleet server. Host -> central only; no control channel back.
@@ -159,7 +178,26 @@ fn main() -> Result<()> {
             retain_days,
             tls_cert,
             tls_key,
-        } => serve_cmd(&bind, keys, journal, retain_days, tls_cert, tls_key),
+            alert_webhook,
+            alert_webhook_ca,
+            alert_syslog,
+            alert_syslog_socket,
+            alert_min_severity,
+            alert_max_per_min,
+        } => serve_cmd(
+            &bind,
+            keys,
+            journal,
+            retain_days,
+            tls_cert,
+            tls_key,
+            alert_webhook,
+            alert_webhook_ca,
+            alert_syslog,
+            alert_syslog_socket,
+            alert_min_severity,
+            alert_max_per_min,
+        ),
         Command::Ship { url, host, ca } => ship_cmd(&url, host, ca),
         Command::Rules { dir } => rules_cmd(&dir),
         Command::Run {
@@ -299,6 +337,7 @@ fn replay(input: &str, json: bool, baseline: Option<String>, rules: Option<Strin
 }
 
 /// Run the central fleet server.
+#[allow(clippy::too_many_arguments)]
 fn serve_cmd(
     bind: &str,
     keys: Option<String>,
@@ -306,8 +345,41 @@ fn serve_cmd(
     retain_days: u64,
     tls_cert: Option<String>,
     tls_key: Option<String>,
+    alert_webhook: Option<String>,
+    alert_webhook_ca: Option<String>,
+    alert_syslog: bool,
+    alert_syslog_socket: String,
+    alert_min_severity: String,
+    alert_max_per_min: u32,
 ) -> Result<()> {
+    use kernelsentinel::notify;
     use kernelsentinel::server::{AgentKeys, Config, Tls, serve};
+
+    // Reject a bad severity at startup rather than silently alerting on
+    // everything (or nothing) once an incident finally arrives.
+    let alert_min_severity = notify::parse_min_severity(&alert_min_severity).ok_or_else(|| {
+        anyhow::anyhow!("--alert-min-severity must be INFO, LOW, MEDIUM, HIGH, or CRITICAL")
+    })?;
+
+    let mut alerts = Vec::new();
+    if let Some(url) = alert_webhook {
+        let pinned = match &alert_webhook_ca {
+            Some(p) => Some(kernelsentinel::http::load_pinned_cert(p)?),
+            None => None,
+        };
+        // Fail fast on a malformed URL; discovering it during an incident is
+        // the worst possible time.
+        kernelsentinel::http::split_url(&url)
+            .map_err(|e| anyhow::anyhow!("--alert-webhook {url}: {e}"))?;
+        alerts.push(notify::Sink::Webhook { url, pinned });
+    } else if alert_webhook_ca.is_some() {
+        anyhow::bail!("--alert-webhook-ca has no effect without --alert-webhook");
+    }
+    if alert_syslog {
+        alerts.push(notify::Sink::Syslog {
+            socket: alert_syslog_socket,
+        });
+    }
     let admin_password = std::env::var("KS_ADMIN_PASSWORD").unwrap_or_default();
     let ingest_key = std::env::var("KS_INGEST_KEY").unwrap_or_default();
     let agent_keys = match keys {
@@ -324,6 +396,9 @@ fn serve_cmd(
         admin_password,
         ingest_key,
         agent_keys,
+        alerts,
+        alert_min_severity,
+        alert_max_per_min,
         journal,
         retain_days,
         tls,
