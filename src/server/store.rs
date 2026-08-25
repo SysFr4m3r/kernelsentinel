@@ -85,6 +85,27 @@ pub fn agent_status(state: &HostState, now: u64) -> &'static str {
 /// must not grow without bound just because a host is noisy.
 const MAX_PER_HOST: usize = 500;
 
+/// The on-disk schema this build understands.
+///
+/// Bump when a migration is added, and append a step to `migrate`. Opening a
+/// database written by a *newer* build is refused rather than attempted: a
+/// downgrade that half-understands the schema would corrupt an audit trail
+/// people are meant to be able to trust.
+const SCHEMA_VERSION: i64 = 1;
+
+/// Hard ceiling on rows kept on disk, independent of retention.
+///
+/// `--retain-days` bounds by age, which bounds nothing at all if a host is
+/// flooding: an agent key that has been stolen, or simply a noisy box, can fill
+/// the disk inside the retention window. The oldest rows go first once this is
+/// crossed. At roughly 2KB per incident this is a few hundred megabytes.
+const MAX_STORED_INCIDENTS: i64 = 200_000;
+
+/// How many ingests between prune passes. Pruning only at startup means a
+/// server that stays up for months never prunes at all -- which is precisely
+/// the server whose disk fills.
+const PRUNE_EVERY: u64 = 500;
+
 /// Severity band from a numeric score, matching the engine's bands.
 pub fn band(score: u32) -> &'static str {
     match score {
@@ -155,6 +176,11 @@ pub struct Store {
     /// holds only the recent per-host working set.
     db: Option<Mutex<Connection>>,
     next_id: Mutex<u64>,
+    /// Ingests since the last prune pass. See `PRUNE_EVERY`.
+    since_prune: Mutex<u64>,
+    /// Retention the journal was opened with, so periodic pruning applies the
+    /// same policy as the startup pass.
+    retain_days: u64,
 }
 
 impl Default for Store {
@@ -169,6 +195,8 @@ impl Store {
             hosts: Mutex::new(HashMap::new()),
             db: None,
             next_id: Mutex::new(1),
+            since_prune: Mutex::new(0),
+            retain_days: 0,
         }
     }
 
@@ -182,6 +210,20 @@ impl Store {
     /// set into memory. Full history stays in sqlite for the audit trail.
     pub fn persistent(path: &str, retain_days: u64) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+
+        // WAL lets the long-poll and ingest paths read and write without
+        // blocking each other, and survives a crash mid-write far better than
+        // the rollback journal. NORMAL is the right durability trade under WAL:
+        // a power loss can cost the last commits, not the database. busy_timeout
+        // stops a concurrent writer from failing outright with SQLITE_BUSY.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA foreign_keys = ON;",
+        )?;
+
+        migrate(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS incidents (
                  id INTEGER PRIMARY KEY,
@@ -195,6 +237,9 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS idx_host ON incidents(host);
              CREATE INDEX IF NOT EXISTS idx_resolved ON incidents(resolved, resolved_at);
+             -- Retention and the row cap both delete by age; without this they
+             -- full-scan the table every pass.
+             CREATE INDEX IF NOT EXISTS idx_received ON incidents(received);
              CREATE TABLE IF NOT EXISTS users (
                  username TEXT PRIMARY KEY, pw_hash TEXT NOT NULL,
                  role TEXT NOT NULL DEFAULT 'admin', created_at INTEGER NOT NULL
@@ -212,10 +257,7 @@ impl Store {
              );",
         )?;
 
-        if retain_days > 0 {
-            let cutoff = epoch().saturating_sub(retain_days * 86_400);
-            conn.execute("DELETE FROM incidents WHERE received < ?1", [cutoff as i64])?;
-        }
+        prune(&conn, retain_days)?;
 
         let store = Store::new();
 
@@ -307,6 +349,7 @@ impl Store {
 
         let mut store = store;
         store.db = Some(Mutex::new(conn));
+        store.retain_days = retain_days;
         Ok(store)
     }
 
@@ -365,6 +408,29 @@ impl Store {
         }
     }
 
+    /// Prune on a cadence rather than only at startup: a server that stays up
+    /// for months would otherwise never prune, and that is exactly the server
+    /// whose disk fills. `retain_days` mirrors the value `persistent` opened
+    /// with; 0 still enforces the absolute row cap.
+    fn maybe_prune(&self) {
+        let Some(db) = &self.db else { return };
+        {
+            let mut n = self.since_prune.lock().unwrap();
+            *n += 1;
+            if *n < PRUNE_EVERY {
+                return;
+            }
+            *n = 0;
+        }
+        let conn = db.lock().unwrap();
+        match prune(&conn, self.retain_days) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("kernelsentinel: pruned {n} incident(s) from the journal"),
+            // A failed prune must not take ingest down; the next pass retries.
+            Err(e) => eprintln!("kernelsentinel: prune failed: {e}"),
+        }
+    }
+
     /// Record one incident from `host`. `record` is the agent's incident JSON.
     pub fn ingest(&self, host: &str, kernel: &str, ip: &str, record: serde_json::Value) {
         let id = {
@@ -389,6 +455,8 @@ impl Store {
             resolved_at: 0,
             note: String::new(),
         };
+
+        self.maybe_prune();
 
         // Durable write to sqlite (if persistent), then apply to memory.
         if let Some(db) = &self.db {
@@ -757,6 +825,55 @@ impl Store {
     }
 }
 
+/// Bring an existing database up to `SCHEMA_VERSION`, or refuse it.
+///
+/// Version 0 means either a fresh file or one written before versioning
+/// existed. Both are handled the same way: the CREATE TABLE IF NOT EXISTS
+/// statements that follow are idempotent, so an existing v0 database with the
+/// current tables simply gets stamped, and nothing is rewritten.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if found > SCHEMA_VERSION {
+        // Fail loudly. Silently reading a schema written by a newer build is
+        // how an audit trail quietly stops meaning what it says.
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISMATCH),
+            Some(format!(
+                "database schema is version {found}, but this build understands {SCHEMA_VERSION}. \
+                 It was written by a newer kernelsentinel; upgrade rather than downgrade."
+            )),
+        ));
+    }
+    // v0 -> v1: the tables created below. Future steps append here, each
+    // guarded by `if found < N`, and run in order.
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// Enforce both bounds on stored history: age, and an absolute row ceiling.
+///
+/// Retention alone bounds nothing when a host floods -- a stolen agent key can
+/// fill the disk well inside the retention window -- so the row cap is the one
+/// that actually protects the server.
+fn prune(conn: &Connection, retain_days: u64) -> rusqlite::Result<usize> {
+    let mut removed = 0usize;
+    if retain_days > 0 {
+        let cutoff = epoch().saturating_sub(retain_days * 86_400);
+        removed += conn.execute("DELETE FROM incidents WHERE received < ?1", [cutoff as i64])?;
+    }
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM incidents", [], |r| r.get(0))?;
+    if total > MAX_STORED_INCIDENTS {
+        // Oldest first: recent activity is what an incident responder needs.
+        removed += conn.execute(
+            "DELETE FROM incidents WHERE id IN (
+                 SELECT id FROM incidents ORDER BY received ASC, id ASC LIMIT ?1
+             )",
+            [total - MAX_STORED_INCIDENTS],
+        )?;
+    }
+    Ok(removed)
+}
+
 /// A real argon2 hash computed once, for constant-time dummy verifies.
 fn dummy_hash() -> &'static str {
     use std::sync::OnceLock;
@@ -815,6 +932,127 @@ mod tests {
     /// An agent that has never sent a heartbeat is *unknown*, never *silent*.
     /// Reporting an older agent as dead would be a false alarm in exactly the
     /// place operators must be able to trust the panel.
+    /// A fresh database gets stamped, and reopening it is a clean no-op.
+    #[test]
+    fn schema_is_versioned_and_reopen_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("ks-schema-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("j.sqlite");
+        let p = path.to_str().unwrap();
+
+        let s = Store::persistent(p, 0).unwrap();
+        let v: i64 =
+            s.db.as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "a new database must be stamped");
+        drop(s);
+
+        // Reopening must not fail or renumber.
+        let s = Store::persistent(p, 0).unwrap();
+        let v: i64 =
+            s.db.as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A database written by a newer build is refused, not half-read. Silently
+    /// misreading an audit trail is worse than refusing to start.
+    #[test]
+    fn a_newer_schema_is_refused_rather_than_guessed_at() {
+        let dir = std::env::temp_dir().join(format!("ks-newer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("j.sqlite");
+        let p = path.to_str().unwrap();
+
+        drop(Store::persistent(p, 0).unwrap());
+        {
+            let conn = Connection::open(p).unwrap();
+            conn.execute_batch(&format!("PRAGMA user_version = {}", SCHEMA_VERSION + 5))
+                .unwrap();
+        }
+        let msg = match Store::persistent(p, 0) {
+            Ok(_) => panic!("must refuse a database written by a newer build"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("newer kernelsentinel") || msg.contains("schema is version"),
+            "the error must say why: {msg}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Retention bounds by age, which bounds nothing when a host floods inside
+    /// the window. The row cap is what actually protects the disk.
+    #[test]
+    fn the_row_cap_drops_the_oldest_first() {
+        let dir = std::env::temp_dir().join(format!("ks-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("j.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS incidents (
+                 id INTEGER PRIMARY KEY, host TEXT NOT NULL, kernel TEXT, ip TEXT,
+                 received INTEGER NOT NULL, severity TEXT NOT NULL, score INTEGER NOT NULL,
+                 record TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0,
+                 resolved_by TEXT DEFAULT '', resolved_at INTEGER DEFAULT 0, note TEXT DEFAULT '');",
+        )
+        .unwrap();
+        let over = MAX_STORED_INCIDENTS + 25;
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            let mut st = tx
+                .prepare("INSERT INTO incidents (id,host,received,severity,score,record) VALUES (?1,'h',?2,'LOW',1,'{}')")
+                .unwrap();
+            for i in 1..=over {
+                st.execute(rusqlite::params![i, i]).unwrap();
+            }
+            drop(st);
+            tx.commit().unwrap();
+        }
+        let removed = prune(&conn, 0).unwrap();
+        assert_eq!(removed, 25, "exactly the overflow is removed");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM incidents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, MAX_STORED_INCIDENTS);
+        let oldest: i64 = conn
+            .query_row("SELECT MIN(received) FROM incidents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(oldest, 26, "the oldest rows are the ones dropped");
+        drop(conn);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// WAL is what lets a long-poll read while an ingest writes.
+    #[test]
+    fn journal_mode_is_wal() {
+        let dir = std::env::temp_dir().join(format!("ks-wal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("j.sqlite");
+        let s = Store::persistent(path.to_str().unwrap(), 0).unwrap();
+        let mode: String =
+            s.db.as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn agent_without_heartbeat_is_unknown_not_silent() {
         let state = HostState {
