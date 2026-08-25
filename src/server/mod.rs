@@ -407,6 +407,13 @@ fn handle(
             Some(_) => json(200, &store.fleet()),
             None => text(401, "auth required"),
         },
+        // Cross-host activity: what happened anywhere, newest first. The
+        // per-host view answers "how is web-01?"; this answers "what just
+        // happened?", which is where an analyst actually starts.
+        (Method::Get, "/api/incidents") => match session(&req, secret) {
+            Some(_) => json(200, &store.recent_incidents(200)),
+            None => text(401, "auth required"),
+        },
         (Method::Get, "/api/audit") => match session(&req, secret) {
             Some(_) => json(200, &store.audit(200)),
             None => text(401, "auth required"),

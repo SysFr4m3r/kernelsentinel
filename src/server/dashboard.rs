@@ -227,6 +227,7 @@ code.cmd.hero{margin-top:8px;font-size:12px}
     </div>
     <span class="live"><span class="dot"></span><span id="agentcount">agents</span></span>
     <button id="userslink" class="navlink hidden" type="button">Users</button>
+    <button id="activitylink" class="navlink" type="button">Activity</button>
     <button id="auditlink" class="navlink" type="button">Audit log</button>
     <button id="themebtn" class="themebtn" type="button" title="Toggle light / dark" aria-label="Toggle theme">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -256,6 +257,11 @@ code.cmd.hero{margin-top:8px;font-size:12px}
         <div class="detail empty" id="detail">Select an incident to see its lineage, signals, and ATT&amp;CK mapping.</div>
       </section>
     </div>
+  </div>
+  <div id="activityview" class="hidden">
+    <button class="back" id="activityback">← all hosts</button>
+    <div class="sect-h"><span>Fleet activity</span><span class="hint">every host, newest first · click to open it in context</span></div>
+    <div id="activitylist" class="feed"></div>
   </div>
   <div id="auditview" class="hidden">
     <button class="back" id="auditback">← all hosts</button>
@@ -450,7 +456,7 @@ function yaraSec(d){
 function gauge(score,sv){const r=24,c=2*Math.PI*r,off=c*(1-score/100);return `<div class="gauge"><svg viewBox="0 0 56 56"><circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/><circle cx="28" cy="28" r="${r}" fill="none" stroke="${sv}" stroke-width="5" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="val" style="color:${sv}">${score}</span></div>`;}
 function sevmini(counts){counts=counts||{};return `<div class="sevmini">`+order.map(s=>`<i style="background:${counts[s]>0?svVar(s):'var(--line)'}" title="${s} ${counts[s]||0}"></i>`).join('')+`</div>`;}
 
-const fleet=document.getElementById('fleet'),hostview=document.getElementById('hostview'),auditview=document.getElementById('auditview'),usersview=document.getElementById('usersview');
+const fleet=document.getElementById('fleet'),hostview=document.getElementById('hostview'),auditview=document.getElementById('auditview'),usersview=document.getElementById('usersview'),activityview=document.getElementById('activityview');
 // Every string below originates on a monitored host: process names, file paths,
 // argv. A host is exactly what an attacker controls, so none of it may reach
 // innerHTML raw -- otherwise a file named `/tmp/<img onerror=...>` executes
@@ -458,12 +464,14 @@ const fleet=document.getElementById('fleet'),hostview=document.getElementById('h
 // compromised host back into the panel. Escape at every interpolation.
 const ESCMAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>ESCMAP[c]);}
-function showView(el){[fleet,hostview,auditview,usersview].forEach(v=>v&&v.classList.add('hidden'));el.classList.remove('hidden');window.scrollTo(0,0);}
+function showView(el){[fleet,hostview,auditview,usersview,activityview].forEach(v=>v&&v.classList.add('hidden'));el.classList.remove('hidden');window.scrollTo(0,0);}
 document.getElementById('hostlist').addEventListener('click',e=>{const b=e.target.closest('.host');if(b)openHost(HOSTS[+b.dataset.i]);});
 document.getElementById('back').addEventListener('click',()=>showView(fleet));
 
 let currentHost=null;
-async function openHost(h){
+// `selectId` preselects one incident, so arriving from the fleet-wide activity
+// view lands on the finding you clicked rather than on an unselected list.
+async function openHost(h,selectId){
   currentHost=h;
   let incs=[];try{incs=await api('/api/host/'+encodeURIComponent(h.host));}catch(e){}
   showView(hostview);
@@ -496,7 +504,13 @@ async function openHost(h){
   feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.map(esc).join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${esc(t)}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';const t=incTime(d);
     const ttag=t.ms?`<span class="itime" title="${t.exact?'when it happened on the host':'when the server received it — the agent did not supply an event time'}">${tsago(Math.floor(t.ms/1000))}${t.exact?'':' (received)'}</span>`:'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}${ttag}</span>${rtag}</button>`;}).join('');
   det.className='detail empty';det.textContent='Select an incident to see its lineage, signals, and ATT&CK mapping.';
-  feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);}));
+  const pick=btn=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);};
+  feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>pick(btn)));
+  if(selectId!=null){
+    const i=incs.findIndex(x=>x._id===selectId);
+    const btn=i>=0?feed.querySelector(`.inc[data-i="${i}"]`):null;
+    if(btn){pick(btn);btn.scrollIntoView({block:'nearest'});}
+  }
 }
 function renderInc(d){const det=document.getElementById('detail');det.className='detail';det.style.setProperty('--sv',svVar(d.severity));det.style.setProperty('--sv-bg',svBg(d.severity));const ld=(d.lineage_detail&&d.lineage_detail.length)?d.lineage_detail:null;
   const chain=ld?ld.map((n,i)=>{const tip=i===ld.length-1;const cmd=n.cmdline||n.exe||'';return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}"${cmd?` title="${esc(cmd)}"`:''}>${esc(n.comm)}(${n.pid})</span>`;}).join('')
@@ -529,6 +543,34 @@ async function resolveIncident(id,note){
   if(fresh){openHost(fresh);}else{document.getElementById('back').click();renderFleet();}
 }
 
+// Fleet-wide activity. Clicking an entry opens the host it happened on with
+// that incident selected, rather than rendering a detached copy here: an
+// incident is only actionable next to the rest of that host's activity.
+async function openActivity(){
+  showView(activityview);
+  const list=document.getElementById('activitylist');
+  let rows=[];
+  try{rows=await api('/api/incidents');}catch(e){list.innerHTML='<div class="detail empty" style="position:static">Could not load activity.</div>';return;}
+  if(!rows.length){list.innerHTML='<div class="detail empty" style="position:static">No detections reported by any host yet.</div>';return;}
+  list.innerHTML=rows.map((d,i)=>{
+    const t=incTime(d);
+    const chips=(d.attack||[]).map(x=>`<span class="tk">${esc(x)}</span>`).join('');
+    return `<button class="inc" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}">`+
+      `<span class="badge">${d.score}</span>`+
+      `<span class="subj"><b class="ahost">${esc(d._host||'?')}</b> ${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span>`+
+      `<span class="sv-tag">${esc(d.severity)}</span>`+
+      `<span class="line mono">${(d.lineage||[]).map(esc).join('  ›  ')||'(no lineage recorded)'}</span>`+
+      `<span class="chips">${chips}<span class="itime">${t.ms?tsago(Math.floor(t.ms/1000))+(t.exact?'':' (received)'):''}</span></span>`+
+      `${d._resolved?'<span class="rtag">✓ resolved</span>':''}</button>`;
+  }).join('');
+  list.querySelectorAll('.inc').forEach(b=>b.addEventListener('click',()=>{
+    const d=rows[+b.dataset.i];
+    const h=HOSTS.find(x=>x.host===d._host);
+    if(h)openHost(h,d._id);
+  }));
+}
+document.getElementById('activitylink').addEventListener('click',openActivity);
+document.getElementById('activityback').addEventListener('click',()=>showView(fleet));
 document.getElementById('auditlink').addEventListener('click',openAudit);
 document.getElementById('auditback').addEventListener('click',()=>{document.getElementById('auditview').classList.add('hidden');fleet.classList.remove('hidden');window.scrollTo(0,0);});
 async function openAudit(){

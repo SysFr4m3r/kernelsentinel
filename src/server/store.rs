@@ -693,6 +693,43 @@ impl Store {
     }
 
     /// One host's incidents, newest first.
+    /// The most recent incidents across the whole fleet, newest first.
+    ///
+    /// Until now the only way to see activity was to open one host at a time,
+    /// which answers "how is web-01?" but not "what just happened anywhere?" --
+    /// the question an analyst actually starts from. Ordered by the agent's
+    /// event time when it supplied one, falling back to server receive time.
+    pub fn recent_incidents(&self, limit: usize) -> Vec<serde_json::Value> {
+        let hosts = self.hosts.lock().unwrap();
+        let mut out: Vec<(u64, u64, serde_json::Value)> = hosts
+            .iter()
+            .flat_map(|(host, st)| {
+                st.incidents.iter().map(move |i| {
+                    // Event time is milliseconds; receive time is seconds.
+                    let when = i
+                        .record
+                        .get("ts")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(i.received.saturating_mul(1000));
+                    let mut v = i.record.clone();
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("_host".into(), host.clone().into());
+                        obj.insert("_id".into(), i.id.into());
+                        obj.insert("_received".into(), i.received.into());
+                        obj.insert("_resolved".into(), i.resolved.into());
+                    }
+                    (when, i.id, v)
+                })
+            })
+            .collect();
+        // Ties are common: a replayed batch lands in the same second, and
+        // several incidents can share a millisecond. Falling back to the
+        // insertion id keeps the order stable instead of hash-map dependent.
+        out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        out.truncate(limit);
+        out.into_iter().map(|(_, _, v)| v).collect()
+    }
+
     pub fn host_incidents(&self, host: &str) -> Option<Vec<serde_json::Value>> {
         let hosts = self.hosts.lock().unwrap();
         hosts.get(host).map(|s| {

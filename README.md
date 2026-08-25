@@ -364,6 +364,13 @@ Command lines are **redacted for secrets** before they leave the host: `mysql -p
 fact that a password was passed inline without carrying the value into the panel, the journal, a
 webhook, or syslog.
 
+### Fleet activity
+
+The per-host view answers "how is web-01?". The **Activity** view answers "what just happened
+anywhere?" — every host's incidents in one list, newest first. Clicking one opens the host it
+happened on with that incident selected, so a finding always arrives next to the rest of that host's
+activity rather than as a detached copy.
+
 ### Agent liveness
 
 Agents check in every 60s even when they have nothing to report, so the panel can tell a **healthy
