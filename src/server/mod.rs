@@ -11,6 +11,7 @@
 
 mod dashboard;
 mod keys;
+mod ratelimit;
 mod session;
 mod ship;
 mod store;
@@ -31,6 +32,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::heartbeat::HeartbeatRecord;
 use crate::notify;
+use ratelimit::LoginLimiter;
 
 pub struct Config {
     pub addr: String,
@@ -145,6 +147,7 @@ pub fn serve(cfg: Config) -> Result<()> {
     // Session-signing secret (persisted, so logins survive a restart).
     let secret = Arc::new(store.session_secret());
     let bus = Arc::new(Broadcaster::default());
+    let limiter = Arc::new(LoginLimiter::default());
 
     // Seed the first admin from KS_ADMIN_PASSWORD if there are no users yet.
     if !store.has_users() && !cfg.admin_password.is_empty() {
@@ -219,10 +222,19 @@ pub fn serve(cfg: Config) -> Result<()> {
     for req in server.incoming_requests() {
         let (cfg, store, secret, bus) = (cfg.clone(), store.clone(), secret.clone(), bus.clone());
         let notifier = notifier.clone();
+        let limiter = limiter.clone();
         // Each request is handled to completion (respond consumes it). A panic
         // in one handler must not take the server down.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle(req, &cfg, &store, &secret, &bus, notifier.as_deref())
+            handle(
+                req,
+                &cfg,
+                &store,
+                &secret,
+                &bus,
+                notifier.as_deref(),
+                &limiter,
+            )
         }));
         if outcome.is_err() {
             eprintln!("kernelsentinel: recovered from a panic handling a request");
@@ -277,6 +289,7 @@ fn handle(
     secret: &[u8],
     bus: &Arc<Broadcaster>,
     notifier: Option<&notify::Notifier>,
+    limiter: &LoginLimiter,
 ) {
     let method = req.method().clone();
     let url = req.url().to_string();
@@ -347,6 +360,20 @@ fn handle(
 
         // Admin login: username + password -> a signed session cookie.
         (Method::Post, "/api/login") => {
+            // Peer address, not X-Forwarded-For: a header the caller sets is a
+            // header the caller can vary, which would make the limit decorative.
+            let peer = req.remote_addr().map(|a| a.ip());
+            if let Some(ip) = peer {
+                if let Some(wait) = limiter.locked_for(ip) {
+                    let mut r = text(429, "too many failed attempts; try again later");
+                    r.add_header(
+                        Header::from_bytes(&b"Retry-After"[..], wait.to_string().as_bytes())
+                            .unwrap(),
+                    );
+                    let _ = req.respond(r);
+                    return;
+                }
+            }
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body).ok();
             let username = form_field(&body, "username").unwrap_or_default();
@@ -364,6 +391,9 @@ fn handle(
             };
             match role {
                 Some(role) => {
+                    if let Some(ip) = peer {
+                        limiter.record_success(ip);
+                    }
                     let token = session::issue(secret, &username, &role, 8 * 3600);
                     let mut r = text(200, "ok");
                     r.add_header(
@@ -379,7 +409,18 @@ fn handle(
                     );
                     r
                 }
-                None => text(401, "invalid credentials"),
+                None => {
+                    if let Some(ip) = peer {
+                        if let Some(secs) = limiter.record_failure(ip) {
+                            eprintln!(
+                                "kernelsentinel: locking out {ip} for {secs}s after \
+                                 {} failed logins",
+                                ratelimit::MAX_FAILURES
+                            );
+                        }
+                    }
+                    text(401, "invalid credentials")
+                }
             }
         }
         (Method::Post, "/api/logout") => {
