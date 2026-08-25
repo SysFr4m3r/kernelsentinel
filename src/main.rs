@@ -9,9 +9,13 @@ use clap::{Parser, Subcommand};
 use kernelsentinel::clock::BootClock;
 use kernelsentinel::decoded::Event;
 use kernelsentinel::detect::{self, Baseline, Engine, IncidentRecord, RuleSet, Severity};
-use kernelsentinel::event::{EventType, RawEvent};
+use kernelsentinel::doctor;
+use kernelsentinel::event::EventType;
+#[cfg(feature = "bpf")]
+use kernelsentinel::event::RawEvent;
 use kernelsentinel::graph::{ProcKey, ProcessGraph, scan};
-use kernelsentinel::{doctor, heartbeat, sensors};
+#[cfg(feature = "bpf")]
+use kernelsentinel::{heartbeat, sensors};
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +31,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Attach the sensors and stream events.
+    /// Live collection. Requires the eBPF sensors, so it is absent from a
+    /// server-only build.
+    #[cfg(feature = "bpf")]
     Run {
         /// Maximum processes held in the graph before eviction.
         #[arg(long, default_value_t = 50_000)]
@@ -50,6 +57,7 @@ enum Command {
         yara: Option<String>,
     },
     /// Capture raw events to an NDJSON file (no detection), for later replay.
+    #[cfg(feature = "bpf")]
     Record {
         /// Output file; use "-" for stdout.
         #[arg(short, long, default_value = "-")]
@@ -166,6 +174,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        #[cfg(feature = "bpf")]
         Command::Record { out } => record(&out),
         Command::Replay {
             input,
@@ -205,6 +214,7 @@ fn main() -> Result<()> {
         ),
         Command::Ship { url, host, ca } => ship_cmd(&url, host, ca),
         Command::Rules { dir } => rules_cmd(&dir),
+        #[cfg(feature = "bpf")]
         Command::Run {
             max_processes,
             retain,
@@ -219,6 +229,7 @@ fn main() -> Result<()> {
 /// Capture every event as one JSON object per line. This is the raw feed with
 /// no detection, so a scenario can be recorded once (as root, briefly) and then
 /// replayed unprivileged and deterministically as often as needed.
+#[cfg(feature = "bpf")]
 fn record(out: &str) -> Result<()> {
     let report = doctor::run();
     if report.fatal() {
@@ -682,6 +693,7 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
     }
 }
 
+#[cfg(feature = "bpf")]
 fn run(
     max_processes: usize,
     retain_secs: u64,
@@ -979,10 +991,12 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// the entirety of what is safe here -- the previous version locked a Mutex and
 /// dropped a Box from signal context, which is undefined behavior and aborted
 /// the process on a second ^C during libbpf teardown.
+#[cfg(feature = "bpf")]
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
 }
 
+#[cfg(feature = "bpf")]
 fn install_signal_handlers() {
     // SAFETY: on_signal only performs an atomic store, which is async-signal-safe.
     unsafe {

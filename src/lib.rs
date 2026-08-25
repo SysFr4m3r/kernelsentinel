@@ -11,6 +11,9 @@ pub mod heartbeat;
 pub mod http;
 pub mod notify;
 pub mod redact;
+/// Live eBPF collection. Absent from a server-only build, which has no sensors
+/// to run and no BPF toolchain to build them with.
+#[cfg(feature = "bpf")]
 pub mod sensors;
 pub mod server;
 pub mod watchlist;

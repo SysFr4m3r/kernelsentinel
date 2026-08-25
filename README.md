@@ -418,15 +418,25 @@ ingest** — an alerting failure degrades to a logged error, never to backpressu
 alerts are counted and summarized rather than dropped silently. Sinks are configured on the command
 line only: a URL the server fetches is an SSRF primitive, so it stays out of reach of the web UI.
 
-### Why one binary
+### Server-only build
 
-The same `kernelsentinel` is the agent (`run`/`ship`) on hosts and the server (`serve`) on the
-central box — deploy the same file everywhere and pick the role with the subcommand.
+The same source builds two ways. By default you get the full agent: sensors, `run`, `record`,
+everything. For the central box, which never runs a sensor:
 
-The caveat: the central server carries eBPF collector code it never runs, and building from source
-needs the BPF toolchain. For a production central box that should not have that toolchain, a
-**server-only build** is the clean split — planned, not yet done. Until then, build once on a machine
-with the toolchain and copy the binary over.
+```bash
+cargo build --release --no-default-features
+```
+
+That drops the `bpf` feature, so `build.rs` never invokes clang and the binary never links libbpf —
+**no clang, no bpftool, no libbpf, no host-specific `vmlinux.h`** required to build it. The result is
+20 MB instead of 37 MB and carries no collector code it cannot run.
+
+It keeps everything that does not need a kernel: `serve`, `ship`, `replay`, `investigate`,
+`baseline`, `rules`, `tree`, `doctor`. Only `run` and `record` are absent, because only they collect.
+
+The role is still chosen by subcommand rather than by binary name — a separate name would need a
+workspace split for no functional gain, since one crate builds all its binaries with the same
+feature set.
 
 ---
 

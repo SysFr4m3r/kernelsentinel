@@ -1,11 +1,19 @@
-use std::env;
-use std::path::PathBuf;
+//! Compiles the BPF object and generates its Rust skeleton.
+//!
+//! Gated on the `bpf` feature so a server-only build needs none of the BPF
+//! toolchain. Without the feature this script does nothing at all: no clang, no
+//! libbpf headers, and no host-specific `vmlinux.h` -- which is what makes it
+//! possible to build the central server on a box that has none of them.
 
-use libbpf_cargo::SkeletonBuilder;
-
-const SRC: &str = "bpf/kernelsentinel.bpf.c";
-
+#[cfg(feature = "bpf")]
 fn main() {
+    use std::env;
+    use std::path::PathBuf;
+
+    use libbpf_cargo::SkeletonBuilder;
+
+    const SRC: &str = "bpf/kernelsentinel.bpf.c";
+
     let mut out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
     out.push("kernelsentinel.skel.rs");
 
@@ -29,3 +37,6 @@ fn main() {
     println!("cargo:rerun-if-changed={SRC}");
     println!("cargo:rerun-if-changed=bpf/events.h");
 }
+
+#[cfg(not(feature = "bpf"))]
+fn main() {}
