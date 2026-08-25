@@ -287,13 +287,20 @@ document.getElementById('loginform').addEventListener('submit',async e=>{
   const r=await fetch('/api/login',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'username='+encodeURIComponent(u)+'&password='+encodeURIComponent(pw)});
-  if(r.ok){document.getElementById('login').style.display='none';boot();}
+  if(r.ok){showLogin(false);boot();}
   else{document.getElementById('loginerr').textContent='Incorrect password';}
 });
 
 let ME={username:'',role:''};
+// The gate starts visible (CSS `display:grid`), so every authenticated path
+// must dismiss it explicitly. Forgetting that on reload showed a login form on
+// top of a fully loaded dashboard: the session was valid the whole time, but it
+// read as being logged out.
+function showLogin(on){document.getElementById('login').style.display=on?'grid':'none';}
+function loginVisible(){return document.getElementById('login').style.display!=='none';}
 async function boot(){
-  try{HOSTS=await api('/api/fleet');}catch(e){if(e==='auth'){document.getElementById('login').style.display='grid';return;}HOSTS=[];}
+  try{HOSTS=await api('/api/fleet');}catch(e){if(e==='auth'){showLogin(true);return;}HOSTS=[];}
+  showLogin(false);
   try{ME=await api('/api/me');}catch(e){}
   document.getElementById('whoami').textContent=ME.username||'—';
   document.getElementById('avatar').textContent=(ME.username||'?').slice(0,1).toUpperCase();
@@ -475,6 +482,44 @@ async function openAudit(){
 }
 boot();
 // Safety-net poll in case SSE is unavailable (e.g. a proxy buffers it).
-setInterval(()=>{if(document.getElementById('login').style.display==='none'){liveRefresh();}},60000);
+setInterval(()=>{if(!loginVisible()){liveRefresh();}},60000);
 </script>
 "####;
+
+#[cfg(test)]
+mod tests {
+    use super::PAGE;
+
+    /// The login gate defaults to visible in CSS, so every authenticated path
+    /// must dismiss it. When `boot()` stopped doing that, a reload rendered the
+    /// full dashboard and then covered it with a login form -- the session had
+    /// been valid the whole time, which made it look like sessions were broken.
+    /// These are string checks, not behaviour, but they catch the exact
+    /// deletion that caused the regression.
+    #[test]
+    fn boot_dismisses_the_login_gate() {
+        let boot = PAGE
+            .split("async function boot()")
+            .nth(1)
+            .expect("boot() must exist");
+        let body = &boot[..boot.find("\n}").unwrap_or(boot.len())];
+        assert!(
+            body.contains("showLogin(false)"),
+            "boot() must hide the login gate for an existing session, or a \
+             reload shows the login form over a working dashboard"
+        );
+    }
+
+    /// The gate's visibility is set through one helper; a raw style assignment
+    /// elsewhere is how the two paths drifted apart in the first place.
+    #[test]
+    fn login_visibility_goes_through_the_helper() {
+        assert!(PAGE.contains("function showLogin(on)"));
+        assert_eq!(
+            PAGE.matches("getElementById('login').style.display")
+                .count(),
+            2,
+            "only showLogin() and loginVisible() may touch the gate's display"
+        );
+    }
+}
