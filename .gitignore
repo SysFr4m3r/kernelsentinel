@@ -42,3 +42,5 @@ temp.log
 # --- Local working notes ---
 # PLAN.md is the private engineering plan; README.md is the public description.
 PLAN.md
+/dist/
+/target/

@@ -1,0 +1,102 @@
+name: release
+
+# Tag-driven. `git tag v0.1.0 && git push --tags` produces the release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Pinned to 22.04 on purpose: the release binaries are dynamically linked,
+    # so the runner's glibc becomes the floor for every host that installs them.
+    # 22.04 gives glibc 2.35, which covers Debian 12, Ubuntu 22.04+ and RHEL 9.
+    # Moving to a newer runner silently raises that floor and breaks older hosts.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "$tag" != "$crate" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $crate" >&2
+            exit 1
+          fi
+          echo "releasing $crate"
+
+      - name: Install BPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libbpf-dev \
+                                  linux-tools-common linux-tools-generic
+
+      - name: Generate vmlinux.h from the runner's BTF
+        run: |
+          bpftool="$(find /usr/lib/linux-tools -name bpftool | head -1)"
+          "$bpftool" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          wc -l bpf/vmlinux.h
+
+      - name: Build packages
+        run: ./packaging/build-deb.sh
+
+      # The agent binary is compiled against this runner's vmlinux.h. CO-RE is
+      # what makes that portable: libbpf relocates field offsets against the
+      # target kernel's own BTF at load time. Verifying the object loads here
+      # catches a broken build before it reaches anyone.
+      - name: Smoke-test the built binaries
+        run: |
+          ./target/release/kernelsentinel --version
+          ./target/server/release/kernelsentinel --version
+          ./target/server/release/kernelsentinel rules --dir rules
+          ./target/release/kernelsentinel replay tests/fixtures/host_sudo_suid.ndjson | head -20
+          # The server build must not carry the collector.
+          if ./target/server/release/kernelsentinel run --help >/dev/null 2>&1; then
+            echo "server build still exposes 'run' -- the bpf feature leaked" >&2
+            exit 1
+          fi
+
+      - name: Verify package contents
+        run: |
+          for d in dist/*.deb; do
+            echo "=== $d"
+            dpkg-deb --info "$d"
+            dpkg-deb --contents "$d"
+          done
+          cat dist/SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Debian / Ubuntu**
+
+            ```bash
+            # central server (no BPF toolchain needed)
+            sudo apt install ./kernelsentinel-server_${{ github.ref_name }}_amd64.deb
+
+            # monitored host
+            sudo apt install ./kernelsentinel-agent_${{ github.ref_name }}_amd64.deb
+            sudo kernelsentinel doctor
+            ```
+
+            Neither package starts its service: an agent with no ingest key, or a
+            server with no admin password, would crash-loop. Each prints the
+            configuration steps on install.
+
+            **Other distributions** — use the tarballs.
+
+            Verify with `sha256sum -c SHA256SUMS`.
+
+            Built on Ubuntu 22.04, so glibc 2.35 is the floor. The agent needs
+            kernel 5.8+ with BTF; `kernelsentinel doctor` reports where a host stands.

@@ -134,6 +134,31 @@ fixtures. The false-positive discipline is enforced by tests: a bare `sudo` must
 
 ## Install
 
+### From a release (recommended)
+
+Prebuilt packages, no toolchain required. The agent binary is CO-RE, so one
+build runs across kernels — libbpf relocates against the target kernel's own BTF
+at load.
+
+```bash
+sudo apt install ./kernelsentinel-server_0.1.0_amd64.deb   # central box
+```
+
+```bash
+sudo apt install ./kernelsentinel-agent_0.1.0_amd64.deb    # monitored host
+```
+
+Neither package starts its service. An agent with no ingest key, or a server with
+no admin password, would crash-loop — so each prints its configuration steps on
+install instead of leaving you with a broken unit. Other distributions: use the
+tarballs, and verify with `sha256sum -c SHA256SUMS`.
+
+Releases are built on Ubuntu 22.04, so **glibc 2.35** is the floor.
+
+### From source
+
+Only needed to build the agent yourself, or to hack on it.
+
 | | |
 |---|---|
 | Kernel | **5.8+** (ring buffer). BPF-LSM sensors want **5.7+** with `CONFIG_BPF_LSM=y` and `bpf` in `/sys/kernel/security/lsm` |
@@ -162,6 +187,12 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
 ```bash
 cargo build --release
+```
+
+To build the distributable packages instead:
+
+```bash
+./packaging/build-deb.sh
 ```
 
 **4. Check your host is supported.** Reports kernel, BTF, LSM and privileges, and exits non-zero if a
