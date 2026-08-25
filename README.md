@@ -372,6 +372,12 @@ anywhere?" — every host's incidents in one list, newest first. Clicking one op
 happened on with that incident selected, so a finding always arrives next to the rest of that host's
 activity rather than as a detached copy.
 
+The **search field** filters as you type across host, command line, process lineage, signal id and
+detail, ATT&CK technique, and YARA rule name — so `modprobe`, `dummy`, `T1547.006` and `module_load`
+all find the same kernel-module incident. Multiple words narrow rather than widen
+(`db-primary modprobe`), `/` focuses the field and `Esc` clears it. It searches the loaded window of
+recent incidents, and the header says how many that is.
+
 ### Agent liveness
 
 Agents check in every 60s even when they have nothing to report, so the panel can tell a **healthy

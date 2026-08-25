@@ -127,6 +127,12 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .sig .pts{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
 /* The command that produced a signal. Monospace, dimmed, prefixed with a
    prompt glyph so it reads as "this is what ran" at a glance. */
+.searchbar{display:flex;gap:8px;align-items:center;margin:0 0 12px}
+.searchbar input{flex:1;min-width:0;padding:9px 12px;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel);color:var(--ink);font:inherit;font-size:13px}
+.searchbar input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.searchbar input::placeholder{color:var(--faint)}
+.nomatch{color:var(--faint);text-align:center;padding:26px;font-size:13px}
 .yrow{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:start;padding:7px 0;border-bottom:1px dashed var(--line)}
 .yrow:last-of-type{border-bottom:0}
 .yrow code.cmd{margin-top:0}
@@ -260,7 +266,12 @@ code.cmd.hero{margin-top:8px;font-size:12px}
   </div>
   <div id="activityview" class="hidden">
     <button class="back" id="activityback">← all hosts</button>
-    <div class="sect-h"><span>Fleet activity</span><span class="hint">every host, newest first · click to open it in context</span></div>
+    <div class="sect-h"><span>Fleet activity</span><span class="hint" id="acount">every host, newest first · click to open it in context</span></div>
+    <div class="searchbar">
+      <input id="acsearch" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search host, command, module, signal, ATT&amp;CK id…  ( / to focus )">
+      <button id="acclear" type="button" class="navlink" title="Clear">clear</button>
+    </div>
     <div id="activitylist" class="feed"></div>
   </div>
   <div id="auditview" class="hidden">
@@ -546,12 +557,58 @@ async function resolveIncident(id,note){
 // Fleet-wide activity. Clicking an entry opens the host it happened on with
 // that incident selected, rather than rendering a detached copy here: an
 // incident is only actionable next to the rest of that host's activity.
+// One lowercase haystack per incident, built once. Deliberately assembled from
+// named fields rather than JSON.stringify: stringifying would also match key
+// names, ids and timestamps, so searching "score" or "100" would hit
+// everything and the filter would be useless.
+function haystack(d){
+  const parts=[d._host,d.severity,String(d.score)];
+  const s=d.subject||{};
+  parts.push(s.comm,s.exe,s.cmdline);
+  (d.lineage||[]).forEach(n=>parts.push(n));
+  (d.lineage_detail||[]).forEach(n=>parts.push(n.comm,n.exe,n.cmdline));
+  (d.signals||[]).forEach(g=>parts.push(g.id,g.detail,g.cmdline));
+  (d.attack||[]).forEach(a=>parts.push(a));
+  (d.yara||[]).forEach(y=>{parts.push(y.target,y.outcome);(y.rules||[]).forEach(r=>parts.push(r));});
+  return parts.filter(Boolean).join(' ').toLowerCase();
+}
+// Every term must appear somewhere, so "db-primary modprobe" narrows rather
+// than widens -- the behaviour people expect from a search box.
+function matches(hay,terms){return terms.every(t=>hay.includes(t));}
+
+let ACTIVITY=[];
 async function openActivity(){
   showView(activityview);
   const list=document.getElementById('activitylist');
-  let rows=[];
-  try{rows=await api('/api/incidents');}catch(e){list.innerHTML='<div class="detail empty" style="position:static">Could not load activity.</div>';return;}
-  if(!rows.length){list.innerHTML='<div class="detail empty" style="position:static">No detections reported by any host yet.</div>';return;}
+  try{ACTIVITY=await api('/api/incidents');}
+  catch(e){list.innerHTML='<div class="detail empty" style="position:static">Could not load activity.</div>';return;}
+  ACTIVITY.forEach(d=>{d._hay=haystack(d);});
+  renderActivity();
+  const box=document.getElementById('acsearch');
+  box.value='';
+  box.focus();
+}
+function renderActivity(){
+  const list=document.getElementById('activitylist');
+  const q=(document.getElementById('acsearch').value||'').trim().toLowerCase();
+  const terms=q?q.split(/\s+/):[];
+  const rows=terms.length?ACTIVITY.filter(d=>matches(d._hay,terms)):ACTIVITY;
+  const count=document.getElementById('acount');
+
+  if(!ACTIVITY.length){
+    list.innerHTML='<div class="detail empty" style="position:static">No detections reported by any host yet.</div>';
+    count.textContent='every host, newest first';
+    return;
+  }
+  // textContent, not innerHTML: the query is user input and never becomes markup.
+  count.textContent=terms.length
+    ? `${rows.length} of ${ACTIVITY.length} match · searching the ${ACTIVITY.length} most recent`
+    : 'every host, newest first · click to open it in context';
+  if(!rows.length){
+    list.innerHTML='<div class="nomatch">Nothing matches that. The search covers host, command line, '+
+      'signal, ATT&CK id and YARA rule across the most recent incidents — older ones are not loaded.</div>';
+    return;
+  }
   list.innerHTML=rows.map((d,i)=>{
     const t=incTime(d);
     const chips=(d.attack||[]).map(x=>`<span class="tk">${esc(x)}</span>`).join('');
@@ -569,6 +626,21 @@ async function openActivity(){
     if(h)openHost(h,d._id);
   }));
 }
+document.getElementById('acsearch').addEventListener('input',renderActivity);
+document.getElementById('acclear').addEventListener('click',()=>{
+  const b=document.getElementById('acsearch');b.value='';renderActivity();b.focus();
+});
+document.getElementById('acsearch').addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.target.value='';renderActivity();}
+});
+// "/" focuses search while the activity view is open, unless already typing.
+document.addEventListener('keydown',e=>{
+  if(e.key!=='/'||activityview.classList.contains('hidden'))return;
+  const t=e.target.tagName;
+  if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT')return;
+  e.preventDefault();
+  document.getElementById('acsearch').focus();
+});
 document.getElementById('activitylink').addEventListener('click',openActivity);
 document.getElementById('activityback').addEventListener('click',()=>showView(fleet));
 document.getElementById('auditlink').addEventListener('click',openAudit);
