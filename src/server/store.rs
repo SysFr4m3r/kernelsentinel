@@ -703,6 +703,11 @@ impl Store {
                     let mut v = i.record.clone();
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("_id".into(), i.id.into());
+                        // When the agent could not supply a wall-clock event
+                        // time (a replayed capture), the panel falls back to
+                        // this and says so, rather than showing no time at all
+                        // or implying the two are the same thing.
+                        obj.insert("_received".into(), i.received.into());
                         obj.insert("_resolved".into(), i.resolved.into());
                         obj.insert("_resolved_by".into(), i.resolved_by.clone().into());
                         obj.insert("_resolved_at".into(), i.resolved_at.into());

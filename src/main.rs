@@ -310,7 +310,7 @@ fn replay(input: &str, json: bool, baseline: Option<String>, rules: Option<Strin
                 graph.apply(&ev);
                 if let Some(inc) = engine.on_event(&ev, &graph) {
                     if json {
-                        emit(&IncidentRecord::from_incident(&inc, &graph).to_ndjson());
+                        emit(&IncidentRecord::from_incident(&inc, &graph, None).to_ndjson());
                     } else {
                         emit(&detect::render(&inc, &graph, &clock));
                     }
@@ -742,7 +742,9 @@ fn run(
             // event's process already in place.
             if let Some(inc) = engine.on_event(&ev, &graph) {
                 if json {
-                    emit(&IncidentRecord::from_incident(&inc, &graph).to_ndjson());
+                    emit(
+                        &IncidentRecord::from_incident(&inc, &graph, Some(&bootclock)).to_ndjson(),
+                    );
                 } else {
                     emit(&detect::render(&inc, &graph, &bootclock));
                 }

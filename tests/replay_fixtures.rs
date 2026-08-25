@@ -129,7 +129,7 @@ fn ndjson_incident_record_is_valid_and_complete() {
         let ev: Event = serde_json::from_str(line).unwrap();
         g.apply(&ev);
         if let Some(inc) = e.on_event(&ev, &g) {
-            json_lines.push(IncidentRecord::from_incident(&inc, &g).to_ndjson());
+            json_lines.push(IncidentRecord::from_incident(&inc, &g, None).to_ndjson());
         }
     }
     assert_eq!(json_lines.len(), 1, "expected one Medium+ incident");
@@ -525,4 +525,79 @@ fn yaml_dsl_rule_detects_the_escalation_chain() {
         saw_dsl,
         "the YAML sequence rule never fired on the real chain"
     );
+}
+
+/// The live path must stamp incidents with wall-clock time, and the replay path
+/// must not: a capture never recorded the boot->wall offset, so any wall time
+/// derived from it on another machine (or after a reboot) would be fiction.
+/// In-incident offsets come from the kernel boot clock and stay exact in both.
+#[test]
+fn wall_clock_is_present_live_and_absent_on_replay() {
+    use kernelsentinel::clock::BootClock;
+
+    let text = std::fs::read_to_string("tests/fixtures/host_sudo_suid.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Medium);
+    let mut incidents = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            incidents.push(inc);
+        }
+    }
+    let inc = incidents.last().expect("the critical incident");
+
+    // Replay: no clock, so no invented timestamps.
+    let replayed: serde_json::Value =
+        serde_json::from_str(&IncidentRecord::from_incident(inc, &g, None).to_ndjson()).unwrap();
+    assert!(
+        replayed.get("ts").is_none(),
+        "replay must not invent a wall-clock time"
+    );
+    assert!(
+        replayed["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s.get("ts").is_none()),
+        "replayed signals must not carry wall-clock times"
+    );
+
+    // Live: a real clock produces a plausible current epoch-millisecond stamp.
+    let clock = BootClock::new();
+    let live: serde_json::Value =
+        serde_json::from_str(&IncidentRecord::from_incident(inc, &g, Some(&clock)).to_ndjson())
+            .unwrap();
+    let ts = live["ts"].as_u64().expect("live records must carry `ts`");
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // The fixture's boot timestamps are from this machine's uptime range, so the
+    // mapped time lands in the past but well after the epoch.
+    assert!(ts > 1_600_000_000_000, "ts must be epoch ms, got {ts}");
+    assert!(ts <= now_ms, "an event cannot be in the future");
+    assert!(
+        live["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["ts"].is_u64()),
+        "every live signal must carry a wall-clock time"
+    );
+
+    // Offsets inside the incident are exact regardless of clock availability.
+    let sigs = replayed["signals"].as_array().unwrap();
+    let lo = sigs
+        .iter()
+        .map(|s| s["ts_ns"].as_u64().unwrap())
+        .min()
+        .unwrap();
+    let hi = sigs
+        .iter()
+        .map(|s| s["ts_ns"].as_u64().unwrap())
+        .max()
+        .unwrap();
+    assert!(hi > lo, "the chain must have measurable ordering");
 }

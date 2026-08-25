@@ -127,6 +127,10 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .sig .pts{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
 /* The command that produced a signal. Monospace, dimmed, prefixed with a
    prompt glyph so it reads as "this is what ran" at a glance. */
+.sigtime{display:block;margin-top:5px;font-size:11px;color:var(--faint);letter-spacing:.02em}
+.sigtime i{font-style:normal;color:var(--accent);margin-left:6px}
+.itime{font-size:11px;color:var(--faint);white-space:nowrap;margin-left:auto;align-self:center}
+.d-head .when{color:var(--faint);font-size:11.5px;margin-top:3px}
 .atag{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;
   letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:100px;vertical-align:middle;
   border:1px solid transparent}
@@ -351,6 +355,28 @@ async function openUsers(){
     if(resp.ok)openUsers();else alert(await resp.text());
   }));
 }
+// Absolute UTC, so an incident time is unambiguous across timezones. "2m ago"
+// answers "is this happening now"; the absolute stamp answers "what do I put in
+// the report", and an investigation needs both.
+function tsabs(ms){if(!ms)return '';const d=new Date(ms);
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;}
+// Event time when the agent could supply one, else the server's receive time.
+// The two are labelled differently: conflating "when it happened" with "when we
+// heard about it" is how a delayed report becomes a wrong timeline.
+function incTime(d){
+  if(d.ts)return {ms:d.ts,exact:true};
+  if(d._received)return {ms:d._received*1000,exact:false};
+  return {ms:0,exact:false};
+}
+// Offsets inside one incident come from the kernel's boot clock, so they are
+// exact even when no wall-clock mapping exists (a replayed capture).
+function offset(ns){
+  if(ns<1000)return '+0ms';
+  if(ns<1e9)return '+'+Math.round(ns/1e6)+'ms';
+  if(ns<60e9)return '+'+(ns/1e9).toFixed(2)+'s';
+  return '+'+Math.round(ns/60e9)+'m';
+}
 function tsago(sec){if(!sec)return '—';const d=Math.max(0,Math.floor(Date.now()/1000-sec));
   if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago';}
 
@@ -438,7 +464,8 @@ async function openHost(h){
     det.className='detail empty';
     det.textContent=live?'Nothing to inspect — this host is clean.':'Nothing to inspect — and this host is not currently reporting.';
     return;}
-  feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.map(esc).join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${esc(t)}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}</span>${rtag}</button>`;}).join('');
+  feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.map(esc).join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${esc(t)}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';const t=incTime(d);
+    const ttag=t.ms?`<span class="itime" title="${t.exact?'when it happened on the host':'when the server received it — the agent did not supply an event time'}">${tsago(Math.floor(t.ms/1000))}${t.exact?'':' (received)'}</span>`:'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}${ttag}</span>${rtag}</button>`;}).join('');
   det.className='detail empty';det.textContent='Select an incident to see its lineage, signals, and ATT&CK mapping.';
   feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);}));
 }
@@ -446,7 +473,14 @@ function renderInc(d){const det=document.getElementById('detail');det.className=
   const chain=ld?ld.map((n,i)=>{const tip=i===ld.length-1;const cmd=n.cmdline||n.exe||'';return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}"${cmd?` title="${esc(cmd)}"`:''}>${esc(n.comm)}(${n.pid})</span>`;}).join('')
     :((d.lineage||[]).length?d.lineage.map((n,i)=>{const tip=i===d.lineage.length-1;return(i?'<span class="arrow">→</span>':'')+`<span class="node ${tip?'tip':''}">${esc(n)}</span>`;}).join(''):'<span class="node">process exited before lineage was captured</span>');
   // The chain as commands: what an analyst actually wants to read.
-  const cmds=ld?ld.filter(n=>n.cmdline).map(n=>`<div class="cmdrow"><span class="cpid mono">${n.pid}</span><code class="cmd">${esc(n.cmdline)}</code></div>`).join(''):'';const sigs=(d.signals||[]).slice().sort((a,b)=>a.ts_ns-b.ts_ns).map(s=>`<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}</span><span class="pts">+${s.score}</span></div>`).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?d.subject.uid:'?'}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
+  const cmds=ld?ld.filter(n=>n.cmdline).map(n=>`<div class="cmdrow"><span class="cpid mono">${n.pid}</span><code class="cmd">${esc(n.cmdline)}</code></div>`).join(''):'';const sorted=(d.signals||[]).slice().sort((a,b)=>a.ts_ns-b.ts_ns);
+  const t0=sorted.length?sorted[0].ts_ns:0;
+  const sigs=sorted.map(s=>{
+    const when=s.ts?tsabs(s.ts).slice(11):'';          // HH:MM:SS UTC
+    const off=sorted.length>1?offset(s.ts_ns-t0):'';
+    const stamp=(when||off)?`<span class="sigtime mono">${when}${when&&off?' ':''}${off?`<i>${off}</i>`:''}</span>`:'';
+    return `<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}${stamp}</span><span class="pts">+${s.score}</span></div>`;
+  }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?d.subject.uid:'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
   const rb=det.querySelector('.resolvebtn');
   if(rb)rb.addEventListener('click',()=>resolveIncident(d._id,det.querySelector('.rnote').value));}
 

@@ -38,6 +38,16 @@ impl BootClock {
         self.epoch + Duration::from_nanos(ts_ns)
     }
 
+    /// Milliseconds since the Unix epoch, for shipping a timestamp somewhere
+    /// that has no idea when this host booted. A boot-relative number is
+    /// meaningless off-box: only the agent knows its own boot epoch.
+    pub fn to_epoch_ms(&self, ts_ns: u64) -> u64 {
+        self.to_wall(ts_ns)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     /// `HH:MM:SS.mmm` in UTC, without pulling in a date-time crate for M0.
     pub fn format(&self, ts_ns: u64) -> String {
         let d = self

@@ -16,6 +16,12 @@ pub struct SignalRecord {
     pub detail: String,
     pub attack: Vec<&'static str>,
     pub ts_ns: u64,
+    /// Wall-clock time this signal fired, epoch milliseconds. Absent when
+    /// replaying a capture: the recording never stored the boot->wall offset,
+    /// so any wall time we printed would be invented. `ts_ns` differences stay
+    /// exact either way, which is what an in-incident timeline needs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<u64>,
     pub pid: u32,
     /// The command line of the process this signal fired on -- "which command
     /// actually did this". A detail like "SUID gained: /tmp/.x" says what
@@ -62,6 +68,10 @@ pub struct SubjectRecord {
 pub struct IncidentRecord {
     pub schema: &'static str,
     pub ts_ns: u64,
+    /// Wall-clock time of the most recent signal, epoch milliseconds. See
+    /// `SignalRecord::ts` for why it can be absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<u64>,
     pub severity: &'static str,
     pub score: u32,
     pub score_breakdown: ScoreBreakdown,
@@ -98,7 +108,13 @@ fn cmdline_of(graph: &ProcessGraph, key: &crate::graph::ProcKey) -> String {
 }
 
 impl IncidentRecord {
-    pub fn from_incident(inc: &Incident, graph: &ProcessGraph) -> Self {
+    /// `clock` converts the kernel's boot-relative timestamps to wall clock.
+    /// `None` when replaying a capture, where no honest conversion exists.
+    pub fn from_incident(
+        inc: &Incident,
+        graph: &ProcessGraph,
+        clock: Option<&crate::clock::BootClock>,
+    ) -> Self {
         let subject_node = graph.get(&inc.subject);
         let subject = SubjectRecord {
             pid: inc.subject.pid,
@@ -138,6 +154,7 @@ impl IncidentRecord {
                 detail: s.detail.clone(),
                 attack: s.attack.to_vec(),
                 ts_ns: s.ts_ns,
+                ts: clock.map(|c| c.to_epoch_ms(s.ts_ns)),
                 pid: s.key.pid,
                 cmdline: cmdline_of(graph, &s.key),
             })
@@ -149,6 +166,7 @@ impl IncidentRecord {
         IncidentRecord {
             schema: "kernelsentinel.incident/v1",
             ts_ns,
+            ts: clock.map(|c| c.to_epoch_ms(ts_ns)),
             severity: inc.score.severity.label(),
             score: inc.score.total,
             score_breakdown: ScoreBreakdown {

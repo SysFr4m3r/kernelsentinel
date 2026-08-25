@@ -164,6 +164,12 @@ Emit incidents as NDJSON for a SIEM or pipeline (suppresses the event stream):
 sudo kernelsentinel run --json
 ```
 
+Each incident carries `ts` (wall clock, epoch milliseconds) and `ts_ns` (the kernel's boot clock),
+per incident and per signal. `ts_ns` differences are exact, so the ordering inside a chain is always
+trustworthy; `ts` is **absent when replaying a capture**, because a recording never stored the
+boot-to-wall offset and any wall time derived from it elsewhere would be invented. The panel shows
+the agent's event time when it has one and clearly labels the server receive time when it does not.
+
 Each incident is one self-contained, version-tagged JSON object:
 
 ```json
@@ -283,7 +289,9 @@ ranked as needing attention rather than shown as clean, and the check-in carries
 **drop counter**: dropped events are missed detections, so a host that lost them is never presented
 as fully covered. An older agent that sends no heartbeat reads as `no heartbeat`, not as dead.
 
-Opening an incident shows the lineage, the signals, the score arithmetic, the ATT&CK mapping — and
+Opening an incident shows **when each step happened** — an absolute UTC time per signal plus the
+offset from the start of the chain, so "escalated to root, then created a SUID binary 1.70s later"
+is readable at a glance — along with the lineage, the score arithmetic, the ATT&CK mapping, and
 **the command line of every process in the chain**, so "a SUID binary appeared" comes with the
 `modprobe dummy` / `chmod u+s /tmp/.x` that did it:
 
