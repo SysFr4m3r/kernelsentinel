@@ -43,6 +43,11 @@ enum Command {
         /// Directory of YAML detection rules to load alongside the built-ins.
         #[arg(long)]
         rules: Option<String>,
+        /// Directory of YARA rules (.yar/.yara). Files named by an incident are
+        /// scanned and any matches attached to it -- identification on top of
+        /// detection, not a replacement for it.
+        #[arg(long)]
+        yara: Option<String>,
     },
     /// Capture raw events to an NDJSON file (no detection), for later replay.
     Record {
@@ -206,7 +211,8 @@ fn main() -> Result<()> {
             json,
             baseline,
             rules,
-        } => run(max_processes, retain, json, baseline, rules),
+            yara,
+        } => run(max_processes, retain, json, baseline, rules, yara),
     }
 }
 
@@ -682,6 +688,7 @@ fn run(
     json: bool,
     baseline: Option<String>,
     rules: Option<String>,
+    yara: Option<String>,
 ) -> Result<()> {
     let report = doctor::run();
     if report.fatal() {
@@ -712,6 +719,18 @@ fn run(
         ));
         engine = engine.with_rules(RuleSet::new(loaded));
     }
+    let scanner = match &yara {
+        Some(dir) => {
+            let s = kernelsentinel::yara::Scanner::load(dir)
+                .with_context(|| format!("loading YARA rules from {dir}"))?;
+            status(&format!(
+                "kernelsentinel: loaded YARA rules from {} file(s) in {dir}",
+                s.rule_files()
+            ));
+            Some(s)
+        }
+        None => None,
+    };
     let boot = scan::bootstrap(&mut graph);
     status(&format!(
         "kernelsentinel: bootstrapped {} processes from /proc",
@@ -741,12 +760,22 @@ fn run(
             // Detection runs after the graph update so lineage queries see this
             // event's process already in place.
             if let Some(inc) = engine.on_event(&ev, &graph) {
+                let mut rec = IncidentRecord::from_incident(&inc, &graph, Some(&bootclock));
+                // Inline on purpose: a fileless payload lives only as long as
+                // its process, so deferring the scan usually means scanning a
+                // target that is already gone.
+                if let Some(sc) = &scanner {
+                    rec.enrich(&inc, sc);
+                }
                 if json {
-                    emit(
-                        &IncidentRecord::from_incident(&inc, &graph, Some(&bootclock)).to_ndjson(),
-                    );
+                    emit(&rec.to_ndjson());
                 } else {
                     emit(&detect::render(&inc, &graph, &bootclock));
+                    for r in &rec.yara {
+                        if let kernelsentinel::yara::Outcome::Matched { rules } = &r.outcome {
+                            emit(&format!("    yara  {}  {}", r.target, rules.join(", ")));
+                        }
+                    }
                 }
             }
 

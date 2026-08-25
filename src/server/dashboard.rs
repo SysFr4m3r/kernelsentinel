@@ -127,6 +127,16 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .sig .pts{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
 /* The command that produced a signal. Monospace, dimmed, prefixed with a
    prompt glyph so it reads as "this is what ran" at a glance. */
+.yrow{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:start;padding:7px 0;border-bottom:1px dashed var(--line)}
+.yrow:last-of-type{border-bottom:0}
+.yrow code.cmd{margin-top:0}
+.ymark{font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  padding:3px 7px;border-radius:4px;white-space:nowrap;color:#c0392b;background:#c0392b18;border:1px solid #c0392b44}
+.ymark.ok{color:var(--muted);background:transparent;border-color:var(--line)}
+.ymark.raced{color:var(--faint);background:transparent;border-color:var(--line)}
+.yrules{grid-column:2;display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.faintnote{color:var(--faint);font-size:11.5px}
+.ynote{color:var(--faint);font-size:11px;margin-top:9px}
 .sigtime{display:block;margin-top:5px;font-size:11px;color:var(--faint);letter-spacing:.02em}
 .sigtime i{font-style:normal;color:var(--accent);margin-left:6px}
 .itime{font-size:11px;color:var(--faint);white-space:nowrap;margin-left:auto;align-self:center}
@@ -148,6 +158,8 @@ code.cmd{display:block;margin-top:5px;font-family:"IBM Plex Mono",monospace;font
   color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-left:2px solid var(--accent);
   border-radius:4px;padding:5px 8px;overflow-wrap:anywhere;white-space:pre-wrap}
 code.cmd::before{content:"$ ";color:var(--faint)}
+/* A scan target is a path, not something that was typed. */
+code.cmd.path::before{content:"";}
 code.cmd.hero{margin-top:8px;font-size:12px}
 .cmds{margin-top:10px;display:flex;flex-direction:column;gap:5px}
 .cmdrow{display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:start}
@@ -418,6 +430,23 @@ function dur(sec){
   if(sec<86400)return Math.floor(sec/3600)+'h';
   return Math.floor(sec/86400)+'d';
 }
+// Content-scan results. A match identifies what the flagged file *is*; it does
+// not change the score, and the section says so rather than letting a reader
+// assume the number moved. "Raced" is shown too: a memfd outlives its process by
+// nothing at all, and quietly omitting a lost race would read as "clean".
+function yaraSec(d){
+  const rs=d.yara||[];
+  if(!rs.length)return '';
+  const hit=rs.filter(r=>r.outcome==='matched');
+  const rows=rs.map(r=>{
+    if(r.outcome==='matched')
+      return `<div class="yrow hit"><span class="ymark">match</span><code class="cmd path">${esc(r.target)}</code><div class="yrules">${(r.rules||[]).map(n=>`<span class="tk">${esc(n)}</span>`).join('')}</div></div>`;
+    if(r.outcome==='clean')
+      return `<div class="yrow"><span class="ymark ok">clean</span><code class="cmd path">${esc(r.target)}</code></div>`;
+    return `<div class="yrow"><span class="ymark raced">not scanned</span><code class="cmd path">${esc(r.target)}</code><div class="yrules faintnote">${esc(r.reason||'target was gone')}</div></div>`;
+  }).join('');
+  return `<div class="sec"><h4>Content scan${hit.length?` — ${hit.length} match`+(hit.length>1?'es':''):''}</h4>${rows}<div class="ynote">Identification only — matches do not change the score.</div></div>`;
+}
 function gauge(score,sv){const r=24,c=2*Math.PI*r,off=c*(1-score/100);return `<div class="gauge"><svg viewBox="0 0 56 56"><circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/><circle cx="28" cy="28" r="${r}" fill="none" stroke="${sv}" stroke-width="5" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="val" style="color:${sv}">${score}</span></div>`;}
 function sevmini(counts){counts=counts||{};return `<div class="sevmini">`+order.map(s=>`<i style="background:${counts[s]>0?svVar(s):'var(--line)'}" title="${s} ${counts[s]||0}"></i>`).join('')+`</div>`;}
 
@@ -480,7 +509,7 @@ function renderInc(d){const det=document.getElementById('detail');det.className=
     const off=sorted.length>1?offset(s.ts_ns-t0):'';
     const stamp=(when||off)?`<span class="sigtime mono">${when}${when&&off?' ':''}${off?`<i>${off}</i>`:''}</span>`:'';
     return `<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}${stamp}</span><span class="pts">+${s.score}</span></div>`;
-  }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?d.subject.uid:'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div><div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
+  }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?d.subject.uid:'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div>${yaraSec(d)}<div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
   const rb=det.querySelector('.resolvebtn');
   if(rb)rb.addEventListener('click',()=>resolveIncident(d._id,det.querySelector('.rnote').value));}
 

@@ -82,6 +82,11 @@ pub struct IncidentRecord {
     pub lineage_detail: Vec<LineageRecord>,
     pub attack: Vec<String>,
     pub signals: Vec<SignalRecord>,
+    /// Content-scan results for the files this incident named. Enrichment only:
+    /// a match raises confidence in an existing finding, it never contributes
+    /// to the score.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub yara: Vec<crate::yara::ScanResult>,
 }
 
 /// Render a process's argv as a shell-ish one-liner. argv is bounded in-kernel
@@ -180,6 +185,32 @@ impl IncidentRecord {
             lineage_detail,
             attack: inc.attack.clone(),
             signals,
+            yara: Vec::new(),
+        }
+    }
+
+    /// Run content scanning over the targets this incident named.
+    ///
+    /// Inline at incident time on purpose: a fileless payload lives only as
+    /// long as its process, so deferring the scan to a worker would usually
+    /// mean scanning a target that is already gone. Incidents are rare by
+    /// construction (medium and above), so the cost lands on findings, not on
+    /// the event stream.
+    pub fn enrich(&mut self, inc: &Incident, scanner: &crate::yara::Scanner) {
+        let mut seen: Vec<&str> = Vec::new();
+        for sig in &inc.signals {
+            let Some(target) = sig.target.as_deref() else {
+                continue;
+            };
+            if seen.contains(&target) {
+                continue; // one scan per file, however many signals named it
+            }
+            seen.push(target);
+            self.yara.push(crate::yara::ScanResult {
+                signal: sig.id.to_string(),
+                target: target.to_string(),
+                outcome: scanner.scan_path(target),
+            });
         }
     }
 

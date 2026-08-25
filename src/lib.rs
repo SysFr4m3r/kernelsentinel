@@ -14,3 +14,4 @@ pub mod redact;
 pub mod sensors;
 pub mod server;
 pub mod watchlist;
+pub mod yara;

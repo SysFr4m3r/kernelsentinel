@@ -639,3 +639,81 @@ fn command_line_secrets_never_reach_the_shipped_record() {
         "secret reached the process graph"
     );
 }
+
+/// Content scanning must be driven by what a signal actually named. The
+/// critical fixture chain creates /tmp/.x, so that file -- and only that file --
+/// is what the incident should offer for inspection.
+#[test]
+fn yara_enrichment_scans_the_files_the_signals_named() {
+    use kernelsentinel::yara::{Outcome, Scanner};
+
+    // A scratch rules directory; the project carries no tempfile dependency.
+    let dir = std::env::temp_dir().join(format!(
+        "ks-enrich-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("r.yar"),
+        r#"rule ks_enrich_probe { strings: $a = "ZZ_NEVER_PRESENT_ZZ" condition: $a }"#,
+    )
+    .unwrap();
+    let scanner = Scanner::load(dir.to_str().unwrap()).unwrap();
+
+    let text = std::fs::read_to_string("tests/fixtures/host_sudo_suid.ndjson").unwrap();
+    let mut g = ProcessGraph::new(100_000, Duration::from_secs(3600));
+    let mut e = Engine::new(Severity::Medium);
+    let mut last = None;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let ev: Event = serde_json::from_str(line).unwrap();
+        g.apply(&ev);
+        if let Some(inc) = e.on_event(&ev, &g) {
+            last = Some(inc);
+        }
+    }
+    let inc = last.expect("the critical incident");
+
+    let mut rec = IncidentRecord::from_incident(&inc, &g, None);
+    assert!(rec.yara.is_empty(), "no scanning until enrich runs");
+    rec.enrich(&inc, &scanner);
+
+    assert!(
+        !rec.yara.is_empty(),
+        "the chain named a file worth scanning"
+    );
+    let suid = rec
+        .yara
+        .iter()
+        .find(|r| r.signal == "suid_create")
+        .expect("suid_create names its file");
+    assert_eq!(
+        suid.target, "/tmp/.x",
+        "must scan the file that gained SUID"
+    );
+
+    // The fixture deletes /tmp/.x, so the honest outcome is a lost race -- and
+    // it must be reported as such, never as "clean". Confusing "gone before we
+    // looked" with "inspected and safe" is the dangerous failure here.
+    assert!(
+        matches!(suid.outcome, Outcome::Raced { .. }),
+        "a target that no longer exists must report Raced, got {:?}",
+        suid.outcome
+    );
+
+    // One scan per file, however many signals point at it.
+    let mut targets: Vec<&str> = rec.yara.iter().map(|r| r.target.as_str()).collect();
+    let before = targets.len();
+    targets.sort_unstable();
+    targets.dedup();
+    assert_eq!(before, targets.len(), "a file must not be scanned twice");
+
+    // Enrichment is identification, not scoring.
+    let json: serde_json::Value = serde_json::from_str(&rec.to_ndjson()).unwrap();
+    assert_eq!(json["score"], 100, "a scan must not move the score");
+    assert!(json["yara"].is_array());
+
+    std::fs::remove_dir_all(&dir).ok();
+}

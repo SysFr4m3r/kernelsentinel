@@ -355,6 +355,26 @@ kernelsentinel rules --dir rules            # validate + list
 sudo kernelsentinel run --rules rules       # load alongside the built-ins
 ```
 
+## Identify what was found (YARA)
+
+Detection says *that* something is suspicious; YARA says *what it is*. Point `run` at a rules
+directory and the files an incident named are scanned, with matches attached to it:
+
+```bash
+sudo kernelsentinel run --json --yara /etc/kernelsentinel/yara.d
+```
+
+It runs **only on targets a signal already named** — the file that gained SUID, the module that
+loaded, the binary executed from `/tmp`, and `/proc/<pid>/exe` for a fileless exec, which still
+resolves to a memfd image that never touched disk. Scanning every file open would rebuild the
+signature firehose this project exists to avoid.
+
+Matches are **identification, not scoring**: a hit raises confidence in an existing finding and never
+contributes to the number, so one over-broad rule cannot manufacture an incident. Three outcomes are
+reported and kept distinct — `matched`, `clean`, and `not scanned` when the target was gone before
+the scan ran. That last one is common and honest: a memfd lives only as long as its process, and
+silently reporting a lost race as "clean" would be the dangerous failure.
+
 ## Suppress routine behavior (baselining)
 
 Learn a host's normal from a clean capture, then apply it so routine actions (a plain `sudo`)
@@ -484,7 +504,7 @@ exists once you correlate them per process.
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL (match + sequence rules) | ✅ first increment |
 | M6 | Container & namespace awareness | 🚧 container id + context + escape detection |
-| M7 | Baselining ✅ · heartbeat + drop telemetry ✅ · alert delivery ✅ · YARA, optional enforcement | 🚧 in progress |
+| M7 | Baselining ✅ · heartbeat + drop telemetry ✅ · alert delivery ✅ · YARA ✅ · optional enforcement | 🚧 in progress |
 
 ## Planned detections
 

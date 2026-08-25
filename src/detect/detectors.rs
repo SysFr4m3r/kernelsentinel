@@ -44,25 +44,31 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
 }
 
 fn suid_create(ev: &Event, key: ProcKey) -> Vec<Signal> {
-    vec![Signal::new(
-        "suid_create",
-        45,
-        &["T1548.001"],
-        key,
-        ev.ts_ns,
-        format!("created a new {} binary {}", ev.gained_bits(), ev.filename),
-    )]
+    vec![
+        Signal::new(
+            "suid_create",
+            45,
+            &["T1548.001"],
+            key,
+            ev.ts_ns,
+            format!("created a new {} binary {}", ev.gained_bits(), ev.filename),
+        )
+        .with_target(&ev.filename),
+    ]
 }
 
 fn fileless_exec(ev: &Event, key: ProcKey) -> Vec<Signal> {
-    vec![Signal::new(
-        "fileless_exec",
-        45,
-        &["T1620"],
-        key,
-        ev.ts_ns,
-        format!("executed from {} ({})", ev.exec_source(), ev.filename),
-    )]
+    vec![
+        Signal::new(
+            "fileless_exec",
+            45,
+            &["T1620"],
+            key,
+            ev.ts_ns,
+            format!("executed from {} ({})", ev.exec_source(), ev.filename),
+        )
+        .with_target(format!("/proc/{}/exe", key.pid)),
+    ]
 }
 
 fn privilege_escalation(ev: &Event, key: ProcKey) -> Vec<Signal> {
@@ -103,14 +109,17 @@ fn privilege_escalation(ev: &Event, key: ProcKey) -> Vec<Signal> {
 }
 
 fn setcap(ev: &Event, key: ProcKey) -> Vec<Signal> {
-    vec![Signal::new(
-        "setcap",
-        40,
-        &["T1548"],
-        key,
-        ev.ts_ns,
-        format!("set file capabilities on {}", ev.filename),
-    )]
+    vec![
+        Signal::new(
+            "setcap",
+            40,
+            &["T1548"],
+            key,
+            ev.ts_ns,
+            format!("set file capabilities on {}", ev.filename),
+        )
+        .with_target(&ev.filename),
+    ]
 }
 
 fn ptrace(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
@@ -171,14 +180,17 @@ fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
 }
 
 fn module_load(ev: &Event, key: ProcKey) -> Vec<Signal> {
-    vec![Signal::new(
-        "module_load",
-        50,
-        &["T1547.006"],
-        key,
-        ev.ts_ns,
-        format!("loaded kernel module {}", ev.filename),
-    )]
+    vec![
+        Signal::new(
+            "module_load",
+            50,
+            &["T1547.006"],
+            key,
+            ev.ts_ns,
+            format!("loaded kernel module {}", ev.filename),
+        )
+        .with_target(&ev.filename),
+    ]
 }
 
 /// Execution of a binary from a world-writable / volatile directory. Lower base
@@ -187,14 +199,17 @@ fn module_load(ev: &Event, key: ProcKey) -> Vec<Signal> {
 fn exec_from_suspicious_dir(ev: &Event, key: ProcKey, _graph: &ProcessGraph) -> Vec<Signal> {
     let f = &ev.filename;
     if f.starts_with("/tmp/") || f.starts_with("/dev/shm/") || f.starts_with("/var/tmp/") {
-        vec![Signal::new(
-            "exec_from_tmp",
-            20,
-            &["T1036"],
-            key,
-            ev.ts_ns,
-            format!("executed from a volatile directory: {f}"),
-        )]
+        vec![
+            Signal::new(
+                "exec_from_tmp",
+                20,
+                &["T1036"],
+                key,
+                ev.ts_ns,
+                format!("executed from a volatile directory: {f}"),
+            )
+            .with_target(f),
+        ]
     } else {
         Vec::new()
     }
