@@ -29,9 +29,20 @@ pub struct Stats {
 }
 
 /// Load, attach, and pump events into `on_event` until `stop` is set.
-pub fn run<F>(stop: &AtomicBool, mut on_event: F) -> Result<Stats>
+///
+/// `on_tick` fires roughly every `tick_every` with the sensor counters read
+/// live from the BPF stats map, so a caller can report liveness without a
+/// second thread -- the daemon stays single-threaded, matching how graph
+/// reaping is driven off the same loop. `Duration::ZERO` disables it.
+pub fn run<F, T>(
+    stop: &AtomicBool,
+    tick_every: Duration,
+    mut on_event: F,
+    mut on_tick: T,
+) -> Result<Stats>
 where
     F: FnMut(RawEvent),
+    T: FnMut(Stats),
 {
     let mut open_object = MaybeUninit::uninit();
     let builder = KernelsentinelSkelBuilder::default();
@@ -75,11 +86,20 @@ where
     .context("registering ring buffer callback")?;
     let rb = rb.build().context("building ring buffer")?;
 
+    let mut last_tick = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         match rb.poll(Duration::from_millis(200)) {
             Ok(()) => {}
             Err(e) if e.kind() == libbpf_rs::ErrorKind::Interrupted => break,
             Err(e) => return Err(e).context("polling ring buffer"),
+        }
+        // Driven by the poll loop, which wakes at least every 200ms whether or
+        // not events arrive -- so an idle host still reports in.
+        if !tick_every.is_zero() && last_tick.elapsed() >= tick_every {
+            let mut s = read_stats(&skel.maps.stats);
+            s.decode_panics = panics.get();
+            on_tick(s);
+            last_tick = std::time::Instant::now();
         }
     }
 

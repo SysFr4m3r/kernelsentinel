@@ -26,6 +26,7 @@ pub fn ship(
     let kernel = read_first_line("/proc/sys/kernel/osrelease");
 
     let mut sent = 0u64;
+    let mut beats = 0u64;
     let mut batch = String::new();
     let flush = |batch: &mut String| -> Result<()> {
         if batch.is_empty() {
@@ -41,15 +42,21 @@ pub fn ship(
         if line.trim().is_empty() {
             continue;
         }
+        // Heartbeats share the stream with incidents; count them apart so the
+        // summary does not report an idle agent as having found something.
+        if line.contains(crate::heartbeat::SCHEMA) {
+            beats += 1;
+        } else {
+            sent += 1;
+        }
         batch.push_str(&line);
         batch.push('\n');
-        sent += 1;
         // Flush per incident: incidents are infrequent, so ship each promptly
         // rather than buffering (a live `run --json | ship` must not sit silent).
         flush(&mut batch)?;
     }
     flush(&mut batch)?;
-    eprintln!("kernelsentinel: shipped {sent} incident(s) to {url}");
+    eprintln!("kernelsentinel: shipped {sent} incident(s), {beats} heartbeat(s) to {url}");
     Ok(())
 }
 

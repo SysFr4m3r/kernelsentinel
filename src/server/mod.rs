@@ -28,6 +28,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tiny_http::{Header, Method, Request, Response, Server};
 
+use crate::heartbeat::HeartbeatRecord;
+
 pub struct Config {
     pub addr: String,
     /// Admin dashboard password. Required.
@@ -190,22 +192,37 @@ fn handle(mut req: Request, cfg: &Config, store: &Store, secret: &[u8], bus: &Ar
             let ip = header(&req, "X-Sentinel-Ip").unwrap_or_default();
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body).ok();
-            let mut n = 0;
+            // One stream carries two record kinds; the schema tag tells them
+            // apart. Heartbeats are far more frequent than incidents, so they
+            // must not be stored as findings or the panel would drown in them.
+            let (mut n, mut beats) = (0, 0);
             for line in body.lines() {
                 if line.trim().is_empty() {
                     continue;
                 }
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if HeartbeatRecord::is_heartbeat(&v) {
+                    if let Ok(hb) = serde_json::from_value::<HeartbeatRecord>(v) {
+                        store.heartbeat(&host, &kernel, &ip, &hb);
+                        beats += 1;
+                    }
+                } else {
                     store.ingest(&host, &kernel, &ip, v);
                     n += 1;
                 }
             }
-            if n > 0 {
+            if n > 0 || beats > 0 {
                 // Notify connected dashboards to refresh (host name only; the
-                // dashboard re-fetches through the authenticated API).
+                // dashboard re-fetches through the authenticated API). Heartbeats
+                // publish too, so a host coming back to life updates at once.
                 bus.publish(format!("{{\"host\":\"{host}\"}}"));
             }
-            text(200, &format!("accepted {n}"))
+            text(
+                200,
+                &format!("accepted {n} incident(s), {beats} heartbeat(s)"),
+            )
         }
 
         // Admin login: username + password -> a signed session cookie.

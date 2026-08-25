@@ -11,7 +11,7 @@ use kernelsentinel::decoded::Event;
 use kernelsentinel::detect::{self, Baseline, Engine, IncidentRecord, RuleSet, Severity};
 use kernelsentinel::event::{EventType, RawEvent};
 use kernelsentinel::graph::{ProcKey, ProcessGraph, scan};
-use kernelsentinel::{doctor, sensors};
+use kernelsentinel::{doctor, heartbeat, sensors};
 
 #[derive(Parser)]
 #[command(
@@ -194,24 +194,30 @@ fn record(out: &str) -> Result<()> {
     ));
 
     let mut count = 0u64;
-    let stats = sensors::run(&STOP, |raw: RawEvent| {
-        if raw.tgid == self_pid {
-            return;
-        }
-        let ev = Event::from(&raw);
-        // A serialize/write failure to the capture file is worth stopping for,
-        // unlike a broken stdout pipe; surface it and shut down.
-        match serde_json::to_string(&ev) {
-            Ok(line) => {
-                if writeln!(sink, "{line}").is_err() {
-                    STOP.store(true, Ordering::SeqCst);
-                } else {
-                    count += 1;
-                }
+    let stats = sensors::run(
+        &STOP,
+        Duration::ZERO,
+        |raw: RawEvent| {
+            if raw.tgid == self_pid {
+                return;
             }
-            Err(e) => status(&format!("kernelsentinel: skipped an event: {e}")),
-        }
-    })?;
+            let ev = Event::from(&raw);
+            // A serialize/write failure to the capture file is worth stopping for,
+            // unlike a broken stdout pipe; surface it and shut down.
+            match serde_json::to_string(&ev) {
+                Ok(line) => {
+                    if writeln!(sink, "{line}").is_err() {
+                        STOP.store(true, Ordering::SeqCst);
+                    } else {
+                        count += 1;
+                    }
+                }
+                Err(e) => status(&format!("kernelsentinel: skipped an event: {e}")),
+            }
+        },
+        // `record` writes a capture for offline replay; liveness is not its job.
+        |_| {},
+    )?;
     let _ = sink.flush();
     status(&format!(
         "kernelsentinel: recorded {count} events ({} emitted, {} drops)",
@@ -646,34 +652,54 @@ fn run(
     }
 
     let mut last_reap = 0u64;
-    let stats = sensors::run(&STOP, |raw: RawEvent| {
-        if raw.tgid == self_pid {
-            return;
-        }
-        let ev = Event::from(&raw);
-        graph.apply(&ev);
-
-        // Detection runs after the graph update so lineage queries see this
-        // event's process already in place.
-        if let Some(inc) = engine.on_event(&ev, &graph) {
-            if json {
-                emit(&IncidentRecord::from_incident(&inc, &graph).to_ndjson());
-            } else {
-                emit(&detect::render(&inc, &graph, &bootclock));
+    let started = std::time::Instant::now();
+    let stats = sensors::run(
+        &STOP,
+        Duration::from_secs(heartbeat::INTERVAL_SECS),
+        |raw: RawEvent| {
+            if raw.tgid == self_pid {
+                return;
             }
-        }
+            let ev = Event::from(&raw);
+            graph.apply(&ev);
 
-        // Reaping on the event stream rather than a timer keeps the daemon
-        // single-threaded; an idle host has nothing to reap anyway.
-        if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
-            graph.reap(ev.ts_ns);
-            engine.reap(&graph);
-            last_reap = ev.ts_ns;
-        }
-        if !json {
-            print_event(&bootclock, &ev);
-        }
-    })?;
+            // Detection runs after the graph update so lineage queries see this
+            // event's process already in place.
+            if let Some(inc) = engine.on_event(&ev, &graph) {
+                if json {
+                    emit(&IncidentRecord::from_incident(&inc, &graph).to_ndjson());
+                } else {
+                    emit(&detect::render(&inc, &graph, &bootclock));
+                }
+            }
+
+            // Reaping on the event stream rather than a timer keeps the daemon
+            // single-threaded; an idle host has nothing to reap anyway.
+            if ev.ts_ns.saturating_sub(last_reap) > 10_000_000_000 {
+                graph.reap(ev.ts_ns);
+                engine.reap(&graph);
+                last_reap = ev.ts_ns;
+            }
+            if !json {
+                print_event(&bootclock, &ev);
+            }
+        },
+        // Liveness tick. Only the NDJSON stream carries it -- a human watching
+        // the terminal can see the daemon is alive; a central server cannot.
+        |s: sensors::Stats| {
+            if json {
+                emit(
+                    &heartbeat::HeartbeatRecord::new(
+                        started.elapsed().as_secs(),
+                        s.emitted,
+                        s.drops,
+                        s.decode_panics,
+                    )
+                    .to_ndjson(),
+                );
+            }
+        },
+    )?;
 
     let g = graph.stats();
     status(&format!(

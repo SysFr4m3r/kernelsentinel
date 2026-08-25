@@ -127,6 +127,19 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .sig .pts{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
 /* The command that produced a signal. Monospace, dimmed, prefixed with a
    prompt glyph so it reads as "this is what ran" at a glance. */
+.atag{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:100px;vertical-align:middle;
+  border:1px solid transparent}
+.atag.live{color:#1f9d55;background:#1f9d5518;border-color:#1f9d5533}
+.atag.stale{color:#c47f17;background:#c47f1718;border-color:#c47f1733}
+.atag.silent{color:#c0392b;background:#c0392b18;border-color:#c0392b44}
+.atag.unknown{color:var(--faint);border-color:var(--line)}
+.host.dark{opacity:.72}
+.host.dark .name{color:var(--muted)}
+.hostwarn{margin:10px 0 16px;padding:10px 13px;border-radius:7px;font-size:12.5px;line-height:1.5;
+  color:var(--ink);background:#c0392b14;border:1px solid #c0392b40;border-left:3px solid #c0392b}
+.hostwarn b{color:#c0392b}
+.hostwarn.hidden{display:none}
 code.cmd{display:block;margin-top:5px;font-family:"IBM Plex Mono",monospace;font-size:11.5px;
   color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-left:2px solid var(--accent);
   border-radius:4px;padding:5px 8px;overflow-wrap:anywhere;white-space:pre-wrap}
@@ -216,6 +229,7 @@ code.cmd.hero{margin-top:8px;font-size:12px}
   <div id="hostview" class="hidden">
     <button class="back" id="back">← all hosts</button>
     <div class="hostbar" id="hostbar"></div>
+    <div class="hostwarn hidden" id="hostwarn"></div>
     <div class="grid">
       <section>
         <div class="sect-h"><span>Incidents</span><span class="hint" id="hicount"></span></div>
@@ -333,15 +347,43 @@ async function openUsers(){
 function tsago(sec){if(!sec)return '—';const d=Math.max(0,Math.floor(Date.now()/1000-sec));
   if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago';}
 
+// An agent that stopped reporting is a finding, not an absence of one: it is
+// what a root-level attacker leaves behind after unloading the sensors. So a
+// silent host counts toward "need attention" and only a live, clean agent
+// counts as healthy.
+function isDark(h){return h.status==='silent'||h.status==='stale';}
 function renderFleet(){
-  const atRisk=HOSTS.filter(h=>h.score>=50).length,worst=HOSTS.length?Math.max(...HOSTS.map(h=>h.score)):0,
-    clean=HOSTS.filter(h=>h.score===0).length,openInc=HOSTS.reduce((a,h)=>a+h.n,0);
+  const dark=HOSTS.filter(isDark).length,
+    atRisk=HOSTS.filter(h=>h.score>=50||isDark(h)).length,
+    worst=HOSTS.length?Math.max(...HOSTS.map(h=>h.score)):0,
+    clean=HOSTS.filter(h=>h.score===0&&!isDark(h)).length,
+    openInc=HOSTS.reduce((a,h)=>a+h.n,0),
+    drops=HOSTS.reduce((a,h)=>a+(h.drops||0),0);
   document.getElementById('agentcount').textContent=HOSTS.length+' agent'+(HOSTS.length===1?'':'s')+' reporting';
-  document.getElementById('fstats').innerHTML=[['Hosts',HOSTS.length,''],['Need attention',atRisk,'crit'],['Healthy',clean,'ok'],['Open incidents',openInc,''],['Worst score',worst,'crit']].map(([k,n,c])=>`<div class="stat ${c}"><div class="n mono">${n}</div><div class="k">${k}</div></div>`).join('');
+  const stats=[['Hosts',HOSTS.length,''],['Need attention',atRisk,'crit'],['Healthy',clean,'ok'],['Open incidents',openInc,''],['Worst score',worst,'crit']];
+  if(dark)stats.splice(2,0,['Not reporting',dark,'crit']);
+  // Dropped events are missed detections; say so rather than implying coverage.
+  if(drops)stats.push(['Events dropped',drops,'crit']);
+  document.getElementById('fstats').innerHTML=stats.map(([k,n,c])=>`<div class="stat ${c}"><div class="n mono">${n}</div><div class="k">${k}</div></div>`).join('');
   const hostlist=document.getElementById('hostlist');
   if(!HOSTS.length){hostlist.innerHTML='<div class="stat" style="text-align:center;color:var(--faint)">No agents have reported yet. Point an agent at this server with <code>kernelsentinel ship</code>.</div>';return;}
-  hostlist.innerHTML=HOSTS.map((h,i)=>{const sv=svVar(h.band);const bandtxt=h.score===0?'no findings':h.band;
-    return `<button class="host" data-i="${i}" style="--sv:${sv}">${gauge(h.score,sv)}<div class="hmeta"><div class="name">${esc(h.host)}</div><div class="role">${esc(h.kernel||'linux')} <span class="ip">${h.ip?'· '+esc(h.ip):''}</span></div></div><div class="hmini"><span class="band">${bandtxt}</span>${sevmini(h.counts)}<span class="hcount">${h.n?h.n+' incident'+(h.n>1?'s':''):'clean'} · ${tsago(h.last_seen)}</span></div></button>`;}).join('');
+  hostlist.innerHTML=HOSTS.map((h,i)=>{const sv=isDark(h)?'var(--faint)':svVar(h.band);const bandtxt=h.score===0?'no findings':h.band;
+    return `<button class="host ${isDark(h)?'dark':''}" data-i="${i}" style="--sv:${sv}">${gauge(h.score,sv)}<div class="hmeta"><div class="name">${esc(h.host)} ${agentTag(h)}</div><div class="role">${esc(h.kernel||'linux')} <span class="ip">${h.ip?'· '+esc(h.ip):''}</span></div></div><div class="hmini"><span class="band">${bandtxt}</span>${sevmini(h.counts)}<span class="hcount">${h.n?h.n+' incident'+(h.n>1?'s':''):'clean'} · ${tsago(h.last_seen)}</span></div></button>`;}).join('');
+}
+// Liveness is shown as its own pill, never folded into the risk score: a dead
+// agent and a compromised host are different problems.
+function agentTag(h){
+  const st=h.status||'unknown';
+  if(st==='live')return '<span class="atag live">live</span>';
+  if(st==='stale')return `<span class="atag stale">no report ${tsago(h.last_heartbeat)}</span>`;
+  if(st==='silent')return `<span class="atag silent">not reporting since ${tsago(h.last_heartbeat)}</span>`;
+  return '<span class="atag unknown" title="This agent ships incidents but no heartbeat — likely an older build. Liveness is unknown, not bad.">no heartbeat</span>';
+}
+function dur(sec){
+  if(sec<60)return sec+'s';
+  if(sec<3600)return Math.floor(sec/60)+'m';
+  if(sec<86400)return Math.floor(sec/3600)+'h';
+  return Math.floor(sec/86400)+'d';
 }
 function gauge(score,sv){const r=24,c=2*Math.PI*r,off=c*(1-score/100);return `<div class="gauge"><svg viewBox="0 0 56 56"><circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/><circle cx="28" cy="28" r="${r}" fill="none" stroke="${sv}" stroke-width="5" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="val" style="color:${sv}">${score}</span></div>`;}
 function sevmini(counts){counts=counts||{};return `<div class="sevmini">`+order.map(s=>`<i style="background:${counts[s]>0?svVar(s):'var(--line)'}" title="${s} ${counts[s]||0}"></i>`).join('')+`</div>`;}
@@ -363,11 +405,32 @@ async function openHost(h){
   currentHost=h;
   let incs=[];try{incs=await api('/api/host/'+encodeURIComponent(h.host));}catch(e){}
   showView(hostview);
-  const sv=svVar(h.band);const hb=document.getElementById('hostbar');hb.style.setProperty('--sv',sv);
-  hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${esc(h.host)}</div><div class="hr">${esc(h.kernel||'linux')} ${h.ip?'· '+esc(h.ip):''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span></div>`;
+  const sv=isDark(h)?'var(--faint)':svVar(h.band);const hb=document.getElementById('hostbar');hb.style.setProperty('--sv',sv);
+  const tel=[];
+  if(h.agent_version)tel.push('agent '+esc(h.agent_version));
+  if(h.uptime_secs)tel.push('up '+dur(h.uptime_secs));
+  if(h.events!=null)tel.push(h.events.toLocaleString()+' events');
+  hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${esc(h.host)} ${agentTag(h)}</div><div class="hr">${esc(h.kernel||'linux')} ${h.ip?'· '+esc(h.ip):''}${tel.length?' · '+tel.join(' · '):''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span></div>`;
+  // A drop is an event the kernel could not hand us: a hole in coverage, and
+  // the one number that must never be presented quietly.
+  const warn=document.getElementById('hostwarn');
+  if(h.drops>0){warn.className='hostwarn';warn.innerHTML=`<b>${h.drops.toLocaleString()} events dropped</b> on this host since the agent started — the ring buffer overflowed, so some activity was never seen. Detections from this window are incomplete.`;}
+  else if(h.status==='silent'||h.status==='stale'){warn.className='hostwarn';warn.innerHTML=`<b>Agent not reporting</b> — last heartbeat ${tsago(h.last_heartbeat)}. Findings below may be stale, and an agent that stops is itself worth investigating.`;}
+  else{warn.className='hostwarn hidden';warn.innerHTML='';}
   const feed=document.getElementById('feed');const det=document.getElementById('detail');
   document.getElementById('hicount').textContent=incs.length?`${incs.length} on this host`:'';
-  if(!incs.length){feed.innerHTML='<div class="detail empty" style="position:static">No detections on this host in the current window. Agent healthy, reporting.</div>';det.className='detail empty';det.textContent='Nothing to inspect — this host is clean.';return;}
+  if(!incs.length){
+    // "No detections" means different things depending on whether the agent is
+    // actually reporting. Claiming health while the agent is dark would be the
+    // exact false reassurance the heartbeat exists to prevent.
+    const live=(h.status==='live'),unknown=(h.status==='unknown');
+    const msg=live?'No detections on this host in the current window. Agent healthy, reporting.'
+      :unknown?'No detections recorded. This agent sends no heartbeat, so its health cannot be confirmed.'
+      :'No detections recorded — but this agent is not reporting, so absence of findings is not evidence of safety.';
+    feed.innerHTML=`<div class="detail empty" style="position:static">${msg}</div>`;
+    det.className='detail empty';
+    det.textContent=live?'Nothing to inspect — this host is clean.':'Nothing to inspect — and this host is not currently reporting.';
+    return;}
   feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.map(esc).join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${esc(t)}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}</span>${rtag}</button>`;}).join('');
   det.className='detail empty';det.textContent='Select an incident to see its lineage, signals, and ATT&CK mapping.';
   feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);}));

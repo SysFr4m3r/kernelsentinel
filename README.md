@@ -249,6 +249,12 @@ accounts (admin or viewer role); each resolution records the real username. Sess
 tokens, so they survive a server restart. The dashboard updates in real time — it holds a long-poll
 open and refreshes the moment an agent ships an incident.
 
+Agents check in every 60s even when they have nothing to report, so the panel can tell a **healthy
+host from a dead agent** — silence is otherwise identical to safety. A host that stops reporting is
+ranked as needing attention rather than shown as clean, and the check-in carries the ring-buffer
+**drop counter**: dropped events are missed detections, so a host that lost them is never presented
+as fully covered. An older agent that sends no heartbeat reads as `no heartbeat`, not as dead.
+
 Opening an incident shows the lineage, the signals, the score arithmetic, the ATT&CK mapping — and
 **the command line of every process in the chain**, so "a SUID binary appeared" comes with the
 `modprobe dummy` / `chmod u+s /tmp/.x` that did it:
@@ -442,7 +448,7 @@ exists once you correlate them per process.
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL (match + sequence rules) | ✅ first increment |
 | M6 | Container & namespace awareness | 🚧 container id + context + escape detection |
-| M7 | Baselining ✅ first increment · YARA, optional enforcement · (NDJSON/SIEM done in M3) | 🚧 in progress |
+| M7 | Baselining ✅ · agent heartbeat + drop telemetry ✅ · YARA, optional enforcement | 🚧 in progress |
 
 ## Planned detections
 
@@ -465,7 +471,9 @@ Stated up front, because a security tool that hides these is worse than one that
 - **Paths are best-effort.** Mount namespaces, bind mounts, and overlayfs all complicate resolution;
   events carry `(dev, inode)` alongside the path so it can be re-resolved.
 - **A determined attacker with root can unload the sensors.** This is a detection tool, not a rootkit
-  defense.
+  defense. The agent heartbeat makes that *visible* — a host that goes quiet is flagged rather than
+  assumed healthy — but an attacker who keeps the agent running while blinding it is still ahead.
+  Liveness is derived at read time, so "not reporting" is accurate but is not an auditable event.
 - **False positives are the hard part.** Package managers, `sudo`, systemd, container runtimes, and CI
   all do "suspicious" things constantly. Tuning that out is the ongoing work, tracked by a nightly
   job that asserts zero alerts under real workloads.

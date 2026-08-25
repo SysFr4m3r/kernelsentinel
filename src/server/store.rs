@@ -11,6 +11,8 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use rusqlite::Connection;
 use serde::Serialize;
 
+use crate::heartbeat::{self, HeartbeatRecord};
+
 /// One incident as received from an agent: the agent's own IncidentRecord JSON,
 /// kept opaque here (re-serialized to the dashboard as-is) plus the fields the
 /// fleet view needs to rank and summarize without re-parsing everything.
@@ -41,6 +43,42 @@ pub struct HostState {
     pub last_seen: u64,
     pub kernel: String,
     pub ip: String,
+    pub first_seen: u64,
+    /// Server receive time of the last heartbeat. Zero means this agent has
+    /// never sent one -- which is *not* the same as being dead, see `status`.
+    pub last_heartbeat: u64,
+    pub agent_version: String,
+    pub uptime_secs: u64,
+    pub events: u64,
+    pub drops: u64,
+    pub decode_panics: u64,
+}
+
+/// How long after its last heartbeat an agent stops counting as live. Three
+/// missed reports rather than one, so a slow network or a busy host does not
+/// flap the fleet view.
+pub const STALE_AFTER_SECS: u64 = heartbeat::INTERVAL_SECS * 3;
+/// ...and when it should be treated as gone rather than late.
+pub const SILENT_AFTER_SECS: u64 = heartbeat::INTERVAL_SECS * 10;
+
+/// Liveness of an agent, derived at read time rather than stored.
+///
+/// Derived, because a stored status would need a server-side timer to keep it
+/// true and would be wrong in the window between ticks. The cost is that
+/// "silent" is not an auditable event; the benefit is that it can never be
+/// stale, which for a liveness signal is the property that matters.
+pub fn agent_status(state: &HostState, now: u64) -> &'static str {
+    if state.last_heartbeat == 0 {
+        // Shipping incidents but never a heartbeat: an older agent, or one
+        // whose stream carries only incidents. Claiming it is dead would be a
+        // lie, so say what we actually know.
+        return "unknown";
+    }
+    match now.saturating_sub(state.last_heartbeat) {
+        d if d <= STALE_AFTER_SECS => "live",
+        d if d <= SILENT_AFTER_SECS => "stale",
+        _ => "silent",
+    }
 }
 
 /// Keep at most this many incidents per host (newest wins). A monitoring server
@@ -69,6 +107,17 @@ pub struct HostSummary {
     pub last_seen: u64,
     pub kernel: String,
     pub ip: String,
+    /// "live" | "stale" | "silent" | "unknown" -- agent liveness, deliberately
+    /// separate from `score`. A dead agent and a compromised host are different
+    /// problems and collapsing them into one number would hide both.
+    pub status: &'static str,
+    pub last_heartbeat: u64,
+    pub agent_version: String,
+    pub uptime_secs: u64,
+    pub events: u64,
+    /// Ring-buffer drops. Non-zero means this host lost events, i.e. missed
+    /// detections -- the panel must not present it as fully covered.
+    pub drops: u64,
 }
 
 #[derive(Serialize)]
@@ -150,7 +199,17 @@ impl Store {
                  username TEXT PRIMARY KEY, pw_hash TEXT NOT NULL,
                  role TEXT NOT NULL DEFAULT 'admin', created_at INTEGER NOT NULL
              );
-             CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS hosts (
+                 host TEXT PRIMARY KEY,
+                 first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+                 last_heartbeat INTEGER NOT NULL DEFAULT 0,
+                 kernel TEXT DEFAULT '', ip TEXT DEFAULT '',
+                 agent_version TEXT DEFAULT '',
+                 uptime_secs INTEGER DEFAULT 0,
+                 events INTEGER DEFAULT 0, drops INTEGER DEFAULT 0,
+                 decode_panics INTEGER DEFAULT 0
+             );",
         )?;
 
         if retain_days > 0 {
@@ -202,9 +261,108 @@ impl Store {
             *store.next_id.lock().unwrap() = max_id + 1;
         }
 
+        // Restore agent liveness too. Without this a restart would erase every
+        // clean host (they have no incidents to rebuild them from) and reset
+        // their telemetry to zero.
+        {
+            let mut stmt = conn.prepare(
+                "SELECT host, first_seen, last_seen, last_heartbeat, kernel, ip,
+                        agent_version, uptime_secs, events, drops, decode_panics FROM hosts",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)? as u64,
+                    r.get::<_, i64>(2)? as u64,
+                    r.get::<_, i64>(3)? as u64,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, i64>(7)? as u64,
+                    r.get::<_, i64>(8)? as u64,
+                    r.get::<_, i64>(9)? as u64,
+                    r.get::<_, i64>(10)? as u64,
+                ))
+            })?;
+            let mut hosts = store.hosts.lock().unwrap();
+            for row in rows.flatten() {
+                let (host, first, last, hb, kernel, ip, ver, up, ev, dr, dp) = row;
+                let state = hosts.entry(host).or_default();
+                state.first_seen = first;
+                state.last_seen = state.last_seen.max(last);
+                state.last_heartbeat = hb;
+                if !kernel.is_empty() {
+                    state.kernel = kernel;
+                }
+                if !ip.is_empty() {
+                    state.ip = ip;
+                }
+                state.agent_version = ver;
+                state.uptime_secs = up;
+                state.events = ev;
+                state.drops = dr;
+                state.decode_panics = dp;
+            }
+        }
+
         let mut store = store;
         store.db = Some(Mutex::new(conn));
         Ok(store)
+    }
+
+    /// Record an agent check-in. Also the only path that makes a host with no
+    /// incidents visible at all -- before this, a clean host was indistinguishable
+    /// from one that had never existed.
+    pub fn heartbeat(&self, host: &str, kernel: &str, ip: &str, hb: &HeartbeatRecord) {
+        let now = epoch();
+        let mut hosts = self.hosts.lock().unwrap();
+        let state = hosts.entry(host.to_string()).or_default();
+        if state.first_seen == 0 {
+            state.first_seen = now;
+        }
+        state.last_seen = state.last_seen.max(now);
+        state.last_heartbeat = now;
+        state.agent_version = hb.agent_version.clone();
+        state.uptime_secs = hb.uptime_secs;
+        state.events = hb.events;
+        state.drops = hb.drops;
+        state.decode_panics = hb.decode_panics;
+        if !kernel.is_empty() {
+            state.kernel = kernel.to_string();
+        }
+        if !ip.is_empty() {
+            state.ip = ip.to_string();
+        }
+        let (first_seen, kernel, ip) = (state.first_seen, state.kernel.clone(), state.ip.clone());
+        drop(hosts);
+
+        if let Some(db) = &self.db {
+            let conn = db.lock().unwrap();
+            let _ = conn.execute(
+                "INSERT INTO hosts (host, first_seen, last_seen, last_heartbeat, kernel, ip,
+                                    agent_version, uptime_secs, events, drops, decode_panics)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(host) DO UPDATE SET
+                   last_seen=excluded.last_seen, last_heartbeat=excluded.last_heartbeat,
+                   kernel=excluded.kernel, ip=excluded.ip,
+                   agent_version=excluded.agent_version, uptime_secs=excluded.uptime_secs,
+                   events=excluded.events, drops=excluded.drops,
+                   decode_panics=excluded.decode_panics",
+                rusqlite::params![
+                    host,
+                    first_seen as i64,
+                    now as i64,
+                    now as i64,
+                    kernel,
+                    ip,
+                    hb.agent_version,
+                    hb.uptime_secs as i64,
+                    hb.events as i64,
+                    hb.drops as i64,
+                    hb.decode_panics as i64,
+                ],
+            );
+        }
     }
 
     /// Record one incident from `host`. `record` is the agent's incident JSON.
@@ -490,6 +648,7 @@ impl Store {
 
     /// Fleet summary: every host with its score, ranked worst-first.
     pub fn fleet(&self) -> Vec<HostSummary> {
+        let now = epoch();
         let hosts = self.hosts.lock().unwrap();
         let mut out: Vec<HostSummary> = hosts
             .iter()
@@ -510,10 +669,26 @@ impl Store {
                     last_seen: state.last_seen,
                     kernel: state.kernel.clone(),
                     ip: state.ip.clone(),
+                    status: agent_status(state, now),
+                    last_heartbeat: state.last_heartbeat,
+                    agent_version: state.agent_version.clone(),
+                    uptime_secs: state.uptime_secs,
+                    events: state.events,
+                    drops: state.drops,
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.host.cmp(&b.host)));
+        // Worst first by score; at equal score a host whose agent has gone
+        // quiet outranks a healthy one, because "no findings" from an agent
+        // that is not reporting is not the same reassurance as "no findings"
+        // from one that is.
+        let dark = |s: &str| matches!(s, "silent" | "stale");
+        out.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| dark(b.status).cmp(&dark(a.status)))
+                .then_with(|| a.host.cmp(&b.host))
+        });
         out
     }
 
@@ -594,6 +769,99 @@ fn epoch() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    /// An agent that has never sent a heartbeat is *unknown*, never *silent*.
+    /// Reporting an older agent as dead would be a false alarm in exactly the
+    /// place operators must be able to trust the panel.
+    #[test]
+    fn agent_without_heartbeat_is_unknown_not_silent() {
+        let state = HostState {
+            last_heartbeat: 0,
+            last_seen: 1_000,
+            ..Default::default()
+        };
+        assert_eq!(agent_status(&state, 999_999), "unknown");
+    }
+
+    /// At equal score, a host that stopped reporting must sort above a healthy
+    /// one -- otherwise the thing most worth looking at hides below the calm.
+    #[test]
+    fn silent_hosts_outrank_healthy_ones_at_equal_score() {
+        let store = Store::new();
+        store.heartbeat("aaa-healthy", "", "", &HeartbeatRecord::new(60, 10, 0, 0));
+        store.heartbeat("zzz-silent", "", "", &HeartbeatRecord::new(60, 10, 0, 0));
+        // Age zzz-silent past the silence threshold.
+        {
+            let mut hosts = store.hosts.lock().unwrap();
+            let st = hosts.get_mut("zzz-silent").unwrap();
+            st.last_heartbeat = epoch().saturating_sub(SILENT_AFTER_SECS + 60);
+        }
+        let fleet = store.fleet();
+        assert_eq!(fleet[0].host, "zzz-silent", "silent host must sort first");
+        assert_eq!(fleet[0].status, "silent");
+        assert_eq!(fleet[1].host, "aaa-healthy");
+    }
+
+    #[test]
+    fn agent_liveness_bands() {
+        let at = |hb: u64, now: u64| {
+            let state = HostState {
+                last_heartbeat: hb,
+                ..Default::default()
+            };
+            agent_status(&state, now)
+        };
+        let t = 1_000_000u64;
+        assert_eq!(at(t, t), "live", "just reported");
+        assert_eq!(
+            at(t, t + STALE_AFTER_SECS),
+            "live",
+            "boundary is still live"
+        );
+        assert_eq!(at(t, t + STALE_AFTER_SECS + 1), "stale");
+        assert_eq!(
+            at(t, t + SILENT_AFTER_SECS),
+            "stale",
+            "boundary is still stale"
+        );
+        assert_eq!(at(t, t + SILENT_AFTER_SECS + 1), "silent");
+    }
+
+    /// A host that only ever sends heartbeats must still appear in the fleet --
+    /// this is the whole point: silence used to be indistinguishable from a
+    /// host that never existed.
+    #[test]
+    fn clean_host_is_visible_from_heartbeat_alone() {
+        let store = Store::new();
+        let hb = HeartbeatRecord::new(120, 5_000, 0, 0);
+        store.heartbeat("clean-01", "6.19", "10.0.0.9", &hb);
+
+        let fleet = store.fleet();
+        assert_eq!(fleet.len(), 1, "a heartbeat alone must register the host");
+        let h = &fleet[0];
+        assert_eq!(h.host, "clean-01");
+        assert_eq!(h.score, 0);
+        assert_eq!(h.n, 0, "no incidents");
+        assert_eq!(h.status, "live");
+        assert_eq!(h.events, 5_000);
+        assert_eq!(h.kernel, "6.19");
+    }
+
+    /// Drops are missed detections and must reach the panel; they were counted
+    /// in BPF and read by nothing before this.
+    #[test]
+    fn drops_are_reported_to_the_fleet() {
+        let store = Store::new();
+        store.heartbeat(
+            "busy-01",
+            "",
+            "",
+            &HeartbeatRecord::new(60, 900_000, 1_743, 2),
+        );
+        let h = &store.fleet()[0];
+        assert_eq!(h.drops, 1_743);
+    }
+
     use super::*;
     use serde_json::json;
 
