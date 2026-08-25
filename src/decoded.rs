@@ -26,6 +26,13 @@ fn is_empty_vec(v: &[String]) -> bool {
     v.is_empty()
 }
 
+fn de_redacted_argv<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(crate::redact::argv(Vec::<String>::deserialize(d)?))
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Event {
     pub ts_ns: u64,
@@ -50,7 +57,14 @@ pub struct Event {
     pub comm: String,
     #[serde(default, skip_serializing_if = "is_empty_str")]
     pub filename: String,
-    #[serde(default, skip_serializing_if = "is_empty_vec")]
+    /// Redacted on the way in as well as at capture, so the invariant holds
+    /// however an Event is built -- including `replay` of a capture recorded by
+    /// an older build that predates redaction.
+    #[serde(
+        default,
+        skip_serializing_if = "is_empty_vec",
+        deserialize_with = "de_redacted_argv"
+    )]
     pub argv: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
@@ -158,7 +172,9 @@ impl From<&RawEvent> for Event {
             cgroup_id: r.cgroup_id,
             comm: r.comm(),
             filename: r.filename(),
-            argv: r.argv(),
+            // Redact at capture, so no downstream consumer -- panel, sqlite
+            // journal, webhook, syslog -- ever holds the secret.
+            argv: crate::redact::argv(r.argv()),
             truncated: r.truncated(),
             exit_code: r.exit_code,
             child_pid: r.child_pid,

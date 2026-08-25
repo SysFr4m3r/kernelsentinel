@@ -82,7 +82,7 @@ fn scan_one(pid: u32, ns_per_tick: u64) -> Option<(ProcNode, u32)> {
 
     let mut node = ProcNode::new(key, Origin::Scanned);
     node.comm = comm;
-    node.argv = read_cmdline(pid);
+    node.argv = crate::redact::argv(read_cmdline(pid));
     node.exe = fs::read_link(format!("/proc/{pid}/exe"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();

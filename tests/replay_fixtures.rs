@@ -601,3 +601,41 @@ fn wall_clock_is_present_live_and_absent_on_replay() {
         .unwrap();
     assert!(hi > lo, "the chain must have measurable ordering");
 }
+
+/// Secrets on a command line must not survive into the shipped record. argv now
+/// reaches the panel, the sqlite journal, webhook bodies posted to a third
+/// party, and syslog -- so a leak here is replicated into all four.
+#[test]
+fn command_line_secrets_never_reach_the_shipped_record() {
+    // An exec event carrying a password inline, as the kernel would deliver it.
+    let raw = serde_json::json!({
+        "ts_ns": 1_000, "type": 1, "tgid": 4242, "ppid": 1, "start_boottime": 900,
+        "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+        "comm": "mysql", "filename": "/usr/bin/mysql",
+        "argv": ["/usr/bin/mysql", "-uroot", "-phunter2", "--token", "abc123"]
+    });
+    let ev: Event = serde_json::from_str(&raw.to_string()).unwrap();
+    let joined = ev.argv.join(" ");
+    assert!(
+        !joined.contains("hunter2") && !joined.contains("abc123"),
+        "secrets survived decoding: {joined}"
+    );
+    assert!(
+        joined.contains("-uroot"),
+        "non-secret arguments must survive"
+    );
+    assert!(joined.contains("-p<redacted>"), "got: {joined}");
+    // ...and through the graph into the record the agent ships.
+    let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+    g.apply(&ev);
+    let node = g
+        .get(&kernelsentinel::graph::ProcKey {
+            pid: 4242,
+            start_boottime: 900,
+        })
+        .expect("process in graph");
+    assert!(
+        !node.argv.join(" ").contains("hunter2"),
+        "secret reached the process graph"
+    );
+}

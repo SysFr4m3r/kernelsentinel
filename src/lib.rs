@@ -10,6 +10,7 @@ pub mod graph;
 pub mod heartbeat;
 pub mod http;
 pub mod notify;
+pub mod redact;
 pub mod sensors;
 pub mod server;
 pub mod watchlist;
