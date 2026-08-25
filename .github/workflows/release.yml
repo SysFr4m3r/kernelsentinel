@@ -37,7 +37,22 @@ jobs:
 
       - name: Generate vmlinux.h from the runner's BTF
         run: |
-          bpftool="$(find /usr/lib/linux-tools -name bpftool | head -1)"
+          set -euo pipefail
+          # Fail with a readable message rather than expanding an empty variable
+          # into "command not found", which is a confusing way to learn the
+          # runner image changed.
+          bpftool="$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)"
+          if [ -z "$bpftool" ]; then
+            bpftool="$(command -v bpftool || true)"
+          fi
+          if [ -z "$bpftool" ]; then
+            echo "bpftool not found; linux-tools layout changed on this runner" >&2
+            exit 1
+          fi
+          if [ ! -r /sys/kernel/btf/vmlinux ]; then
+            echo "/sys/kernel/btf/vmlinux missing; this runner kernel has no BTF" >&2
+            exit 1
+          fi
           "$bpftool" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
           wc -l bpf/vmlinux.h
 

@@ -53,7 +53,9 @@ unit() { # unit <src> <dest> <binary-path>
 build_deb() { # build_deb <name> <root>
 	chmod -R g-w "$2"
 	find "$2" -type d -exec chmod 755 {} +
-	fakeroot dpkg-deb --build --root-owner-group "$2" "$OUT/$1_${VERSION}_${ARCH}.deb" >/dev/null
+	# --root-owner-group stamps root:root without needing real or faked root, so
+	# no fakeroot dependency -- one less thing that has to exist on a CI runner.
+	dpkg-deb --build --root-owner-group "$2" "$OUT/$1_${VERSION}_${ARCH}.deb" >/dev/null
 }
 
 # --- agent ------------------------------------------------------------------
