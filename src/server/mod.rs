@@ -22,6 +22,7 @@ pub use store::{Store, band};
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
@@ -67,19 +68,54 @@ pub struct Tls {
 /// any whose receiver has gone (the dashboard disconnected).
 #[derive(Default)]
 struct Broadcaster {
-    clients: Mutex<Vec<Sender<String>>>,
+    clients: Mutex<Vec<(u64, Sender<String>)>>,
+    next_id: AtomicU64,
 }
 impl Broadcaster {
-    fn subscribe(&self) -> Receiver<String> {
+    /// Subscribe, returning a guard that unregisters on drop.
+    ///
+    /// `publish` prunes dead senders, but a fleet with nothing to say never
+    /// publishes -- and that is exactly the case where someone leaves the
+    /// dashboard open: every agent down, nothing arriving. Each 25s poll cycle
+    /// would then add a sender that nothing ever removed. Unregistering when
+    /// the poll finishes bounds the list by the number of live pollers instead
+    /// of by uptime.
+    fn subscribe(self: &Arc<Self>) -> Subscription {
         let (tx, rx) = channel();
-        self.clients.lock().unwrap().push(tx);
-        rx
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.clients.lock().unwrap().push((id, tx));
+        Subscription {
+            bus: self.clone(),
+            id,
+            rx,
+        }
     }
     fn publish(&self, msg: String) {
         self.clients
             .lock()
             .unwrap()
-            .retain(|tx| tx.send(msg.clone()).is_ok());
+            .retain(|(_, tx)| tx.send(msg.clone()).is_ok());
+    }
+    fn unsubscribe(&self, id: u64) {
+        self.clients.lock().unwrap().retain(|(i, _)| *i != id);
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.clients.lock().unwrap().len()
+    }
+}
+
+/// Holds a subscription open for as long as it is alive. Drop runs on the
+/// normal path and on unwind, so a panicking poll handler cannot leak an entry.
+struct Subscription {
+    bus: Arc<Broadcaster>,
+    id: u64,
+    rx: Receiver<String>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.bus.unsubscribe(self.id);
     }
 }
 
@@ -454,9 +490,9 @@ fn handle(
                 let _ = req.respond(text(401, "auth required"));
                 return;
             }
-            let rx = bus.subscribe();
+            let sub = bus.subscribe();
             std::thread::spawn(move || {
-                let resp = match rx.recv_timeout(Duration::from_secs(25)) {
+                let resp = match sub.rx.recv_timeout(Duration::from_secs(25)) {
                     Ok(msg) => json_str(200, &msg),
                     Err(_) => text(204, ""),
                 };
@@ -567,6 +603,50 @@ fn json<T: serde::Serialize>(code: u16, v: &T) -> Response<std::io::Cursor<Vec<u
 
 #[cfg(test)]
 mod tests {
+
+    /// The failure this guards against: a fleet producing nothing never calls
+    /// publish, so before the RAII guard each finished poll left its sender
+    /// behind and the list grew with uptime rather than with viewers.
+    #[test]
+    fn finished_polls_do_not_accumulate() {
+        let bus = Arc::new(Broadcaster::default());
+        for _ in 0..500 {
+            let sub = bus.subscribe();
+            assert_eq!(bus.len(), 1, "one live poller at a time");
+            drop(sub); // the poll responds and its thread ends
+        }
+        assert_eq!(bus.len(), 0, "no sender may outlive its poll");
+    }
+
+    #[test]
+    fn concurrent_pollers_are_all_registered_and_all_released() {
+        let bus = Arc::new(Broadcaster::default());
+        let subs: Vec<_> = (0..8).map(|_| bus.subscribe()).collect();
+        assert_eq!(bus.len(), 8);
+        // A publish reaches every live poller.
+        bus.publish("{\"host\":\"h\"}".to_string());
+        for s in &subs {
+            assert!(
+                s.rx.try_recv().is_ok(),
+                "every live poller must be notified"
+            );
+        }
+        drop(subs);
+        assert_eq!(bus.len(), 0);
+    }
+
+    /// Drop runs on unwind too, so a panicking handler cannot leak an entry.
+    #[test]
+    fn a_panicking_poll_still_unregisters() {
+        let bus = Arc::new(Broadcaster::default());
+        let b = bus.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _sub = b.subscribe();
+            panic!("handler blew up");
+        }));
+        assert_eq!(bus.len(), 0, "unwind must still release the subscription");
+    }
+
     use super::*;
 
     #[test]
