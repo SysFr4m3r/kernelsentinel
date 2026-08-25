@@ -113,6 +113,7 @@ single events should not cry wolf.
 | new SUID/SGID binaries | `lsm/path_chmod` | the classic local-privesc artifact |
 | file capabilities | `lsm/inode_setxattr` | a SUID-equivalent backdoor with no SUID bit |
 | writes to watched paths | `lsm/file_open` + `bpf_d_path` | `ld.so.preload`, `authorized_keys`, cron, systemd, sudoers, shadow — filtered in-kernel by an LPM trie |
+| credential-file reads | `lsm/file_open` | `/etc/shadow` and SSH **private** keys — theft, as opposed to the tampering a write means |
 | ptrace / cross-uid `/proc` | `lsm/ptrace_access_check` | credential theft from another user's process |
 | runtime socket access | `lsm/socket_connect` | Docker/containerd sockets — the container-escape primitive |
 | fileless execution | `lsm/bprm_check_security` | memfd / anonymous / deleted-file exec |

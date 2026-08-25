@@ -717,3 +717,113 @@ fn yara_enrichment_scans_the_files_the_signals_named() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Reading the credential store is the theft shape; writing it is the tampering
+/// shape. Both are worth seeing, but a read fires during every authentication on
+/// the host, so it must not be able to alert on its own.
+#[test]
+fn credential_reads_are_detected_suppressed_and_scored_below_the_floor() {
+    fn open_event(pid: u32, comm: &str, path: &str, write: bool) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 2_000u64 + pid as u64, "type": 5, "tgid": pid, "ppid": 1,
+            "start_boottime": 1_000u64 + pid as u64,
+            "uid": 1000, "gid": 1000, "euid": 1000, "egid": 1000, "cgroup_id": 1,
+            "comm": comm, "filename": path,
+            "file_mode": if write { 0x2 } else { 0x1 },
+            "watch_id": 1
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    fn exec_event(pid: u32, comm: &str) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 1_000u64 + pid as u64, "type": 1, "tgid": pid, "ppid": 1,
+            "start_boottime": 1_000u64 + pid as u64,
+            "uid": 1000, "gid": 1000, "euid": 1000, "egid": 1000, "cgroup_id": 1,
+            "comm": comm, "filename": format!("/usr/bin/{comm}"), "argv": [comm]
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+
+    let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+    let signals_for = |g: &mut ProcessGraph, pid: u32, comm: &str, path: &str, write: bool| {
+        let e = exec_event(pid, comm);
+        g.apply(&e);
+        let o = open_event(pid, comm, path, write);
+        g.apply(&o);
+        kernelsentinel::detect::signals_for_event(&o, g)
+    };
+
+    // An unexpected reader of /etc/shadow is a signal...
+    let sigs = signals_for(&mut g, 4001, "curl", "/etc/shadow", false);
+    assert_eq!(sigs.len(), 1, "an unexpected read must be detected");
+    assert_eq!(sigs[0].id, "credential_store_read");
+    assert!(
+        sigs[0].score < 50,
+        "a credential read must sit below the alerting floor, got {}",
+        sigs[0].score
+    );
+
+    // ...but the programs whose job is authentication are not. Without this the
+    // signal would fire on every sudo, ssh login and getent on the box.
+    for reader in ["unix_chkpwd", "sshd", "sudo", "su"] {
+        let sigs = signals_for(
+            &mut g,
+            4100 + reader.len() as u32,
+            reader,
+            "/etc/shadow",
+            false,
+        );
+        assert!(
+            sigs.is_empty(),
+            "{reader} reading shadow must be suppressed"
+        );
+    }
+
+    // An SSH private key read scores higher: sshd loads host keys once at
+    // startup, so anything else reading them is far more diagnostic.
+    let sigs = signals_for(&mut g, 4200, "cat", "/etc/ssh/ssh_host_rsa_key", false);
+    assert_eq!(sigs[0].id, "ssh_private_key_read");
+    assert!(sigs[0].score > 30);
+    assert_eq!(
+        sigs[0].target.as_deref(),
+        Some("/etc/ssh/ssh_host_rsa_key"),
+        "the key file must be offered for content scanning"
+    );
+
+    // A write to the same path is still the tampering signal, not the read one.
+    let sigs = signals_for(&mut g, 4300, "curl", "/etc/shadow", true);
+    assert_eq!(
+        sigs[0].id, "cred_config_write",
+        "writes keep their own signal"
+    );
+}
+
+/// The read signal must not alert alone, but must push a chain over the line --
+/// that is the entire reason for scoring it low rather than dropping it.
+#[test]
+fn a_credential_read_alone_is_quiet_but_lifts_a_chain() {
+    use kernelsentinel::detect::signals_for_event;
+
+    let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+    let exec = serde_json::json!({
+        "ts_ns": 1_000, "type": 1, "tgid": 5001, "ppid": 1, "start_boottime": 900,
+        "uid": 1000, "gid": 1000, "euid": 1000, "egid": 1000, "cgroup_id": 1,
+        "comm": "curl", "filename": "/usr/bin/curl", "argv": ["curl"]
+    });
+    let ev: Event = serde_json::from_str(&exec.to_string()).unwrap();
+    g.apply(&ev);
+    let read = serde_json::json!({
+        "ts_ns": 2_000, "type": 5, "tgid": 5001, "ppid": 1, "start_boottime": 900,
+        "uid": 1000, "gid": 1000, "euid": 1000, "egid": 1000, "cgroup_id": 1,
+        "comm": "curl", "filename": "/etc/shadow", "file_mode": 1, "watch_id": 1
+    });
+    let ev: Event = serde_json::from_str(&read.to_string()).unwrap();
+    g.apply(&ev);
+    let sigs = signals_for_event(&ev, &g);
+    assert_eq!(sigs.len(), 1);
+    assert_eq!(
+        kernelsentinel::detect::Severity::from_score(sigs[0].score),
+        kernelsentinel::detect::Severity::Low,
+        "on its own it must stay below the medium alerting floor"
+    );
+}

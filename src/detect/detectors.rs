@@ -31,7 +31,13 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
         EventType::CredChange => privilege_escalation(ev, key),
         EventType::Setcap => setcap(ev, key),
         EventType::Ptrace => ptrace(ev, key, graph),
-        EventType::FileOpen => sensitive_write(ev, key),
+        EventType::FileOpen => {
+            if ev.opened_for_write() {
+                sensitive_write(ev, key)
+            } else {
+                credential_read(ev, key, graph)
+            }
+        }
         EventType::Module => module_load(ev, key),
         EventType::SockConnect => privileged_socket(ev, key),
         EventType::Exec => {
@@ -154,6 +160,65 @@ fn ptrace(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
         ev.ts_ns,
         format!("read an unrelated process's memory (pid {})", ev.target_pid),
     )]
+}
+
+/// Programs whose whole job is to read the credential store. Every
+/// authentication on the host goes through one of these, so without this the
+/// signal would fire dozens of times a day on a machine where nothing happened.
+/// Matched on `comm`, which is what the kernel gives us here.
+const CREDENTIAL_READERS: &[&str] = &[
+    "unix_chkpwd",
+    "sshd",
+    "sudo",
+    "su",
+    "login",
+    "passwd",
+    "chpasswd",
+    "gpasswd",
+    "newgrp",
+    "usermod",
+    "useradd",
+    "userdel",
+    "vipw",
+    "systemd-logind",
+    "polkitd",
+    "sssd",
+    "agetty",
+    "gdm-session-wor",
+    "lightdm",
+    "accounts-daemon",
+];
+
+/// A read of the credential store or of an SSH private key -- the theft shape,
+/// as opposed to the tampering shape `sensitive_write` covers.
+///
+/// Deliberately scored below the alerting floor. Reading /etc/shadow is what
+/// authentication *is*, so on its own this is noise; it earns its weight only
+/// when it appears in a lineage alongside something else. That is the same
+/// discipline applied to `privilege_escalation`: a signal that fires during
+/// normal operation must not be able to alert by itself.
+fn credential_read(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
+    let comm = graph.get(&key).map(|n| n.comm.as_str()).unwrap_or("");
+    if CREDENTIAL_READERS.contains(&comm) {
+        return vec![];
+    }
+    let (score, id, what): (u32, &'static str, &str) =
+        if ev.filename.contains("ssh_host_") || ev.filename.contains("/.ssh/id_") {
+            (35, "ssh_private_key_read", "an SSH private key")
+        } else {
+            (30, "credential_store_read", "the credential store")
+        };
+    vec![
+        Signal::new(
+            id,
+            score,
+            &["T1003.008", "T1552.004"],
+            key,
+            ev.ts_ns,
+            format!("read {what}: {}", ev.filename),
+        )
+        .with_target(&ev.filename),
+    ]
 }
 
 fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {

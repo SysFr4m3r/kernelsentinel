@@ -329,9 +329,19 @@ int BPF_PROG(handle_file_open, struct file *file)
 	if (!watch)
 		return 0;
 
+	/* A watch opts in to a direction. Reads of credential files are the
+	 * theft shape; writes are the persistence shape, and most watched paths
+	 * only care about one of the two. Requiring an explicit opt-in keeps a
+	 * path like /etc/shadow -- read on every single authentication -- from
+	 * flooding userspace merely because it is watched at all.
+	 */
 	__u32 f_mode = BPF_CORE_READ(file, f_mode);
-	if ((*watch & WATCH_ON_WRITE) && !(f_mode & FMODE_WRITE))
+	if (f_mode & FMODE_WRITE) {
+		if (!(*watch & WATCH_ON_WRITE))
+			return 0;
+	} else if (!(*watch & WATCH_ON_READ)) {
 		return 0;
+	}
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {

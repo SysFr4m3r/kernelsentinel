@@ -6,6 +6,9 @@ use std::fs;
 
 /// Mirror of `WATCH_ON_WRITE` in bpf/events.h.
 pub const WATCH_ON_WRITE: u32 = 1 << 0;
+/// Mirror of `WATCH_ON_READ`. A watch must opt in to a direction; see the note
+/// on `read_watches` for why reads are the narrower set.
+pub const WATCH_ON_READ: u32 = 1 << 1;
 
 pub const MAX_WATCH_PATH: usize = 256;
 
@@ -23,6 +26,20 @@ impl Watch {
         Self {
             prefix: prefix.to_string(),
             flags: WATCH_ON_WRITE,
+        }
+    }
+    /// Watched in both directions: writing it is persistence, reading it is
+    /// theft, and both are worth seeing.
+    fn read_write(prefix: &str) -> Self {
+        Self {
+            prefix: prefix.to_string(),
+            flags: WATCH_ON_WRITE | WATCH_ON_READ,
+        }
+    }
+    fn read(prefix: &str) -> Self {
+        Self {
+            prefix: prefix.to_string(),
+            flags: WATCH_ON_READ,
         }
     }
 }
@@ -60,9 +77,16 @@ pub fn default_watches() -> Vec<Watch> {
         Watch::write("/usr/lib/systemd/"),
         Watch::write("/lib/systemd/"),
         Watch::write("/etc/sudoers"), // sudoers and sudoers.d/
-        Watch::write("/etc/shadow"),
+        // Reading the hashes is the theft shape; writing them is tampering.
+        Watch::read_write("/etc/shadow"),
+        Watch::read_write("/etc/gshadow"),
         Watch::write("/etc/passwd"),
         Watch::write("/root/.ssh/"),
+        // SSH *private* keys. Reads are rare and meaningful -- sshd loads the
+        // host keys once at startup -- unlike authorized_keys, which is read on
+        // every single login and is therefore write-watched only.
+        Watch::read("/etc/ssh/ssh_host_"),
+        Watch::read("/root/.ssh/id_"),
     ];
 
     // Per-user SSH directories. A missing /home is fine (containers, minimal
@@ -72,6 +96,13 @@ pub fn default_watches() -> Vec<Watch> {
             let ssh = home.path().join(".ssh/");
             if let Some(p) = ssh.to_str() {
                 w.push(Watch::write(p));
+            }
+            // Longest-prefix match means this more specific entry wins for a
+            // private key, so it carries both directions -- otherwise adding a
+            // read watch here would silently stop catching writes to it.
+            let key = home.path().join(".ssh/id_");
+            if let Some(p) = key.to_str() {
+                w.push(Watch::read_write(p));
             }
         }
     }

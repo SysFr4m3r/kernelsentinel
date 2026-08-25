@@ -130,6 +130,31 @@ are suppressed; theft is reaching *outside* your tree.
   ATTACH-mode credentials). Documented trade: missing a same-priv read is
   preferable to the alert flood that filtering removes.
 
+### `credential_store_read` — base 30 · T1003.008
+### `ssh_private_key_read` — base 35 · T1552.004
+
+A **read** of `/etc/shadow` or `/etc/gshadow` (30), or of an SSH **private** key —
+`/etc/ssh/ssh_host_*`, `~/.ssh/id_*` (35). Writing those files is tampering and is covered by
+`sensitive_write`; reading them is theft, and until now was invisible: watches were write-only, so a
+read was filtered in-kernel and the daemon never saw it.
+
+- **Trigger:** `sudo cat /etc/shadow`, or `cat ~/.ssh/id_ed25519` as another user.
+- **Deliberately below the alerting floor.** Reading `/etc/shadow` is what authentication *is*, so on
+  its own this must not alert; it earns weight only in a lineage with something else. The same
+  discipline as `privilege_escalation`: a signal that fires during normal operation cannot be allowed
+  to alert alone.
+- **False positives:** every authentication path reads the credential store. The obvious readers —
+  `unix_chkpwd`, `sshd`, `sudo`, `su`, `login`, `passwd`, `systemd-logind`, `polkitd`, `sssd` and
+  friends — are suppressed by `comm` in-detector. Backup agents, config management, and vulnerability
+  scanners will still fire; baseline them.
+- **Evasions:** suppression is by `comm`, which an attacker controls — a payload named `sshd` reading
+  `/etc/shadow` is not reported. That is a deliberate trade: matching on the executable path instead
+  would be stronger but would not survive the `/proc` bootstrap for pre-existing processes, and the
+  noise reduction is what makes the signal usable at all. Reading a credential file through a hard
+  link, a bind mount, or a copy made earlier is also not matched, since the watch is on the path.
+  Only `/etc/shadow`, `/etc/gshadow` and SSH private keys are read-watched; `authorized_keys` is not,
+  because it is read on every single login.
+
 ## Persistence & files
 
 ### `sensitive_write` — base 20–40 · T1543, T1098

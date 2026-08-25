@@ -74,7 +74,8 @@ struct path_key {
 };
 
 /* watched-paths trie value: flags describing when a match should fire */
-#define WATCH_ON_WRITE (1u << 0) /* only emit if the file was opened writable */
+#define WATCH_ON_WRITE (1u << 0) /* emit when the file was opened writable */
+#define WATCH_ON_READ  (1u << 1) /* emit when it was opened read-only */
 
 /* EV_EXEC_ANON `aux` source codes */
 #define EXEC_SRC_MEMFD   1  /* dentry name begins "memfd:" */
