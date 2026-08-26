@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual trigger. Without it, a push event that GitHub does not schedule --
+  # a runner-pool hiccup, a queue that never surfaces -- leaves no way to run
+  # CI at all except by pushing another commit.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
