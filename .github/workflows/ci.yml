@@ -25,19 +25,9 @@ jobs:
       - name: Generate vmlinux.h from the runner's BTF
         # vmlinux.h is host-specific and gitignored; CO-RE lets us regenerate it
         # from the runner's own kernel BTF, exactly as a developer does locally.
-        #
-        # NOTE: /usr/sbin/bpftool is a wrapper locked to the *exact* running
-        # kernel (e.g. 6.17.0-azure), whose linux-tools package is not in apt --
-        # so it fails on GitHub's Azure runners. But dumping a BTF *file* only
-        # parses the blob and is version-agnostic, so we use the real versioned
-        # binary that linux-tools-generic installs and skip the wrapper.
-        run: |
-          test -f /sys/kernel/btf/vmlinux || { echo "runner kernel has no BTF"; exit 1; }
-          BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)"
-          [ -x "$BPFTOOL" ] || { echo "no versioned bpftool found"; ls -R /usr/lib/linux-tools || true; exit 1; }
-          echo "using bpftool: $BPFTOOL"; "$BPFTOOL" version
-          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-          wc -l bpf/vmlinux.h
+        # The script picks a bpftool that can actually parse this kernel's BTF --
+        # see its header for why the packaged one frequently cannot.
+        run: ./scripts/gen-vmlinux.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:

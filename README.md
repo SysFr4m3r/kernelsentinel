@@ -86,6 +86,7 @@ flowchart TD
     S --> OUT["incident<br/><small>severity · ATT&CK · signals · commands</small>"]
     OUT --> T["terminal"] & N["NDJSON → SIEM"] & F["ship → fleet server"]
 ```
+
 A web server spawning a shell that runs from memory scores itself, and shows its work:
 
 ```
@@ -177,10 +178,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ```
 
 **2. Generate `vmlinux.h`.** Host-specific and not committed; CO-RE regenerates it from your
-kernel's BTF (exactly what CI does):
+kernel's BTF. The script picks a `bpftool` that can actually parse it, falling back to a pinned
+upstream build when the packaged one is too old — which is common, and is exactly what CI runs:
 
 ```bash
-bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+./scripts/gen-vmlinux.sh
 ```
 
 **3. Build.** The binary is `target/release/kernelsentinel`; everything below assumes it is on your `PATH`.

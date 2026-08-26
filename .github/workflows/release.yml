@@ -36,19 +36,11 @@ jobs:
                                   linux-tools-common linux-tools-generic
 
       - name: Generate vmlinux.h from the runner's BTF
-        # Mirrors ci.yml deliberately, including the reason: /usr/sbin/bpftool is
-        # a wrapper locked to the exact running kernel (e.g. 6.17.0-azure), whose
-        # linux-tools package is not in apt, so it fails on GitHub's Azure
-        # runners. Dumping a BTF *file* only parses the blob and is
-        # version-agnostic, so use the versioned binary linux-tools-generic
-        # installs and never fall back to the wrapper.
-        run: |
-          test -f /sys/kernel/btf/vmlinux || { echo "runner kernel has no BTF"; exit 1; }
-          BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)"
-          [ -x "$BPFTOOL" ] || { echo "no versioned bpftool found"; ls -R /usr/lib/linux-tools || true; exit 1; }
-          echo "using bpftool: $BPFTOOL"; "$BPFTOOL" version
-          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-          wc -l bpf/vmlinux.h
+        # vmlinux.h is host-specific and gitignored; CO-RE lets us regenerate it
+        # from the runner's own kernel BTF, exactly as a developer does locally.
+        # The script picks a bpftool that can actually parse this kernel's BTF --
+        # see its header for why the packaged one frequently cannot.
+        run: ./scripts/gen-vmlinux.sh
 
       - name: Build packages
         run: ./packaging/build-deb.sh
