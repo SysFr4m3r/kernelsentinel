@@ -41,10 +41,18 @@ jobs:
           echo "artifacts, but NOT publishing. Push a v* tag to cut a real release."
 
       - name: Install BPF toolchain
+        # clang-15 rather than 22.04's default clang-14. The runner is pinned to
+        # 22.04 for its glibc floor, which is about what the binary *links*
+        # against -- it should not also hold the BPF compiler an era behind the
+        # toolchain CI proves green on. clang-14 lowers short __builtin_memcmp
+        # to a libc call, which the BPF linker cannot resolve.
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libbpf-dev \
+          sudo apt-get install -y clang-15 llvm-15 libelf-dev zlib1g-dev libbpf-dev \
                                   linux-tools-common linux-tools-generic
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100
+          sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-15 100
+          clang --version | head -1
 
       - name: Generate vmlinux.h from the runner's BTF
         # vmlinux.h is host-specific and gitignored; CO-RE lets us regenerate it

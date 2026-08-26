@@ -55,6 +55,24 @@ static __always_inline void stat_inc(__u32 key)
 		__sync_fetch_and_add(v, 1);
 }
 
+/* Fixed-length byte compare.
+ *
+ * Not __builtin_memcmp: with a length clang cannot fold, it lowers that to a
+ * call to libc memcmp, and there is no libc in a BPF program -- the BPF linker
+ * rejects the object with "failed to find BTF info for global/extern symbol
+ * 'memcmp'". Newer clang inlines short compares and hides the problem, so this
+ * only surfaces on an older toolchain. An explicit unrolled loop compiles the
+ * same way everywhere, and is branchless, which the verifier also prefers.
+ */
+static __always_inline int prefix_eq(const char *p, const char *pre, int n)
+{
+	int ok = 1;
+#pragma unroll
+	for (int i = 0; i < n; i++)
+		ok &= (p[i] == pre[i]);
+	return ok;
+}
+
 /* kernel_cap_t is `struct { u64 val; }` since 6.3 and `struct { u32 cap[2]; }`
  * before that. Read it CO-RE-safely so one binary works across both. */
 static __always_inline __u64 read_cap(const kernel_cap_t *cap)
@@ -419,7 +437,7 @@ int BPF_PROG(handle_setxattr, struct mnt_idmap *idmap, struct dentry *dentry,
 		return 0;
 
 	/* "security.capability" -- compare enough to be unambiguous. */
-	if (__builtin_memcmp(xattr, "security.capability", 19) != 0)
+	if (!prefix_eq(xattr, "security.capability", 19))
 		return 0;
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -555,15 +573,6 @@ int BPF_PROG(handle_module, struct module *mod)
  * the verifier sees a straight line of `n` comparisons (cheap), unlike a
  * scanning loop over every offset (state explosion). n is a compile-time
  * constant; all indices are < the 108-byte buffer. */
-static __always_inline int prefix_eq(const char *p, const char *pre, int n)
-{
-	int ok = 1;
-#pragma unroll
-	for (int i = 0; i < n; i++)
-		ok &= (p[i] == pre[i]);
-	return ok;
-}
-
 SEC("lsm/socket_connect")
 int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
