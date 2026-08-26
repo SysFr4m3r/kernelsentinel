@@ -19,7 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only a tag push publishes. A manual run builds and verifies everything
+      # and stops short of creating a release, so the whole pipeline can be
+      # exercised without cutting one -- which is what you actually want when
+      # testing it.
       - name: Tag must match Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           crate="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
@@ -28,6 +33,12 @@ jobs:
             exit 1
           fi
           echo "releasing $crate"
+
+      - name: Dry run (no tag)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          echo "Manual run on '$GITHUB_REF_NAME': building and verifying the release"
+          echo "artifacts, but NOT publishing. Push a v* tag to cut a real release."
 
       - name: Install BPF toolchain
         run: |
@@ -71,6 +82,7 @@ jobs:
           cat dist/SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
             dist/*.deb
