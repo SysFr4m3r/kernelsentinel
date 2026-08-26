@@ -570,14 +570,14 @@ fn wall_clock_is_present_live_and_absent_on_replay() {
         serde_json::from_str(&IncidentRecord::from_incident(inc, &g, Some(&clock)).to_ndjson())
             .unwrap();
     let ts = live["ts"].as_u64().expect("live records must carry `ts`");
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    // The fixture's boot timestamps are from this machine's uptime range, so the
-    // mapped time lands in the past but well after the epoch.
     assert!(ts > 1_600_000_000_000, "ts must be epoch ms, got {ts}");
-    assert!(ts <= now_ms, "an event cannot be in the future");
+    // Deliberately NOT asserting the mapped time is in the past. These are a
+    // *capture's* boot timestamps run through *this* machine's boot epoch, which
+    // clock.rs says outright is meaningless -- and it shows: on a host whose
+    // uptime is shorter than the capture's span (any fresh CI runner) the result
+    // lands in the future. Asserting otherwise encoded an assumption the design
+    // rejects, and passed only because the dev machine had days of uptime.
+    // What the live path actually promises is tested below, on the clock itself.
     assert!(
         live["signals"]
             .as_array()
@@ -585,6 +585,35 @@ fn wall_clock_is_present_live_and_absent_on_replay() {
             .iter()
             .all(|s| s["ts"].is_u64()),
         "every live signal must carry a wall-clock time"
+    );
+
+    // The conversion itself is the real contract: a fixed offset from the boot
+    // epoch, so differences survive exactly and "now" maps to now.
+    let a = clock.to_epoch_ms(1_000_000_000);
+    let b = clock.to_epoch_ms(3_500_000_000);
+    assert_eq!(
+        b - a,
+        2_500,
+        "2.5s apart in boot ns must be 2500ms apart in wall ms"
+    );
+    let uptime_ns = std::time::Duration::from_secs_f64(
+        std::fs::read_to_string("/proc/uptime")
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap(),
+    )
+    .as_nanos() as u64;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mapped_now = clock.to_epoch_ms(uptime_ns);
+    assert!(
+        mapped_now.abs_diff(now_ms) < 5_000,
+        "the current uptime must map back to roughly now: {mapped_now} vs {now_ms}"
     );
 
     // Offsets inside the incident are exact regardless of clock availability.

@@ -36,24 +36,18 @@ jobs:
                                   linux-tools-common linux-tools-generic
 
       - name: Generate vmlinux.h from the runner's BTF
+        # Mirrors ci.yml deliberately, including the reason: /usr/sbin/bpftool is
+        # a wrapper locked to the exact running kernel (e.g. 6.17.0-azure), whose
+        # linux-tools package is not in apt, so it fails on GitHub's Azure
+        # runners. Dumping a BTF *file* only parses the blob and is
+        # version-agnostic, so use the versioned binary linux-tools-generic
+        # installs and never fall back to the wrapper.
         run: |
-          set -euo pipefail
-          # Fail with a readable message rather than expanding an empty variable
-          # into "command not found", which is a confusing way to learn the
-          # runner image changed.
-          bpftool="$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)"
-          if [ -z "$bpftool" ]; then
-            bpftool="$(command -v bpftool || true)"
-          fi
-          if [ -z "$bpftool" ]; then
-            echo "bpftool not found; linux-tools layout changed on this runner" >&2
-            exit 1
-          fi
-          if [ ! -r /sys/kernel/btf/vmlinux ]; then
-            echo "/sys/kernel/btf/vmlinux missing; this runner kernel has no BTF" >&2
-            exit 1
-          fi
-          "$bpftool" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          test -f /sys/kernel/btf/vmlinux || { echo "runner kernel has no BTF"; exit 1; }
+          BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)"
+          [ -x "$BPFTOOL" ] || { echo "no versioned bpftool found"; ls -R /usr/lib/linux-tools || true; exit 1; }
+          echo "using bpftool: $BPFTOOL"; "$BPFTOOL" version
+          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
           wc -l bpf/vmlinux.h
 
       - name: Build packages
