@@ -89,6 +89,20 @@ jobs:
           done
           cat dist/SHA256SUMS
 
+      # A dry run built and verified real packages; throwing them away would
+      # waste the one chance to install them somewhere before tagging. Attached
+      # to the run instead, downloadable for 14 days.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          name: kernelsentinel-packages-untagged
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
