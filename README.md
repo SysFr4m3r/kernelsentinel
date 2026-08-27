@@ -41,7 +41,7 @@ Across a fleet, the same incidents land in a read-only web panel:
 |---|---|
 | **[How it works](#how-it-works)** | the pipeline, in one diagram |
 | **[What it detects](#what-it-detects)** | sensors and the built-in detections |
-| **[Install](#install)** | requirements, toolchain, build |
+| **[Install](#install)** | packages, requirements, build from source |
 | **[Single host](#single-host)** | `run`, `replay`, `investigate` |
 | **[Fleet monitoring](#fleet-monitoring)** | central panel, agents, alerting |
 | **[Tuning detections](#tuning-detections)** | YAML rules, YARA, baselining |
@@ -125,13 +125,21 @@ single events should not cry wolf.
 **Every detection** — its ATT&CK technique, base score, how to trigger it, and its known false
 positives **and known evasions** — is documented in **[docs/DETECTIONS.md](docs/DETECTIONS.md)**.
 
+**Not every kernel has every sensor.** The six `lsm/` hooks need `CONFIG_BPF_LSM`, which RHEL, Rocky
+and Alma do not ship. The agent attaches each program separately and names the ones it could not, so
+a kernel without BPF-LSM keeps lineage, credential transitions and module loading rather than
+refusing to start. See **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)**.
+
 **The process graph** gives detections what per-event rules cannot see: PID-reuse-proof identity
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested**: 110 tests, including detections replayed from **real kernel captures** committed as
-fixtures. The false-positive discipline is enforced by tests: a bare `sudo` must not alert, and
-`sshd` spawning a shell is a login, not an intrusion.
+**Tested** on three levels. 114 unit and integration tests, including detections replayed from
+**real kernel captures** committed as fixtures. Thirteen [attack scenarios](#testing) that run the
+real attack against a live agent and assert it is caught — because replay tests feed the detector
+events it was given, which is how a container escape detection once passed everything and failed
+against the actual attack. And four noise scenarios asserting ordinary work stays silent, because a
+tool that catches everything and fires on `docker run` gets muted in week one.
 
 ---
 
@@ -143,12 +151,14 @@ Prebuilt packages, no toolchain required. The agent binary is CO-RE, so one
 build runs across kernels — libbpf relocates against the target kernel's own BTF
 at load.
 
+Download both from the [latest release](https://github.com/SysFr4m3r/kernelsentinel/releases/latest), then:
+
 ```bash
-sudo apt install ./kernelsentinel-server_0.1.0_amd64.deb   # central box
+sudo apt install ./kernelsentinel-server_*_amd64.deb   # central box
 ```
 
 ```bash
-sudo apt install ./kernelsentinel-agent_0.1.0_amd64.deb    # monitored host
+sudo apt install ./kernelsentinel-agent_*_amd64.deb    # monitored host
 ```
 
 Neither package starts its service. An agent with no ingest key, or a server with
@@ -692,6 +702,8 @@ stops mattering.
   technique and score, how to trigger it, and its known false positives and evasions.
 - **[docs/WRITING_RULES.md](docs/WRITING_RULES.md)** — add detections in YAML, no recompile: the
   match/sequence rule DSL, conditions, and scoping.
+- **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)** — which kernels and distributions run this,
+  what each sensor requires, and what is lost without BPF-LSM.
 - **[deploy/](deploy/)** — systemd units and an install script for a real deployment.
 
 ### License
