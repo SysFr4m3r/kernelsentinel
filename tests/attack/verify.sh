@@ -47,7 +47,7 @@ run_one() {
 		skip=$((skip + 1)); return
 	fi
 
-	local out="$WORK/$name.ndjson" log="$WORK/$name.log"
+	local out="$WORK/$name.ndjson" log="$WORK/$name.log" slog="$WORK/$name.scenario"
 	# --min-severity info on purpose. This suite asks "did the sensor fire",
 	# not "would it have alerted": setcap (40) and ptrace_attach (30) score
 	# below the default MEDIUM floor and are correctly suppressed in normal
@@ -71,9 +71,9 @@ run_one() {
 	local scenario_rc=0
 	if [[ "$where" == "lab" ]]; then
 		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" \
-			>>"$log" 2>&1 || scenario_rc=$?
+			>"$slog" 2>&1 || scenario_rc=$?
 	else
-		bash "$script" >>"$log" 2>&1 || scenario_rc=$?
+		bash "$script" >"$slog" 2>&1 || scenario_rc=$?
 	fi
 
 	sleep 1              # let the last events drain through the ring buffer
@@ -89,7 +89,9 @@ run_one() {
 		# someone hunting a bug in the detector that does not exist.
 		printf '  %-32s ERROR (scenario failed rc=%s -- the attack did not run)\n' \
 			"$name" "$scenario_rc"
-		sed 's/^/      /' "$log" | tail -4
+		# The scenario's own output, not the agent's. Showing the tail of a
+		# combined log printed the agent shutting down and hid the real error.
+		sed 's/^/      /' "$slog" | tail -4
 		fail=$((fail + 1)); FAILED+=("$name"); return
 	fi
 
@@ -109,6 +111,15 @@ run_one() {
 		fail=$((fail + 1)); FAILED+=("$name")
 	fi
 }
+
+# A lab image older than its Dockerfile silently changes what the scenarios do:
+# sensitive_write writes to /etc/cron.d, and an image predating that mkdir fails
+# the write instead of testing the sensor. Rebuild rather than trust it.
+if [[ $# -eq 0 ]] || grep -qls "ks-run: lab" "$SCENARIOS"/*.sh; then
+	echo "rebuilding the lab image..."
+	"$REPO/tests/lab/run.sh" build >/dev/null 2>&1 \
+		|| echo "  warning: lab image build failed; lab scenarios may be stale" >&2
+fi
 
 echo "attack suite -- enforcement: $ENFORCE"
 echo
