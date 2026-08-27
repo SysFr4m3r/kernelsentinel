@@ -6,7 +6,8 @@
 #   sudo KS_ENFORCE=on tests/attack/verify.sh      # with enforcement armed
 #
 # This tests FALSE NEGATIVES: does an attack that really happened actually
-# produce the signal it should? The replay tests in tests/ cannot answer that --
+# produce the signal it should? It runs the agent at --min-severity info so a
+# correctly-suppressed low signal is not mistaken for a missing one. The replay tests in tests/ cannot answer that --
 # they feed the detector events I constructed, which is how a container escape
 # detection shipped, passed 113 tests, and failed against the real attack. The
 # scenario runs the attack for real and the assertion reads the agent's own
@@ -33,17 +34,26 @@ pass=0 fail=0 skip=0
 declare -a FAILED=()
 
 run_one() {
-	local script="$1" name expect where
+	local script="$1" name expect where caps
 	name="$(basename "$script" .sh)"
 	expect="$(header "$script" ks-expect)"
 	where="$(header "$script" ks-run)"
+	# An attack that needs a capability must say so. Silently running it
+	# without one produces a scenario that fails and looks like a missed
+	# detection -- which is exactly what happened to setcap.
+	caps="$(header "$script" ks-caps)"
 	if [[ -z "$expect" ]]; then
 		printf '  %-32s SKIP  (no ks-expect header)\n' "$name"
 		skip=$((skip + 1)); return
 	fi
 
 	local out="$WORK/$name.ndjson" log="$WORK/$name.log"
-	"$BIN" run --json --enforce "$ENFORCE" >"$out" 2>"$log" &
+	# --min-severity info on purpose. This suite asks "did the sensor fire",
+	# not "would it have alerted": setcap (40) and ptrace_attach (30) score
+	# below the default MEDIUM floor and are correctly suppressed in normal
+	# operation, which the first version of this harness misread as a missed
+	# detection. Alerting thresholds are covered by the replay tests.
+	"$BIN" run --json --min-severity info --enforce "$ENFORCE" >"$out" 2>"$log" &
 	local agent=$!
 
 	# Wait for the sensors, rather than sleeping and hoping. A scenario that
@@ -58,12 +68,13 @@ run_one() {
 		fi
 	done
 
+	local scenario_rc=0
 	if [[ "$where" == "lab" ]]; then
-		"$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" >>"$log" 2>&1
+		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" \
+			>>"$log" 2>&1 || scenario_rc=$?
 	else
-		bash "$script" >>"$log" 2>&1
+		bash "$script" >>"$log" 2>&1 || scenario_rc=$?
 	fi
-	local scenario_rc=$?
 
 	sleep 1              # let the last events drain through the ring buffer
 	kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
@@ -72,11 +83,24 @@ run_one() {
 		printf '  %-32s SKIP  (prerequisite missing)\n' "$name"
 		skip=$((skip + 1)); return
 	fi
+	if [[ $scenario_rc -ne 0 ]]; then
+		# Critical distinction: the attack never happened, so the sensor had
+		# nothing to miss. Reporting this as a failed detection would send
+		# someone hunting a bug in the detector that does not exist.
+		printf '  %-32s ERROR (scenario failed rc=%s -- the attack did not run)\n' \
+			"$name" "$scenario_rc"
+		sed 's/^/      /' "$log" | tail -4
+		fail=$((fail + 1)); FAILED+=("$name"); return
+	fi
 
 	# The assertion: the agent's own output must name the expected signal.
 	if grep -q "\"$expect\"" "$out"; then
+		# From the matching incident specifically. Grepping the first score in
+		# the file reports some unrelated low-severity incident's number, which
+		# made every scenario look like it scored 25.
 		local score
-		score="$(grep -o '"score":[0-9]*' "$out" | head -1 | cut -d: -f2)"
+		score="$(grep "\"$expect\"" "$out" | head -1 \
+			| grep -o '"score":[0-9]*' | head -1 | cut -d: -f2)"
 		printf '  %-32s PASS  %s (score %s)\n' "$name" "$expect" "${score:-?}"
 		pass=$((pass + 1))
 	else

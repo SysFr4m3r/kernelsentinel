@@ -55,6 +55,12 @@ enum Command {
         /// detection, not a replacement for it.
         #[arg(long)]
         yara: Option<String>,
+        /// Lowest severity worth reporting: info|low|medium|high|critical.
+        /// The default suppresses single low signals until they chain, which is
+        /// what keeps a bare `sudo` from crying wolf. Lower it to see every
+        /// signal a sensor produces -- what the attack suite asserts against.
+        #[arg(long, default_value = "medium")]
+        min_severity: String,
         /// Block, rather than only report, a narrow set of container escapes:
         /// off (default) | audit | on. `audit` reports what would be blocked
         /// without blocking anything -- run that first.
@@ -228,7 +234,17 @@ fn main() -> Result<()> {
             rules,
             yara,
             enforce,
-        } => run(max_processes, retain, json, baseline, rules, yara, &enforce),
+            min_severity,
+        } => run(
+            max_processes,
+            retain,
+            json,
+            baseline,
+            rules,
+            yara,
+            &enforce,
+            &min_severity,
+        ),
     }
 }
 
@@ -703,6 +719,7 @@ fn print_subtree(graph: &ProcessGraph, key: &ProcKey, prefix: &str, last: bool) 
 }
 
 #[cfg(feature = "bpf")]
+#[allow(clippy::too_many_arguments)]
 fn run(
     max_processes: usize,
     retain_secs: u64,
@@ -711,7 +728,18 @@ fn run(
     rules: Option<String>,
     yara: Option<String>,
     enforce: &str,
+    min_severity: &str,
 ) -> Result<()> {
+    let floor = match min_severity.to_ascii_lowercase().as_str() {
+        "info" => Severity::Info,
+        "low" => Severity::Low,
+        "medium" => Severity::Medium,
+        "high" => Severity::High,
+        "critical" => Severity::Critical,
+        other => anyhow::bail!(
+            "--min-severity must be info, low, medium, high or critical (got {other:?})"
+        ),
+    };
     // Parsed before anything attaches: a typo must not silently leave a host
     // unprotected, or silently arm denial.
     let enforce_mode = match enforce.to_ascii_lowercase().as_str() {
@@ -732,7 +760,7 @@ fn run(
     let self_pid = std::process::id();
 
     let mut graph = ProcessGraph::new(max_processes, Duration::from_secs(retain_secs));
-    let mut engine = Engine::new(Severity::Medium);
+    let mut engine = Engine::new(floor);
     if let Some(path) = &baseline {
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
         status(&format!(

@@ -4,6 +4,7 @@
 #   MITRE ATT&CK: T1548 (Abuse Elevation Control Mechanism)
 #   ks-expect: setcap
 #   ks-run: lab
+#   ks-caps: SETFCAP
 #   Expected: EV_SETCAP on the target file.
 set -euo pipefail
 if [[ ! -f /.ks-lab ]] || [[ "${KS_LAB:-}" != "1" ]]; then
