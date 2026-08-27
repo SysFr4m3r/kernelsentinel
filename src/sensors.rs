@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
+use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use libbpf_rs::{MapCore, RingBufferBuilder};
 
 use std::io::Write;
@@ -34,6 +34,11 @@ pub struct Stats {
 /// live from the BPF stats map, so a caller can report liveness without a
 /// second thread -- the daemon stays single-threaded, matching how graph
 /// reaping is driven off the same loop. `Duration::ZERO` disables it.
+/// The first line of a multi-line error, for a one-line log.
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or(s)
+}
+
 /// Enforcement policy, mirroring `enum` values in bpf/events.h.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Enforce {
@@ -73,7 +78,7 @@ where
     let open = builder
         .open(&mut open_object)
         .context("opening BPF object (is vmlinux.h current?)")?;
-    let mut skel = open.load().context("loading BPF programs (verifier)")?;
+    let skel = open.load().context("loading BPF programs (verifier)")?;
 
     // Populate the watched-paths trie before attaching, so the file_open sensor
     // never runs against an empty trie (which would match nothing) or, worse,
@@ -116,7 +121,66 @@ where
         .update(&0u32.to_ne_bytes(), &cfg, libbpf_rs::MapFlags::ANY)
         .context("writing the enforcement config")?;
 
-    skel.attach().context("attaching BPF programs")?;
+    // Attach one program at a time rather than all-or-nothing.
+    //
+    // skel.attach() fails the whole load if any single program cannot attach,
+    // and the ones that fail on a given kernel are predictable: BPF-LSM is off
+    // by default on RHEL, Rocky and older Debian/Ubuntu, so every lsm/ hook
+    // fails there. All-or-nothing turns "five of eleven sensors work" into
+    // "the agent refuses to start", which is the wrong trade for a monitoring
+    // tool -- partial visibility beats none, as long as it says which part.
+    let mut links = Vec::new();
+    let mut attached: Vec<&str> = Vec::new();
+    let mut missing: Vec<(&str, String)> = Vec::new();
+    macro_rules! attach {
+        ($prog:ident, $name:literal) => {
+            match skel.progs.$prog.attach() {
+                Ok(l) => {
+                    links.push(l);
+                    attached.push($name);
+                }
+                Err(e) => missing.push(($name, e.to_string())),
+            }
+        };
+    }
+    attach!(handle_exec, "exec");
+    attach!(handle_fork, "fork");
+    attach!(handle_exit, "exit");
+    attach!(handle_commit_creds, "commit_creds");
+    attach!(handle_file_open, "file_open");
+    attach!(handle_path_chmod, "path_chmod");
+    attach!(handle_setxattr, "inode_setxattr");
+    attach!(handle_ptrace, "ptrace");
+    attach!(handle_bprm, "bprm_check");
+    attach!(handle_module, "module_load");
+    attach!(handle_socket_connect, "socket_connect");
+
+    // exec is not optional: without it there is no process graph, and every
+    // detection is an attribution to a process we never saw start.
+    if !attached.contains(&"exec") {
+        anyhow::bail!(
+            "the exec sensor could not attach, so there is no process graph to \
+             build on; run `kernelsentinel doctor` to see what this kernel supports"
+        );
+    }
+    eprintln!(
+        "kernelsentinel: {} of {} sensors attached",
+        attached.len(),
+        attached.len() + missing.len()
+    );
+    if !missing.is_empty() {
+        // Named, not counted. "6/11 attached" leaves an operator guessing which
+        // detections are silently unavailable on their host.
+        for (name, err) in &missing {
+            eprintln!(
+                "kernelsentinel:   unavailable: {name} ({})",
+                first_line(err)
+            );
+        }
+        eprintln!(
+            "kernelsentinel:   detections relying on those sensors will not fire on this kernel"
+        );
+    }
     match enforce {
         Enforce::Off => {}
         Enforce::Audit => eprintln!(

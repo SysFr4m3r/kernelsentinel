@@ -164,7 +164,7 @@ Only needed to build the agent yourself, or to hack on it.
 
 | | |
 |---|---|
-| Kernel | **5.8+** (ring buffer). BPF-LSM sensors want **5.7+** with `CONFIG_BPF_LSM=y` and `bpf` in `/sys/kernel/security/lsm` |
+| Kernel | **5.11+** — `bpf_get_current_task_btf` is used by every program. Full sensor set needs `CONFIG_BPF_LSM=y` **and** `bpf` in `/sys/kernel/security/lsm`; without it the agent still runs, minus the file, ptrace and socket sensors |
 | BTF | `/sys/kernel/btf/vmlinux` must exist (`CONFIG_DEBUG_INFO_BTF=y`) |
 | Privileges | root, or `CAP_BPF` + `CAP_PERFMON` |
 | Toolchain | clang 11+, libbpf 1.x, bpftool, Rust 1.75+ |
@@ -212,7 +212,8 @@ hard requirement is missing:
 sudo kernelsentinel doctor
 ```
 
-Developed against kernel 6.19 on Kali.
+Developed against kernel 6.19 on Kali. Per-sensor requirements, distribution
+support and how to enable BPF-LSM are in **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)**.
 
 ---
 
