@@ -38,7 +38,7 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
                 credential_read(ev, key, graph)
             }
         }
-        EventType::Module => module_load(ev, key),
+        EventType::Module => module_load(ev, key, graph),
         EventType::SockConnect => privileged_socket(ev, key),
         EventType::Exec => {
             let mut sigs = namespace_escape(ev, key, graph);
@@ -308,7 +308,51 @@ fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
     )]
 }
 
-fn module_load(ev: &Event, key: ProcKey) -> Vec<Signal> {
+/// Was this module load initiated by the kernel rather than by a person?
+///
+/// `request_module` runs modprobe from a kernel worker when a subsystem needs a
+/// driver -- creating a veth pair pulls in `veth`, a container's networking
+/// pulls in `nf_conntrack_netlink`. Those lineages root at kthreadd and contain
+/// a kworker; a person loading a module has a shell in their ancestry instead.
+///
+/// The same reasoning that excludes sshd from `shell_from_network_daemon`:
+/// spawning a login shell is sshd's job, and pulling in a driver on demand is
+/// the kernel's.
+fn kernel_initiated(graph: &ProcessGraph, key: ProcKey) -> bool {
+    graph
+        .ancestry(&key)
+        .iter()
+        .any(|n| n.comm == "kthreadd" || n.comm.starts_with("kworker/"))
+}
+
+fn module_load(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
+    // Measured on real hardware: the first container start after a boot loads
+    // veth and nf_conntrack_netlink, and at the full score each was a MEDIUM
+    // incident -- two alerts, at the alerting floor, from `docker run`. A
+    // detection that fires on the most routine container operation there is
+    // gets the whole tool muted.
+    //
+    // Kept as a signal rather than dropped: it stays visible in `investigate`
+    // and at --min-severity info, so the forensic record of every module load
+    // survives. It simply cannot alert on its own, and carries a distinct id so
+    // "the kernel pulled in a driver" is never confused with "someone loaded a
+    // module".
+    if kernel_initiated(graph, key) {
+        return vec![
+            Signal::new(
+                "module_autoload",
+                10,
+                &["T1547.006"],
+                key,
+                ev.ts_ns,
+                format!(
+                    "kernel autoloaded module {} on demand (request_module)",
+                    ev.filename
+                ),
+            )
+            .with_target(&ev.filename),
+        ];
+    }
     vec![
         Signal::new(
             "module_load",

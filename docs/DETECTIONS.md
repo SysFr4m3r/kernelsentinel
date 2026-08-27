@@ -182,10 +182,17 @@ A kernel module is loaded, detected at `do_init_module` (the real module name,
 read after parsing — not an attacker-supplied filename).
 
 - **Trigger:** `modprobe dummy` (a harmless, reversible standard module)
-- **Confirmed on real hardware:** the first container start after a boot loads `veth` and
-  `nf_conntrack_netlink`, each producing a MEDIUM incident at score 50 — at the alerting floor, from
-  the most routine container operation there is. Subsequent starts are quiet because the modules
-  are already resident, so this is easy to miss when testing on a warm host.
+- **Kernel autoloads are separated out.** `request_module` runs modprobe from a kernel worker when
+  a subsystem needs a driver — the first container start after a boot pulls in `veth` and
+  `nf_conntrack_netlink` this way, and at full weight each was a MEDIUM incident, two alerts at the
+  alerting floor from `docker run`. Those lineages root at `kthreadd` and contain a `kworker`; a
+  person loading a module has a shell in their ancestry. The kernel-initiated case is reported as
+  **`module_autoload`** at base 10, so it stays in the record and in `investigate` but can never
+  alert alone. Same reasoning that excludes `sshd` from `shell_from_network_daemon`.
+- **Evasion, deliberately accepted:** an attacker can *trigger* an autoload — creating an unusual
+  socket type, say — and that load is reported as `module_autoload` rather than `module_load`. But
+  the module the kernel pulls in is a legitimate one already on disk; getting attacker code into
+  the kernel still means a userspace load, which keeps its full weight.
 - **False positives:** hosts load modules during normal operation — hardware
   hotplug, filesystem mounts, `systemd-modules-load` at boot. A lone module load
   is **medium**, so this is a real source of alert volume; the fix is baselining

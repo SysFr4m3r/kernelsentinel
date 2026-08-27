@@ -1064,3 +1064,104 @@ fn an_escape_hatch_reached_through_a_bind_mount_is_still_caught() {
     assert_eq!(s[0].score, 75, "containerised writers get the escape score");
     assert!(s[0].detail.starts_with("BLOCKED:"), "got: {}", s[0].detail);
 }
+
+/// A module the kernel pulled in on demand is not someone loading a rootkit.
+///
+/// Measured on real hardware: the first container start after a boot loads veth
+/// and nf_conntrack_netlink, and at the full score each became a MEDIUM
+/// incident -- two alerts at the alerting floor from `docker run`. The lineage
+/// tells the two apart, the same way sshd is excluded from
+/// shell_from_network_daemon.
+#[test]
+fn kernel_autoloaded_modules_do_not_alert_but_a_person_loading_one_does() {
+    // Parentage comes from fork events -- an exec alone tells the graph what a
+    // process became, not who spawned it. Building the chain with execs only
+    // produced an ancestry one node long, which is why the first version of
+    // this test saw no kworker and failed.
+    fn build(chain: &[(u32, u32, &str)], modname: &str) -> (ProcessGraph, Event) {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        for (pid, ppid, comm) in chain {
+            if *ppid != 0 {
+                let fork: Event = serde_json::from_str(
+                    &serde_json::json!({
+                        "ts_ns": 500u64 + *pid as u64, "type": 3,
+                        "tgid": ppid, "ppid": 0,
+                        "start_boottime": 900u64 + *ppid as u64,
+                        "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+                        "comm": "parent",
+                        "child_pid": pid, "child_start_boottime": 900u64 + *pid as u64
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+                g.apply(&fork);
+            }
+            let e: Event = serde_json::from_str(
+                &serde_json::json!({
+                    "ts_ns": 1_000u64 + *pid as u64, "type": 1,
+                    "tgid": pid, "ppid": ppid, "start_boottime": 900u64 + *pid as u64,
+                    "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+                    "comm": comm, "filename": format!("/sbin/{comm}"), "argv": [comm]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            g.apply(&e);
+        }
+        let last = chain.last().unwrap();
+        let load: Event = serde_json::from_str(
+            &serde_json::json!({
+                "ts_ns": 5_000, "type": 10, "tgid": last.0, "ppid": last.1,
+                "start_boottime": 900u64 + last.0 as u64,
+                "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+                "comm": "modprobe", "filename": modname
+            })
+            .to_string(),
+        )
+        .unwrap();
+        g.apply(&load);
+        (g, load)
+    }
+
+    // The kernel pulling in a driver: kthreadd -> kworker -> modprobe.
+    let (g, ev) = build(
+        &[
+            (2, 0, "kthreadd"),
+            (138, 2, "kworker/u37:1"),
+            (900, 138, "modprobe"),
+        ],
+        "veth",
+    );
+    let sigs = kernelsentinel::detect::signals_for_event(&ev, &g);
+    assert_eq!(
+        sigs[0].id, "module_autoload",
+        "kernel-initiated must be distinct"
+    );
+    assert_eq!(
+        kernelsentinel::detect::Severity::from_score(sigs[0].score),
+        kernelsentinel::detect::Severity::Info,
+        "an autoload must sit below any alerting floor"
+    );
+
+    // A person loading one: shell -> sudo -> modprobe. Unchanged.
+    let (g, ev) = build(
+        &[
+            (4510, 1, "zsh"),
+            (7429, 4510, "sudo"),
+            (7430, 7429, "modprobe"),
+        ],
+        "dummy",
+    );
+    let sigs = kernelsentinel::detect::signals_for_event(&ev, &g);
+    assert_eq!(sigs[0].id, "module_load");
+    assert_eq!(sigs[0].score, 50, "a userspace load keeps its full weight");
+
+    // The distinction is the lineage, not the module name: the same module
+    // loaded by hand is still a full-weight signal.
+    let (g, ev) = build(&[(4510, 1, "bash"), (7430, 4510, "insmod")], "veth");
+    let sigs = kernelsentinel::detect::signals_for_event(&ev, &g);
+    assert_eq!(
+        sigs[0].id, "module_load",
+        "veth loaded by hand is still a load"
+    );
+}
