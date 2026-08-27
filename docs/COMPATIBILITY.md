@@ -48,23 +48,50 @@ way from nothing.
 compiled in, it must also be listed in `/sys/kernel/security/lsm`, which usually
 means adding `lsm=...,bpf` to the kernel command line.
 
-| Distribution | Kernel | BPF-LSM | Notes |
+Only one row below is **verified** — the machine this was developed on. The rest
+are inferred from each distribution's shipped kernel version and default config,
+and a default can change between releases. Treat them as "where to start", and
+let `doctor` settle it.
+
+| Distribution | Kernel | BPF-LSM | |
 |---|---|---|---|
-| Ubuntu 22.04 LTS | 5.15 | ✅ compiled in | usually needs `lsm=` on the cmdline |
-| Ubuntu 24.04 LTS | 6.8 | ✅ | |
-| Debian 12 (bookworm) | 6.1 | ✅ compiled in | needs `lsm=` on the cmdline |
-| Debian 11 (bullseye) | 5.10 | — | **below the 5.11 floor** |
-| Fedora 38+ | 6.2+ | ✅ | |
-| RHEL / Rocky / Alma 9 | 5.14 | ❌ not compiled in | core sensors only |
+| **Kali rolling** | 7.0 | ✅ active by default | **verified** — `bpf` already in `/sys/kernel/security/lsm`, no cmdline change |
+| Debian 12 (bookworm) | 6.1 | compiled in | expect to need `lsm=` on the cmdline |
+| Debian 11 (bullseye) | 5.10 | — | **below the 5.11 floor**, nothing loads |
+| Ubuntu 24.04 LTS | 6.8 | compiled in | |
+| Ubuntu 22.04 LTS | 5.15 | compiled in | expect to need `lsm=` on the cmdline |
+| Fedora 38+ | 6.2+ | compiled in | |
+| Arch | current | compiled in | rolling, well above the floor |
+| Manjaro | current | compiled in | Arch-derived; kernel lags Arch slightly |
+| CachyOS | current | compiled in | Arch-derived, custom-tuned kernels — check `doctor`, since a non-stock config is exactly where a default may differ |
+| EndeavourOS / Garuda | current | compiled in | Arch kernels, unmodified |
+| RHEL / Rocky / Alma 9 | 5.14 | ❌ not compiled in | core sensors only, agent still starts |
 | RHEL / Rocky / Alma 8 | 4.18 | ❌ | **far below the floor** |
 | Amazon Linux 2023 | 6.1 | varies | check `doctor` |
-| Kali / Arch | current | ✅ | developed here |
 
-Verify rather than trust a table:
+Arch and its derivatives are the easy case: rolling kernels sit far above the
+5.11 floor, and `CONFIG_BPF_LSM=y` has been standard in the Arch kernel for
+years. CachyOS is the one worth actually checking rather than assuming — it
+ships custom-tuned kernels, and a non-stock config is precisely where a default
+like `CONFIG_LSM` might diverge.
+
+Verify rather than trust a table — `doctor` answers all of it in one line each,
+on any distribution, without needing a row here:
 
 ```bash
 sudo kernelsentinel doctor
 ```
+
+```
+kernel      [ ok ] 7.0.12+kali-amd64 (5.11+, all BPF features present)
+btf         [ ok ] /sys/kernel/btf/vmlinux present (CO-RE enabled)
+privileges  [ ok ] running as root
+bpf lsm     [ ok ] bpf LSM active (lockdown,capability,landlock,yama,apparmor,bpf,...)
+memlock     [ ok ] RLIMIT_MEMLOCK 8192 KiB
+```
+
+If `bpf lsm` fails, the agent still runs — it just loses the six `lsm/` sensors
+and says which ones.
 
 ## Enabling BPF-LSM
 

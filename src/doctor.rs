@@ -56,11 +56,15 @@ pub fn run() -> Report {
 fn kernel_check() -> Status {
     let release = uname_release();
     match parse_version(&release) {
-        Some((maj, min)) if (maj, min) >= (5, 8) => {
-            Status::Ok(format!("{release} (ring buffer available)"))
+        // 5.11, not 5.8. The ring buffer arrived in 5.8, but every program
+        // calls fill_hdr, which uses bpf_get_current_task_btf() -- added in
+        // 5.11. Reporting ok on 5.8 promised a load that would fail, which is
+        // a worse answer than a clear refusal.
+        Some((maj, min)) if (maj, min) >= (5, 11) => {
+            Status::Ok(format!("{release} (5.11+, all BPF features present)"))
         }
         Some(_) => Status::Fail(format!(
-            "{release} — kernel 5.8+ required for BPF_MAP_TYPE_RINGBUF"
+            "{release} — kernel 5.11+ required (bpf_get_current_task_btf, used by every program)"
         )),
         None => Status::Warn(format!("{release} — could not parse version")),
     }
