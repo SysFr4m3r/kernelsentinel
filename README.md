@@ -40,7 +40,7 @@ Across a fleet, the same incidents land in a read-only web panel:
 | | |
 |---|---|
 | **[How it works](#how-it-works)** | the pipeline, in one diagram |
-| **[What it detects](#what-it-detects)** | sensors and the 42 built-in detections |
+| **[What it detects](#what-it-detects)** | sensors and the built-in detections |
 | **[Install](#install)** | requirements, toolchain, build |
 | **[Single host](#single-host)** | `run`, `replay`, `investigate` |
 | **[Fleet monitoring](#fleet-monitoring)** | central panel, agents, alerting |
