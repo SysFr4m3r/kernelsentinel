@@ -121,6 +121,13 @@ run_one() {
 			| sed 's/^ *//;s/"id"://g;s/"//g' | tr '\n' ' ')"
 		if [[ -z "$fired" ]]; then
 			printf '  %-32s PASS  silent\n' "$name"
+			# Surface what the scenario says it actually exercised. A pass that
+			# cannot tell you which path it took is the failure mode that has
+			# already fooled this suite more than once: container_lifecycle went
+			# green on a warm host without touching the code path that produced
+			# the alerts it exists to catch.
+			grep -hE 'NOT exercised|DOES exercise|in use|re-run with' "$slog" 2>/dev/null \
+				| sed 's/^\[noise\] /        note: /' || true
 			pass=$((pass + 1))
 		else
 			printf '  %-32s FALSE POSITIVE  %s\n' "$name" "$fired"
