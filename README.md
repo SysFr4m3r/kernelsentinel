@@ -179,6 +179,12 @@ sudo apt install -y clang llvm libelf-dev zlib1g-dev libbpf-dev bpftool pkg-conf
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ```
 
+The BPF side is one translation unit split across headers — `bpf/maps.h`,
+`bpf/common.h`, and one file per sensor under `bpf/sensors/`, all included by
+`bpf/kernelsentinel.bpf.c`. It is a single object on purpose: every program
+shares those maps, and separate `.bpf.c` files would compile to separate objects
+with separate ring buffers.
+
 **2. Generate `vmlinux.h`.** Host-specific and not committed; CO-RE regenerates it from your
 kernel's BTF. The script picks a `bpftool` that can actually parse it, falling back to a pinned
 upstream build when the packaged one is too old — which is common, and is exactly what CI runs:
