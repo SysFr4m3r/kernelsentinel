@@ -18,14 +18,30 @@
 set -euo pipefail
 command -v docker >/dev/null || { echo "docker required" >&2; exit 90; }
 
+# KS_COLD=1 unloads them first so the cold path can be exercised without
+# waiting for a reboot. Opt-in, because unloading a kernel module on someone's
+# machine is a real action -- and refused outright if anything is using them,
+# since "Used by 0" is the only safe case.
+if [[ "${KS_COLD:-}" == "1" ]]; then
+	for m in veth nf_conntrack_netlink; do
+		users="$(awk -v m="$m" '$1==m {print $3}' /proc/modules)"
+		if [[ -n "$users" && "$users" != "0" ]]; then
+			echo "[noise] $m in use ($users) -- refusing to unload" >&2
+			exit 90
+		fi
+		grep -q "^$m " /proc/modules && { modprobe -r "$m" 2>/dev/null || true; }
+	done
+fi
+
 resident=""
 for m in veth nf_conntrack_netlink; do
 	grep -q "^$m " /proc/modules && resident="$resident $m"
 done
 if [[ -n "$resident" ]]; then
-	echo "[noise] already resident:$resident -- the cold-boot module load path is NOT exercised"
+	echo "[noise] already resident:$resident -- cold-boot module load path NOT exercised"
+	echo "[noise] re-run with KS_COLD=1 to unload them first and test it properly"
 else
-	echo "[noise] modules not resident -- this run exercises the cold-boot path"
+	echo "[noise] modules not resident -- this run DOES exercise the cold-boot path"
 fi
 
 docker run --rm alpine true

@@ -91,7 +91,7 @@ run_one() {
 		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" \
 			>"$slog" 2>&1 || scenario_rc=$?
 	else
-		bash "$script" >"$slog" 2>&1 || scenario_rc=$?
+		KS_COLD="${KS_COLD:-}" bash "$script" >"$slog" 2>&1 || scenario_rc=$?
 	fi
 
 	sleep 1              # let the last events drain through the ring buffer
