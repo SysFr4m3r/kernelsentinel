@@ -177,6 +177,11 @@ impl RawEvent {
         self.file_mode & 0x2 != 0
     }
 
+    /// The opened file *is* a kernel escape hatch, matched by identity.
+    pub fn escape_target(&self) -> bool {
+        self.flags & (1 << 4) != 0
+    }
+
     /// The kernel blocked this operation (EV_F_DENIED).
     pub fn denied(&self) -> bool {
         self.flags & (1 << 2) != 0

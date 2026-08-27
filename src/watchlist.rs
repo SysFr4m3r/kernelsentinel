@@ -79,6 +79,31 @@ pub fn label_for(path: &str) -> &'static str {
         .unwrap_or("watched path")
 }
 
+/// The kernel escape hatches, matched by file identity rather than path.
+///
+/// Path matching cannot work for these: an escape bind-mounts the host's /proc
+/// somewhere else, and the kernel reports the path as seen in the *opening*
+/// process's mount namespace, so no watched prefix matches. Verified the hard
+/// way -- a `docker run -v /proc:/hostproc` write to core_pattern was neither
+/// detected nor blocked while these were prefix-watched.
+pub const ESCAPE_HATCHES: &[&str] = &[
+    "/proc/sys/kernel/core_pattern",
+    "/proc/sys/kernel/modprobe",
+    "/proc/sys/kernel/poweroff_cmd",
+    "/sys/kernel/uevent_helper",
+    "/proc/sys/fs/binfmt_misc/register",
+];
+
+/// `(dev, inode)` for each escape hatch that exists on this host, for the BPF
+/// identity map. Absent files are skipped rather than guessed at.
+pub fn escape_hatch_ids() -> Vec<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    ESCAPE_HATCHES
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino())))
+        .collect()
+}
+
 /// The default watch set. Static high-value write targets plus a dynamic sweep
 /// of every user's SSH directory, since authorized_keys lives at a per-user
 /// path a single prefix cannot cover.

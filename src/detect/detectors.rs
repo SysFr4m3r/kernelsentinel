@@ -244,7 +244,9 @@ fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
     // more when the writer is containerised: the same write that is persistence
     // on a host is an escape from inside a container, because the program the
     // kernel runs lands outside the namespace that asked for it.
-    if is_kernel_escape_hatch(&ev.filename) {
+    // Identity first. The path is whatever the writer's mount namespace called
+    // it, which for an escape is deliberately not the real one.
+    if ev.escape_target || is_kernel_escape_hatch(&ev.filename) {
         // Enforcement outcome leads the detail. An operation the kernel blocked
         // reads very differently from one that succeeded, and burying that at
         // the end of a sentence is how a responder wastes an hour on an attack

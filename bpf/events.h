@@ -29,6 +29,10 @@ enum event_type {
 #define EV_F_DEGRADED_PATH (1 << 1)
 #define EV_F_DENIED        (1 << 2) /* the operation was blocked */
 #define EV_F_WOULD_DENY    (1 << 3) /* audit mode: enforcement would have blocked it */
+/* The opened file *is* a kernel escape hatch, matched by identity rather than
+ * path -- so it is set even when the file was reached through a bind mount at
+ * some other location, which is exactly what a container escape does. */
+#define EV_F_ESCAPE_TARGET (1 << 4)
 
 struct event {
 	__u64 ts_ns;          /* CLOCK_BOOTTIME */
@@ -97,6 +101,20 @@ struct path_key {
 #define ENFORCE_OFF   0
 #define ENFORCE_AUDIT 1
 #define ENFORCE_ON    2
+
+/* Identity of a file, independent of where it is mounted.
+ *
+ * Path matching cannot work for these targets: an escape bind-mounts the host's
+ * /proc somewhere else, and bpf_d_path reports the path in the *opening*
+ * process's mount namespace -- so the watched prefix never matches. The
+ * superblock device plus inode is the same file however it is reached, and a
+ * container's own /proc is a different superblock, so this also distinguishes
+ * "wrote the host's core_pattern" from "wrote its own". */
+struct file_id {
+	__u64 ino;
+	__u32 dev;
+	__u32 _pad;
+};
 
 struct enforce_cfg {
 	__u32 mode;

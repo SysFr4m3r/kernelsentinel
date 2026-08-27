@@ -1013,3 +1013,54 @@ fn a_blocked_escape_says_so_and_is_still_recorded() {
     let allowed = sigs(&hatch_write(7005, false, false))[0].score;
     assert_eq!(blocked, allowed);
 }
+
+/// The regression that synthetic tests could not have caught.
+///
+/// A container escape bind-mounts the host's /proc somewhere else, so the
+/// kernel reports the path as `/hostproc/sys/kernel/core_pattern` and no
+/// watched prefix matches. Detection therefore cannot key on the path. This
+/// pins that an identity match alone is enough -- the path here is one no
+/// watchlist entry would ever match.
+#[test]
+fn an_escape_hatch_reached_through_a_bind_mount_is_still_caught() {
+    fn relocated(denied: bool) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 9_000, "type": 5, "tgid": 6001, "ppid": 1, "start_boottime": 900,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "sh",
+            // Deliberately NOT a watched path.
+            "filename": "/hostproc/sys/kernel/core_pattern",
+            "file_mode": 2, "container": "docker:92c3fb0dff3b",
+            "escape_target": true, "denied": denied
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    let sigs = |ev: &Event| {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.apply(ev);
+        kernelsentinel::detect::signals_for_event(ev, &g)
+    };
+
+    // Path matching alone would miss this entirely -- confirm it would have.
+    let path_only: Event = serde_json::from_str(
+        &serde_json::json!({
+            "ts_ns": 9_001, "type": 5, "tgid": 6002, "ppid": 1, "start_boottime": 901,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "sh", "filename": "/hostproc/sys/kernel/core_pattern",
+            "file_mode": 2, "container": "docker:92c3fb0dff3b"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_ne!(
+        sigs(&path_only).first().map(|s| s.id),
+        Some("kernel_escape_hatch_write"),
+        "this path is not watched -- if it matched, the test proves nothing"
+    );
+
+    // With the identity flag the same event is caught, escape-scored.
+    let s = sigs(&relocated(true));
+    assert_eq!(s[0].id, "kernel_escape_hatch_write");
+    assert_eq!(s[0].score, 75, "containerised writers get the escape score");
+    assert!(s[0].detail.starts_with("BLOCKED:"), "got: {}", s[0].detail);
+}

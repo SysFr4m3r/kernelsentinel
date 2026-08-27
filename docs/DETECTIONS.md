@@ -221,6 +221,12 @@ A write to a file whose contents the kernel later executes **as root on the host
 - **Trigger:** `echo '|/tmp/x' > /proc/sys/kernel/core_pattern` (as root; revert afterwards).
 - **False positives:** crash handlers legitimately set `core_pattern` — systemd-coredump, apport,
   and container runtimes configuring a host. Baseline the writing binary.
+- **Matched by file identity, not path.** An escape bind-mounts the host's `/proc` elsewhere, and the
+  kernel reports the path as seen in the *writer's* mount namespace — so a watched prefix never
+  matches. Keying on `(dev, inode)` catches it however it is reached, and correctly distinguishes a
+  container writing the *host's* `core_pattern` from one writing its own (different superblock).
+  This was found by a live test after a prefix-watched version silently failed to detect or block a
+  real `docker run -v /proc:/hostproc` escape.
 - **Evasions:** the cgroup `release_agent` escape (CVE-2022-0492) is **not** watched. It lives at a
   variable path under `/sys/fs/cgroup/`, and the trie is prefix-based, so covering it would mean
   watching the entire cgroup tree — which systemd writes to constantly. Recognised if such a path

@@ -61,6 +61,15 @@ struct {
 	__type(value, struct enforce_cfg);
 } enforce SEC(".maps");
 
+/* Kernel escape hatches, keyed by file identity rather than path. Populated by
+ * userspace from stat() at startup. Small and exact: five files. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, struct file_id);
+	__type(value, __u32);
+} escape_targets SEC(".maps");
+
 static __always_inline void stat_inc(__u32 key)
 {
 	__u64 *v = bpf_map_lookup_elem(&stats, &key);
@@ -118,13 +127,13 @@ static __always_inline __u64 read_cap(const kernel_cap_t *cap)
  * that blocks something because it could not read a pointer is worse than one
  * that misses a detection.
  */
-static __always_inline __u32 deny_decision(__u32 watch_flags)
+static __always_inline __u32 deny_decision(int is_escape_target)
 {
 	__u32 zero = 0, mnt = 0;
 	struct enforce_cfg *cfg;
 	struct task_struct *task;
 
-	if (!(watch_flags & WATCH_DENY_IN_NS))
+	if (!is_escape_target)
 		return ENFORCE_OFF;
 
 	cfg = bpf_map_lookup_elem(&enforce, &zero);
@@ -396,20 +405,32 @@ SEC("lsm/file_open")
 int BPF_PROG(handle_file_open, struct file *file)
 {
 	struct path_key key = {};
+	struct file_id fid = {};
 	struct event *e;
-	__u32 *watch;
+	__u32 *watch = NULL;
+	__u32 *hatch = NULL;
 	long len;
+
+	__u32 f_mode = BPF_CORE_READ(file, f_mode);
+
+	/* Identity check first, and only for writable opens.
+	 *
+	 * This is what catches an escape: the container bind-mounts the host's
+	 * /proc somewhere else, so bpf_d_path reports a path the watched-prefix
+	 * trie will never match. The superblock device and inode are the same
+	 * file however it is reached. Restricted to writes because these targets
+	 * are only interesting when written, which keeps one extra hash lookup
+	 * off the far more common read path.
+	 */
+	if (f_mode & FMODE_WRITE) {
+		fid.ino = BPF_CORE_READ(file, f_inode, i_ino);
+		fid.dev = BPF_CORE_READ(file, f_inode, i_sb, s_dev);
+		hatch = bpf_map_lookup_elem(&escape_targets, &fid);
+	}
 
 	/* bpf_d_path is GPL-only and allowlisted to a set of hooks that take a
 	 * struct path; file_open is one of them. */
 	len = bpf_d_path(&file->f_path, key.path, sizeof(key.path));
-	if (len < 0)
-		return 0;
-
-	/* LPM matches on bits of the key; exclude the trailing NUL so a stored
-	 * prefix like "/etc/" (40 bits) matches "/etc/passwd". Clamp so a
-	 * pathological length can never drive prefixlen past the buffer -- this
-	 * is exactly the silent-overflow class of bug seen elsewhere here. */
 	if (len < 1)
 		return 0;
 	if (len > (long)sizeof(key.path))
@@ -417,26 +438,27 @@ int BPF_PROG(handle_file_open, struct file *file)
 	key.prefixlen = (__u32)(len - 1) * 8;
 
 	watch = bpf_map_lookup_elem(&watched_paths, &key);
-	if (!watch)
-		return 0;
-
-	/* A watch opts in to a direction. Reads of credential files are the
-	 * theft shape; writes are the persistence shape, and most watched paths
-	 * only care about one of the two. Requiring an explicit opt-in keeps a
-	 * path like /etc/shadow -- read on every single authentication -- from
-	 * flooding userspace merely because it is watched at all.
-	 */
-	__u32 f_mode = BPF_CORE_READ(file, f_mode);
-	if (f_mode & FMODE_WRITE) {
-		if (!(*watch & WATCH_ON_WRITE))
-			return 0;
-	} else if (!(*watch & WATCH_ON_READ)) {
-		return 0;
+	if (watch) {
+		/* A watch opts in to a direction. Reads of credential files are
+		 * the theft shape; writes are the persistence shape, and most
+		 * watched paths care about only one. Requiring an explicit
+		 * opt-in keeps a path like /etc/shadow -- read on every single
+		 * authentication -- from flooding userspace merely because it
+		 * is watched at all. */
+		if (f_mode & FMODE_WRITE) {
+			if (!(*watch & WATCH_ON_WRITE))
+				watch = NULL;
+		} else if (!(*watch & WATCH_ON_READ)) {
+			watch = NULL;
+		}
 	}
+
+	if (!watch && !hatch)
+		return 0;
 
 	/* Decided before the event is submitted, so a denial is always recorded
 	 * -- an operation blocked without a trace is the worst of both worlds. */
-	__u32 decision = deny_decision(*watch);
+	__u32 decision = deny_decision(hatch != NULL);
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
@@ -447,7 +469,9 @@ int BPF_PROG(handle_file_open, struct file *file)
 
 	fill_hdr(e, EV_FILE_OPEN);
 	e->file_mode = f_mode;
-	e->watch_id = *watch;
+	e->watch_id = watch ? *watch : 0;
+	if (hatch)
+		e->flags |= EV_F_ESCAPE_TARGET;
 	if (decision == ENFORCE_ON)
 		e->flags |= EV_F_DENIED;
 	else if (decision == ENFORCE_AUDIT)

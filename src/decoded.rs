@@ -68,6 +68,10 @@ pub struct Event {
     pub argv: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
+    /// The opened file is a kernel escape hatch, matched by identity rather
+    /// than path -- so this is set even when reached through a bind mount.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub escape_target: bool,
     /// The kernel blocked this operation because enforcement was armed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub denied: bool,
@@ -189,6 +193,7 @@ impl From<&RawEvent> for Event {
             // journal, webhook, syslog -- ever holds the secret.
             argv: crate::redact::argv(r.argv()),
             truncated: r.truncated(),
+            escape_target: r.escape_target(),
             denied: r.denied(),
             would_deny: r.would_deny(),
             exit_code: r.exit_code,

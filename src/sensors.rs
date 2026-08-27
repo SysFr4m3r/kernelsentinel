@@ -91,6 +91,25 @@ where
              /proc/1/ns/mnt; refusing to arm denial without it"
         );
     }
+    // Escape hatches are matched by identity, not path: an escape reaches them
+    // through a bind mount at some other location, where no watched prefix
+    // applies. Populated before attach so no open can slip past a partial map.
+    let hatches = watchlist::escape_hatch_ids();
+    for (dev, ino) in &hatches {
+        // struct file_id { u64 ino; u32 dev; u32 _pad; }
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(&ino.to_ne_bytes());
+        key[8..12].copy_from_slice(&(*dev as u32).to_ne_bytes());
+        skel.maps
+            .escape_targets
+            .update(&key, &1u32.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
+            .context("populating the escape-target map")?;
+    }
+    eprintln!(
+        "kernelsentinel: tracking {} kernel escape hatch(es) by file identity",
+        hatches.len()
+    );
+
     let cfg = [enforce.mode().to_ne_bytes(), host_mnt_ns.to_ne_bytes()].concat();
     skel.maps
         .enforce
