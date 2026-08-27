@@ -87,6 +87,15 @@ pub fn default_watches() -> Vec<Watch> {
         // every single login and is therefore write-watched only.
         Watch::read("/etc/ssh/ssh_host_"),
         Watch::read("/root/.ssh/id_"),
+        // Kernel escape hatches: each one names a program the kernel will run,
+        // as root, on the host. Writing any of them from inside a container is a
+        // container escape; writing them on the host is persistence. Exact
+        // paths, so watching them costs nothing.
+        Watch::write("/proc/sys/kernel/core_pattern"),
+        Watch::write("/proc/sys/kernel/modprobe"),
+        Watch::write("/proc/sys/kernel/poweroff_cmd"),
+        Watch::write("/sys/kernel/uevent_helper"),
+        Watch::write("/proc/sys/fs/binfmt_misc/register"),
     ];
 
     // Per-user SSH directories. A missing /home is fine (containers, minimal

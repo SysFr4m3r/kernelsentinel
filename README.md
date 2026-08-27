@@ -40,7 +40,7 @@ Across a fleet, the same incidents land in a read-only web panel:
 | | |
 |---|---|
 | **[How it works](#how-it-works)** | the pipeline, in one diagram |
-| **[What it detects](#what-it-detects)** | sensors and the eight built-in detections |
+| **[What it detects](#what-it-detects)** | sensors and the 42 built-in detections |
 | **[Install](#install)** | requirements, toolchain, build |
 | **[Single host](#single-host)** | `run`, `replay`, `investigate` |
 | **[Fleet monitoring](#fleet-monitoring)** | central panel, agents, alerting |
@@ -119,6 +119,8 @@ single events should not cry wolf.
 | runtime socket access | `lsm/socket_connect` | Docker/containerd sockets — the container-escape primitive |
 | fileless execution | `lsm/bprm_check_security` | memfd / anonymous / deleted-file exec |
 | kernel module load | `fexit/do_init_module` | rootkit loading, by real module name |
+| kernel escape hatches | `lsm/file_open` | writes to `core_pattern`, `modprobe`, `uevent_helper` — a root program the kernel runs on the *host* |
+| namespace escape | namespace inums at `exec` | a container executing in the host's mount namespace |
 
 **Every detection** — its ATT&CK technique, base score, how to trigger it, and its known false
 positives **and known evasions** — is documented in **[docs/DETECTIONS.md](docs/DETECTIONS.md)**.
@@ -127,7 +129,7 @@ positives **and known evasions** — is documented in **[docs/DETECTIONS.md](doc
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested**: 95 tests, including detections replayed from **real kernel captures** committed as
+**Tested**: 110 tests, including detections replayed from **real kernel captures** committed as
 fixtures. The false-positive discipline is enforced by tests: a bare `sudo` must not alert, and
 `sshd` spawning a shell is a login, not an intrusion.
 
@@ -580,7 +582,7 @@ real capture.
 | M3 | Built-in detections, risk scoring, alerts, `investigate`, NDJSON | ✅ done & validated |
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL (match + sequence rules) | ✅ first increment |
-| M6 | Container & namespace awareness | 🚧 container id + context + escape detection |
+| M6 | Container & namespace awareness | ✅ container id, context multiplier, runtime-socket, namespace and escape-hatch detection |
 | M7 | Baselining ✅ · heartbeat + drop telemetry ✅ · alert delivery ✅ · YARA ✅ · optional enforcement | 🚧 in progress |
 
 ### Limitations

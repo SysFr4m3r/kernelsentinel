@@ -856,3 +856,110 @@ fn a_credential_read_alone_is_quiet_but_lifts_a_chain() {
         "on its own it must stay below the medium alerting floor"
     );
 }
+
+/// A containerised process running in the host's mount namespace is what having
+/// escaped looks like from outside. Scoped to the mount namespace deliberately:
+/// --net=host and --pid=host are ordinary configuration, and flagging those
+/// would bury the signal in normal Kubernetes.
+#[test]
+fn a_container_in_the_host_mount_namespace_is_an_escape() {
+    const HOST_MNT: u32 = 4_026_531_841;
+
+    fn exec(pid: u32, container: &str, mnt_ns: u32) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 1_000u64 + pid as u64, "type": 1, "tgid": pid, "ppid": 1,
+            "start_boottime": 900u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 77,
+            "comm": "sh", "filename": "/bin/sh", "argv": ["sh"],
+            "container": container, "mnt_ns": mnt_ns
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    let run = |host: u32, ev: &Event| {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.set_host_mnt_ns(host);
+        g.apply(ev);
+        kernelsentinel::detect::signals_for_event(ev, &g)
+    };
+    let ids =
+        |sigs: &[kernelsentinel::detect::Signal]| sigs.iter().map(|s| s.id).collect::<Vec<_>>();
+
+    // The escape: cgroup says container, mount namespace says host.
+    let sigs = run(HOST_MNT, &exec(9001, "docker:abc123", HOST_MNT));
+    assert!(
+        ids(&sigs).contains(&"namespace_escape"),
+        "a container in the host mount namespace must be flagged, got {:?}",
+        ids(&sigs)
+    );
+
+    // A container in its own namespace is just a container.
+    let sigs = run(HOST_MNT, &exec(9002, "docker:abc123", 4_026_532_500));
+    assert!(!ids(&sigs).contains(&"namespace_escape"));
+
+    // A host process in the host namespace is the normal case, not an escape.
+    let sigs = run(HOST_MNT, &exec(9003, "", HOST_MNT));
+    assert!(!ids(&sigs).contains(&"namespace_escape"));
+
+    // Replay: the host namespace was never recorded, so it must stay quiet
+    // rather than guess. Silence is the honest answer here.
+    let sigs = run(0, &exec(9004, "docker:abc123", HOST_MNT));
+    assert!(
+        !ids(&sigs).contains(&"namespace_escape"),
+        "without a known host namespace this must not fire"
+    );
+}
+
+/// core_pattern and friends name a program the kernel runs as root on the host.
+/// Writing one from inside a container is an escape, because the payload runs
+/// outside the namespace that asked for it.
+#[test]
+fn kernel_escape_hatch_writes_outrank_ordinary_persistence() {
+    fn write_to(pid: u32, path: &str, container: &str) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 2_000u64 + pid as u64, "type": 5, "tgid": pid, "ppid": 1,
+            "start_boottime": 900u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "sh", "filename": path, "file_mode": 2, "watch_id": 1,
+            "container": container
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    let sigs = |ev: &Event| {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.apply(ev);
+        kernelsentinel::detect::signals_for_event(ev, &g)
+    };
+
+    for path in [
+        "/proc/sys/kernel/core_pattern",
+        "/proc/sys/kernel/modprobe",
+        "/sys/kernel/uevent_helper",
+        "/proc/sys/fs/binfmt_misc/register",
+    ] {
+        let s = sigs(&write_to(8001, path, ""));
+        assert_eq!(s[0].id, "kernel_escape_hatch_write", "for {path}");
+        assert!(
+            s[0].target.as_deref() == Some(path),
+            "the file must be scannable"
+        );
+    }
+
+    // From a container the same write is an escape, and must score higher.
+    let host = sigs(&write_to(8002, "/proc/sys/kernel/core_pattern", ""));
+    let contained = sigs(&write_to(
+        8003,
+        "/proc/sys/kernel/core_pattern",
+        "docker:abc123",
+    ));
+    assert!(
+        contained[0].score > host[0].score,
+        "containerised: {} must exceed host: {}",
+        contained[0].score,
+        host[0].score
+    );
+    assert!(contained[0].detail.contains("escape"));
+
+    // An ordinary watched write is untouched by all of this.
+    let other = sigs(&write_to(8004, "/etc/cron.d/evil", ""));
+    assert_eq!(other[0].id, "persistence_write");
+}

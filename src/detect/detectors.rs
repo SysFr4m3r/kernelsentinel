@@ -41,7 +41,8 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
         EventType::Module => module_load(ev, key),
         EventType::SockConnect => privileged_socket(ev, key),
         EventType::Exec => {
-            let mut sigs = exec_from_suspicious_dir(ev, key, graph);
+            let mut sigs = namespace_escape(ev, key, graph);
+            sigs.extend(exec_from_suspicious_dir(ev, key, graph));
             sigs.extend(shell_from_network_daemon(ev, key, graph));
             sigs
         }
@@ -221,7 +222,56 @@ fn credential_read(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal
     ]
 }
 
+/// Files whose contents the kernel will execute as root on the *host*. Writing
+/// one is persistence from the host and a container escape from inside one --
+/// the payload runs outside the namespace that wrote it.
+fn is_kernel_escape_hatch(path: &str) -> bool {
+    const HATCHES: &[&str] = &[
+        "/proc/sys/kernel/core_pattern",
+        "/proc/sys/kernel/modprobe",
+        "/proc/sys/kernel/poweroff_cmd",
+        "/sys/kernel/uevent_helper",
+        "/proc/sys/fs/binfmt_misc/register",
+        // Not watched by prefix (the cgroup tree is far too busy to watch
+        // wholesale), but recognised if a path reaches us another way.
+        "release_agent",
+    ];
+    HATCHES.iter().any(|h| path.contains(h))
+}
+
 fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
+    // A kernel escape hatch outranks everything else here, and outranks it by
+    // more when the writer is containerised: the same write that is persistence
+    // on a host is an escape from inside a container, because the program the
+    // kernel runs lands outside the namespace that asked for it.
+    if is_kernel_escape_hatch(&ev.filename) {
+        let (score, detail) = if ev.container.is_empty() {
+            (
+                45,
+                format!("wrote {}, which the kernel executes as root", ev.filename),
+            )
+        } else {
+            (
+                75,
+                format!(
+                    "container {} wrote {}, which the kernel executes as root on the host (escape)",
+                    ev.container, ev.filename
+                ),
+            )
+        };
+        return vec![
+            Signal::new(
+                "kernel_escape_hatch_write",
+                score,
+                &["T1611", "T1543"],
+                key,
+                ev.ts_ns,
+                detail,
+            )
+            .with_target(&ev.filename),
+        ];
+    }
+
     // Some targets are far more diagnostic than others.
     let (score, id): (u32, &'static str) = if ev.filename.contains("ld.so.preload") {
         (40, "ldso_preload_write")
@@ -261,6 +311,42 @@ fn module_load(ev: &Event, key: ProcKey) -> Vec<Signal> {
 /// Execution of a binary from a world-writable / volatile directory. Lower base
 /// score: legitimate software does this too, so it earns its weight only in
 /// combination.
+/// A containerised process running in the *host's* mount namespace.
+///
+/// Its cgroup says it belongs to a container, but it can see the host's
+/// filesystem -- which is what having escaped looks like from the outside.
+///
+/// Scoped to the mount namespace on purpose. `--net=host` and `--pid=host` are
+/// ordinary configuration (every CNI plugin and monitoring sidecar uses them),
+/// so flagging those would bury the signal in normal Kubernetes. There is no
+/// equivalent everyday reason to share the host's *mount* namespace: that is
+/// the one that hands over the filesystem.
+fn namespace_escape(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
+    let host = graph.host_mnt_ns();
+    // 0 means the host's namespace was never recorded -- a replayed capture.
+    // Guessing would be worse than staying quiet.
+    if host == 0 || ev.mnt_ns == 0 || ev.container.is_empty() {
+        return vec![];
+    }
+    if ev.mnt_ns != host {
+        return vec![];
+    }
+    vec![
+        Signal::new(
+            "namespace_escape",
+            70,
+            &["T1611"],
+            key,
+            ev.ts_ns,
+            format!(
+                "container {} is executing in the host mount namespace (mnt_ns {host})",
+                ev.container
+            ),
+        )
+        .with_target(&ev.filename),
+    ]
+}
+
 fn exec_from_suspicious_dir(ev: &Event, key: ProcKey, _graph: &ProcessGraph) -> Vec<Signal> {
     let f = &ev.filename;
     if f.starts_with("/tmp/") || f.starts_with("/dev/shm/") || f.starts_with("/var/tmp/") {

@@ -76,6 +76,10 @@ pub struct RawEvent {
     pub watch_id: u32,
     pub target_pid: u32,
     pub aux: u32,
+    /// Namespace inode numbers, EV_EXEC only. See the note in bpf/events.h.
+    pub mnt_ns: u32,
+    pub pid_ns: u32,
+    pub net_ns: u32,
 
     pub r#type: u16,
     pub flags: u16,

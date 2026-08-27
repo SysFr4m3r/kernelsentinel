@@ -209,6 +209,42 @@ to the host.
   a differently-named runtime socket, or talking to the runtime over a TCP
   endpoint instead of the unix socket, is not matched.
 
+### `kernel_escape_hatch_write` — base 45 (host) / 75 (container) · T1611, T1543
+
+A write to a file whose contents the kernel later executes **as root on the host**:
+`/proc/sys/kernel/core_pattern`, `/proc/sys/kernel/modprobe`, `poweroff_cmd`,
+`/sys/kernel/uevent_helper`, `binfmt_misc/register`.
+
+- **Context is the signal.** On a host this is persistence. From inside a container it is an
+  *escape*, because the program the kernel runs lands outside the namespace that asked for it —
+  hence the much higher score.
+- **Trigger:** `echo '|/tmp/x' > /proc/sys/kernel/core_pattern` (as root; revert afterwards).
+- **False positives:** crash handlers legitimately set `core_pattern` — systemd-coredump, apport,
+  and container runtimes configuring a host. Baseline the writing binary.
+- **Evasions:** the cgroup `release_agent` escape (CVE-2022-0492) is **not** watched. It lives at a
+  variable path under `/sys/fs/cgroup/`, and the trie is prefix-based, so covering it would mean
+  watching the entire cgroup tree — which systemd writes to constantly. Recognised if such a path
+  reaches the detector another way, but not actively watched. `binfmt_misc` can also be reached by
+  mounting it fresh rather than writing the existing register file.
+
+### `namespace_escape` — base 70 · T1611
+
+A process whose cgroup says it belongs to a container, executing in the **host's mount namespace** —
+what having escaped looks like from the outside.
+
+- **Scoped to the mount namespace on purpose.** `--net=host` and `--pid=host` are ordinary
+  configuration; every CNI plugin and monitoring sidecar uses them, so flagging those would bury the
+  signal in normal Kubernetes. There is no everyday reason to share the host's *mount* namespace:
+  that is the one that hands over the filesystem.
+- **Trigger:** `docker run --rm -v /:/host --pid=host --privileged alpine nsenter -t 1 -m -- sh`
+- **False positives:** deliberately privileged tooling — node-level agents, some CI runners, and
+  debug containers started with `nsenter` — are structurally identical to the attack. Baseline them.
+- **Evasions:** requires the host's own namespace inode to be known, which is read once from
+  `/proc/1/ns/mnt` at startup; an agent that cannot read it (unprivileged) disables the detection
+  rather than guessing, and **a replayed capture never fires it** because the recording does not
+  carry the host's namespace. Namespaces are read at `exec`, so a process that calls `setns` and
+  never execs again is not seen — the escape is caught when it runs something, not when it moves.
+
 ---
 
 ## Cross-cutting limitations

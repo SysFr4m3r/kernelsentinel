@@ -744,9 +744,18 @@ fn run(
         None => None,
     };
     let boot = scan::bootstrap(&mut graph);
+    // Recorded once here rather than consulted per event, so detection stays
+    // deterministic when the same capture is replayed elsewhere.
+    let host_ns = scan::host_mnt_ns();
+    graph.set_host_mnt_ns(host_ns);
     status(&format!(
-        "kernelsentinel: bootstrapped {} processes from /proc",
-        boot.scanned
+        "kernelsentinel: bootstrapped {} processes from /proc (host mnt_ns {})",
+        boot.scanned,
+        if host_ns == 0 {
+            "unknown".to_string()
+        } else {
+            host_ns.to_string()
+        }
     ));
 
     status("kernelsentinel: sensors attached, streaming events (ctrl-c to stop)\n");

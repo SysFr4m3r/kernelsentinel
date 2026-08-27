@@ -55,6 +55,14 @@ struct event {
 	__u32 watch_id;           /* EV_FILE_OPEN: value from the watched-paths trie */
 	__u32 target_pid;         /* EV_PTRACE: the traced process */
 	__u32 aux;                /* EV_PTRACE: mode; EV_EXEC_ANON: source; EV_MODULE: origin */
+	/* Namespace inode numbers, EV_EXEC only. Filled at exec because that is
+	 * where a process's identity is established, and filling them on every
+	 * event would put three pointer chases in the hot path for nothing. A
+	 * containerised process sitting in the host's mount namespace is the
+	 * shape of an escape; userspace compares against the host's own inums. */
+	__u32 mnt_ns;
+	__u32 pid_ns;
+	__u32 net_ns;
 
 	__u16 type;
 	__u16 flags;

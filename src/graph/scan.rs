@@ -94,6 +94,32 @@ fn scan_one(pid: u32, ns_per_tick: u64) -> Option<(ProcNode, u32)> {
     Some((node, ppid))
 }
 
+/// The host's mount-namespace inode, read from `/proc/1/ns/mnt`.
+///
+/// The symlink's target reads "mnt:[4026531841]"; the inode number in brackets
+/// is the namespace identity the kernel reports to BPF. Reading the link is
+/// more portable than statting it, since the magic-link inode is what we want
+/// and `st_ino` on the nsfs entry gives the same value on Linux -- but the link
+/// text is stable and cheap, so parse that.
+pub fn host_mnt_ns() -> u32 {
+    let target = match std::fs::read_link("/proc/1/ns/mnt") {
+        Ok(t) => t.to_string_lossy().into_owned(),
+        // Unprivileged, or /proc not mounted: unknown rather than wrong.
+        Err(_) => return 0,
+    };
+    parse_ns_inum(&target)
+}
+
+/// Parse "mnt:[4026531841]" into its inode number. 0 on anything unexpected --
+/// a wrong namespace id would silently mis-scope an escape detection, so an
+/// unparseable link must read as "unknown", never as some other namespace.
+pub fn parse_ns_inum(link: &str) -> u32 {
+    link.split_once('[')
+        .and_then(|(_, rest)| rest.strip_suffix(']'))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
 fn read_cmdline(pid: u32) -> Vec<String> {
     fs::read(format!("/proc/{pid}/cmdline"))
         .map(|raw| {
@@ -113,4 +139,21 @@ fn read_ids(pid: u32) -> Option<(u32, u32)> {
     let uid = vals.next()?.parse().ok()?;
     let euid = vals.next()?.parse().ok()?;
     Some((uid, euid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ns_inum;
+
+    #[test]
+    fn ns_inum_parsing() {
+        assert_eq!(parse_ns_inum("mnt:[4026531841]"), 4026531841);
+        assert_eq!(parse_ns_inum("pid:[4026532000]"), 4026532000);
+        // Anything unexpected must read as unknown, never as another namespace:
+        // a wrong id would mis-scope the escape detection rather than disable it.
+        assert_eq!(parse_ns_inum("mnt:4026531841"), 0);
+        assert_eq!(parse_ns_inum(""), 0);
+        assert_eq!(parse_ns_inum("mnt:[]"), 0);
+        assert_eq!(parse_ns_inum("mnt:[notanumber]"), 0);
+    }
 }

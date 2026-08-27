@@ -110,9 +110,28 @@ pub struct ProcessGraph {
     reaped: u64,
     evicted: u64,
     adopted: u64,
+    /// The host's own mount-namespace inode, when known.
+    ///
+    /// Carried here rather than read from /proc inside a detector, because a
+    /// detector that consults the live system stops being deterministic under
+    /// replay -- the same capture would decide differently on different
+    /// machines. Zero means "unknown", and the detections that depend on it
+    /// simply do not fire, which is the honest answer for a replayed capture
+    /// that never recorded it.
+    host_mnt_ns: u32,
 }
 
 impl ProcessGraph {
+    /// Record the host's mount-namespace inode, from `/proc/1/ns/mnt`.
+    pub fn set_host_mnt_ns(&mut self, inum: u32) {
+        self.host_mnt_ns = inum;
+    }
+
+    /// The host's mount-namespace inode, or 0 when unknown.
+    pub fn host_mnt_ns(&self) -> u32 {
+        self.host_mnt_ns
+    }
+
     /// `max_processes` and `retain` are not optional tuning knobs. An unbounded
     /// graph is how a monitoring agent becomes the thing that OOMs the host.
     pub fn new(max_processes: usize, retain: Duration) -> Self {
@@ -124,6 +143,7 @@ impl ProcessGraph {
             reaped: 0,
             evicted: 0,
             adopted: 0,
+            host_mnt_ns: 0,
         }
     }
 

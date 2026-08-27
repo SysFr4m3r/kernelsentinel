@@ -97,6 +97,13 @@ pub struct Event {
     pub old_file_mode: u32,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub watch_id: u32,
+    /// Namespace inode numbers (exec events). Zero when not captured.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub mnt_ns: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub pid_ns: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub net_ns: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub degraded_path: bool,
 
@@ -188,6 +195,9 @@ impl From<&RawEvent> for Event {
             file_mode: r.file_mode,
             old_file_mode: r.old_file_mode,
             watch_id: r.watch_id,
+            mnt_ns: r.mnt_ns,
+            pid_ns: r.pid_ns,
+            net_ns: r.net_ns,
             degraded_path: r.degraded_path(),
             target_pid: r.target_pid,
             aux: r.aux,

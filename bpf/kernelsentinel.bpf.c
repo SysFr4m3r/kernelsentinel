@@ -96,6 +96,26 @@ static __always_inline __u64 read_cap(const kernel_cap_t *cap)
 	return val;
 }
 
+/* Namespace inode numbers for a task.
+ *
+ * Only called for exec: three pointer chases per event would be real cost in
+ * the hot path, and a process's namespaces are established at exec, not per
+ * event. mnt_namespace is an fs-internal type, so its presence in a target
+ * kernel's BTF is guarded rather than assumed -- an unguarded relocation
+ * against a missing type makes the whole program fail to load.
+ */
+static __always_inline void fill_ns(struct event *e, struct task_struct *task)
+{
+	struct nsproxy *nsp = BPF_CORE_READ(task, nsproxy);
+
+	if (!nsp)
+		return;
+	if (bpf_core_type_exists(struct mnt_namespace))
+		e->mnt_ns = BPF_CORE_READ(nsp, mnt_ns, ns.inum);
+	e->pid_ns = BPF_CORE_READ(nsp, pid_ns_for_children, ns.inum);
+	e->net_ns = BPF_CORE_READ(nsp, net_ns, ns.inum);
+}
+
 /* Fill the common header from the current task. */
 static __always_inline void fill_hdr(struct event *e, __u16 type)
 {
@@ -115,6 +135,9 @@ static __always_inline void fill_hdr(struct event *e, __u16 type)
 	e->watch_id = 0;
 	e->target_pid = 0;
 	e->aux = 0;
+	e->mnt_ns = 0;
+	e->pid_ns = 0;
+	e->net_ns = 0;
 	e->old_uid = 0;
 	e->old_gid = 0;
 	e->old_euid = 0;
@@ -188,6 +211,7 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	}
 
 	fill_hdr(e, EV_EXEC);
+	fill_ns(e, (struct task_struct *)bpf_get_current_task_btf());
 
 	/* __data_loc: low 16 bits are the offset from the start of the record */
 	fname_off = ctx->__data_loc_filename & 0xFFFF;
