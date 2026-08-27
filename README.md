@@ -645,6 +645,27 @@ Stated up front, because a security tool that hides these is worse than one that
 cargo test
 ```
 
+Those replay real captures through the engine — deterministic, no root. But they
+feed the detector events that were *recorded or constructed*, which cannot tell
+you whether a live attack still produces the signal it should. A container escape
+detection once passed all of them and failed against the real attack.
+
+The attack suite closes that gap: it runs each scenario for real against a live
+agent and asserts the agent's own output names the expected signal.
+
+```bash
+sudo tests/attack/verify.sh
+```
+
+```bash
+sudo KS_ENFORCE=on tests/attack/verify.sh
+```
+
+A failure there means an attack really happened and the sensor did not report
+it — the failure mode replay tests cannot detect. Each scenario declares what it
+must produce in a `ks-expect:` header, so adding a detector without a scenario is
+visible rather than silent.
+
 > ⚠️ The attack scenarios in `tests/scenarios/` are **deliberately destructive** — they create SUID
 > binaries, load modules, and write to `/etc`. Run them only in a disposable VM, never on your host.
 

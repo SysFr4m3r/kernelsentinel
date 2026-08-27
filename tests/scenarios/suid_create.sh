@@ -1,6 +1,8 @@
 #!/bin/bash
 # Scenario: new SUID root binary in a world-writable dir, then executed.
 #   MITRE ATT&CK: T1548.001 (Setuid and Setgid)
+#   ks-expect: suid_create
+#   ks-run: lab
 #   Expected detection: EV_FILE_MODE, SUID gained, path /tmp/.x, parent chain
 #                       back to this shell.
 #

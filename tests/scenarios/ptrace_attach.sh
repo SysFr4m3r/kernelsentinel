@@ -1,6 +1,8 @@
 #!/bin/bash
 # Scenario: ptrace another process (classic code-injection / debugging primitive).
 #   MITRE ATT&CK: T1055.008 (Ptrace System Calls)
+#   ks-expect: ptrace_attach
+#   ks-run: lab
 #   Expected: EV_PTRACE[ATTACH] -> the target pid.
 set -euo pipefail
 if [[ ! -f /.ks-lab ]] || [[ "${KS_LAB:-}" != "1" ]]; then

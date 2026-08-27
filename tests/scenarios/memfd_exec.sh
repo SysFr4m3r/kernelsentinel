@@ -2,6 +2,8 @@
 # Scenario: fileless execution. Create an anonymous in-memory executable and
 # run it via /proc/self/fd/N -- the binary never touches disk.
 #   MITRE ATT&CK: T1620 (Reflective Code Loading)
+#   ks-expect: fileless_exec
+#   ks-run: lab
 #   Expected: EV_EXEC_ANON, source=memfd.
 set -euo pipefail
 if [[ ! -f /.ks-lab ]] || [[ "${KS_LAB:-}" != "1" ]]; then

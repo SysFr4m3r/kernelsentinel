@@ -2,6 +2,8 @@
 # Scenario: grant file capabilities to a binary (SUID-equivalent backdoor with
 # no SUID bit). Requires CAP_SETFCAP -- run with: KS_CAPS=SETFCAP
 #   MITRE ATT&CK: T1548 (Abuse Elevation Control Mechanism)
+#   ks-expect: setcap
+#   ks-run: lab
 #   Expected: EV_SETCAP on the target file.
 set -euo pipefail
 if [[ ! -f /.ks-lab ]] || [[ "${KS_LAB:-}" != "1" ]]; then
