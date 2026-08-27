@@ -34,10 +34,29 @@ pub struct HeartbeatRecord {
     pub drops: u64,
     /// Events that panicked while decoding and were recovered.
     pub decode_panics: u64,
+    /// Whether the agent confirmed its sensors are still watching, by execing a
+    /// child and checking it observed the exec. `None` until the first round
+    /// completes -- an unanswered question is not a failure.
+    ///
+    /// This is the difference between "the agent is alive" and "the agent can
+    /// see": root can detach a BPF link from under a running process, leaving
+    /// it heartbeating happily while blind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensors_verified: Option<bool>,
+    /// Attestation rounds where the canary was never observed.
+    #[serde(default)]
+    pub attestation_misses: u64,
 }
 
 impl HeartbeatRecord {
-    pub fn new(uptime_secs: u64, events: u64, drops: u64, decode_panics: u64) -> Self {
+    pub fn new(
+        uptime_secs: u64,
+        events: u64,
+        drops: u64,
+        decode_panics: u64,
+        sensors_verified: Option<bool>,
+        attestation_misses: u64,
+    ) -> Self {
         Self {
             schema: SCHEMA.to_string(),
             ts: std::time::SystemTime::now()
@@ -49,6 +68,8 @@ impl HeartbeatRecord {
             events,
             drops,
             decode_panics,
+            sensors_verified,
+            attestation_misses,
         }
     }
 

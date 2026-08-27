@@ -1,5 +1,6 @@
 //! KernelSentinel core library. The `kernelsentinel` binary is a thin CLI over this.
 
+pub mod canary;
 pub mod clock;
 pub mod container;
 pub mod decoded;

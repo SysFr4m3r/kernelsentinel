@@ -814,6 +814,9 @@ fn run(
 
     let mut last_reap = 0u64;
     let started = std::time::Instant::now();
+    // Proves the sensors are still watching, not merely that this process is
+    // still running. See src/canary.rs.
+    let canary = kernelsentinel::canary::Canary::new();
     let stats = sensors::run(
         &STOP,
         Duration::from_secs(heartbeat::INTERVAL_SECS),
@@ -823,6 +826,9 @@ fn run(
             if raw.tgid == self_pid {
                 return;
             }
+            // Before any other filtering: the canary is a real exec and must be
+            // counted as observed even though it is our own child.
+            canary.observe(raw.tgid);
             let ev = Event::from(&raw);
             graph.apply(&ev);
 
@@ -862,6 +868,16 @@ fn run(
         // Liveness tick. Only the NDJSON stream carries it -- a human watching
         // the terminal can see the daemon is alive; a central server cannot.
         |s: sensors::Stats| {
+            let verified = canary.round();
+            if verified == Some(false) {
+                // Loud on the agent's own stderr as well as in the heartbeat:
+                // if the link back to the server has also been cut, this is the
+                // only place the operator will see it.
+                status(
+                    "kernelsentinel: WARNING -- sensors did not observe this agent's own exec; \
+                     they may have been detached",
+                );
+            }
             if json {
                 emit(
                     &heartbeat::HeartbeatRecord::new(
@@ -869,6 +885,8 @@ fn run(
                         s.emitted,
                         s.drops,
                         s.decode_panics,
+                        verified,
+                        canary.misses(),
                     )
                     .to_ndjson(),
                 );

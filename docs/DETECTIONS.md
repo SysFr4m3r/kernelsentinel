@@ -276,6 +276,12 @@ what having escaped looks like from the outside.
 - **Path resolution is best-effort.** Mount namespaces, bind mounts, and overlayfs
   complicate it; events carry `(dev, inode)` alongside paths for future
   re-resolution.
+- **Sensor tampering is attested, not assumed.** The heartbeat proves the agent process is alive; it
+  does not prove the sensors are attached, and root with `CAP_BPF` can detach a BPF link from under a
+  running process. The agent therefore execs a child each interval and checks its own sensors observed
+  it — if they did not, the heartbeat reports `sensors_verified: false` and the panel shows the host
+  as **reporting but blind**, ranked above every other unhealthy state. An agent that looks healthy
+  and sees nothing is worse than one that is visibly dead.
 - **A root attacker can unload the sensors.** This is a detection tool, not a
   rootkit defense. An attacker with `CAP_BPF` can tamper with eBPF — which is
   exactly why gaining `CAP_BPF` is itself a scored escalation signal.

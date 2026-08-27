@@ -413,9 +413,12 @@ function tsago(sec){if(!sec)return '—';const d=Math.max(0,Math.floor(Date.now(
 // what a root-level attacker leaves behind after unloading the sensors. So a
 // silent host counts toward "need attention" and only a live, clean agent
 // counts as healthy.
-function isDark(h){return h.status==='silent'||h.status==='stale';}
+// "blind" counts as dark: an agent reporting in while its sensors are detached
+// is not a healthy host, however green its heartbeat looks.
+function isDark(h){return h.status==='silent'||h.status==='stale'||h.status==='blind';}
 function renderFleet(){
-  const dark=HOSTS.filter(isDark).length,
+  const blind=HOSTS.filter(h=>h.status==='blind').length,
+    dark=HOSTS.filter(isDark).length,
     atRisk=HOSTS.filter(h=>h.score>=50||isDark(h)).length,
     worst=HOSTS.length?Math.max(...HOSTS.map(h=>h.score)):0,
     clean=HOSTS.filter(h=>h.score===0&&!isDark(h)).length,
@@ -424,6 +427,7 @@ function renderFleet(){
   document.getElementById('agentcount').textContent=HOSTS.length+' agent'+(HOSTS.length===1?'':'s')+' reporting';
   const stats=[['Hosts',HOSTS.length,''],['Need attention',atRisk,'crit'],['Healthy',clean,'ok'],['Open incidents',openInc,''],['Worst score',worst,'crit']];
   if(dark)stats.splice(2,0,['Not reporting',dark,'crit']);
+  if(blind)stats.splice(2,0,['Reporting but blind',blind,'crit']);
   // Dropped events are missed detections; say so rather than implying coverage.
   if(drops)stats.push(['Events dropped',drops,'crit']);
   document.getElementById('fstats').innerHTML=stats.map(([k,n,c])=>`<div class="stat ${c}"><div class="n mono">${n}</div><div class="k">${k}</div></div>`).join('');
@@ -436,6 +440,7 @@ function renderFleet(){
 // agent and a compromised host are different problems.
 function agentTag(h){
   const st=h.status||'unknown';
+  if(st==='blind')return `<span class="atag silent" title="The agent is reporting, but its sensors did not observe its own exec — they may have been detached. ${h.attestation_misses||0} missed check(s).">reporting but blind</span>`;
   if(st==='live')return '<span class="atag live">live</span>';
   if(st==='stale')return `<span class="atag stale">no report ${tsago(h.last_heartbeat)}</span>`;
   if(st==='silent')return `<span class="atag silent">not reporting since ${tsago(h.last_heartbeat)}</span>`;
@@ -496,6 +501,7 @@ async function openHost(h,selectId){
   // the one number that must never be presented quietly.
   const warn=document.getElementById('hostwarn');
   if(h.drops>0){warn.className='hostwarn';warn.innerHTML=`<b>${h.drops.toLocaleString()} events dropped</b> on this host since the agent started — the ring buffer overflowed, so some activity was never seen. Detections from this window are incomplete.`;}
+  else if(h.status==='blind'){warn.className='hostwarn';warn.innerHTML=`<b>Agent reporting but blind</b> — it execs a child every heartbeat and its own sensors did not observe it (${h.attestation_misses||0} missed check${(h.attestation_misses||0)===1?'':'s'}). The eBPF programs may have been detached. Nothing below can be trusted as current, and an absence of findings means nothing at all.`;}
   else if(h.status==='silent'||h.status==='stale'){warn.className='hostwarn';warn.innerHTML=`<b>Agent not reporting</b> — last heartbeat ${tsago(h.last_heartbeat)}. Findings below may be stale, and an agent that stops is itself worth investigating.`;}
   else{warn.className='hostwarn hidden';warn.innerHTML='';}
   const feed=document.getElementById('feed');const det=document.getElementById('detail');
@@ -505,7 +511,9 @@ async function openHost(h,selectId){
     // actually reporting. Claiming health while the agent is dark would be the
     // exact false reassurance the heartbeat exists to prevent.
     const live=(h.status==='live'),unknown=(h.status==='unknown');
-    const msg=live?'No detections on this host in the current window. Agent healthy, reporting.'
+    const blind=(h.status==='blind');
+    const msg=blind?'No detections recorded — and this agent could not confirm its sensors are attached, so this means nothing.'
+      :live?'No detections on this host in the current window. Agent healthy, reporting.'
       :unknown?'No detections recorded. This agent sends no heartbeat, so its health cannot be confirmed.'
       :'No detections recorded — but this agent is not reporting, so absence of findings is not evidence of safety.';
     feed.innerHTML=`<div class="detail empty" style="position:static">${msg}</div>`;

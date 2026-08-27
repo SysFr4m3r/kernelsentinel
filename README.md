@@ -436,6 +436,11 @@ Agents check in every 60s even when they have nothing to report, so the panel ca
 host from a dead agent** — silence is otherwise identical to safety, and "the sensors stopped
 reporting" is exactly what a root-level attacker leaves behind.
 
+The check-in also **attests**: the agent execs a child each interval and confirms its own sensors
+observed it. Root with `CAP_BPF` can detach a BPF link from a running process, after which a
+heartbeat alone would keep the host looking healthy while it sees nothing — so a host that reports in
+but fails its own check is shown as **reporting but blind**, ranked above every other unhealthy state.
+
 A host that stops reporting is ranked as needing attention rather than shown as clean. The check-in
 also carries the ring-buffer **drop counter**: dropped events are missed detections, so a host that
 lost them is never presented as fully covered. An older agent that sends no heartbeat reads as

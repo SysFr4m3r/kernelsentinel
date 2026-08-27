@@ -49,9 +49,15 @@ pub struct HostState {
     pub last_heartbeat: u64,
     pub agent_version: String,
     pub uptime_secs: u64,
+    /// Attestation rounds where the agent's own exec went unobserved.
+    pub attestation_misses: u64,
     pub events: u64,
     pub drops: u64,
     pub decode_panics: u64,
+    /// The agent confirmed its sensors still observe it. `Some(false)` means it
+    /// is alive and reporting but blind, which is worse than silent: the panel
+    /// would otherwise show a healthy host that sees nothing.
+    pub sensors_verified: Option<bool>,
 }
 
 /// How long after its last heartbeat an agent stops counting as live. Three
@@ -68,6 +74,12 @@ pub const SILENT_AFTER_SECS: u64 = heartbeat::INTERVAL_SECS * 10;
 /// "silent" is not an auditable event; the benefit is that it can never be
 /// stale, which for a liveness signal is the property that matters.
 pub fn agent_status(state: &HostState, now: u64) -> &'static str {
+    // Checked before liveness: an agent that reports in while its sensors are
+    // detached is the most dangerous state of the three. A dead agent is
+    // visible; this one looks healthy and sees nothing.
+    if state.sensors_verified == Some(false) {
+        return "blind";
+    }
     if state.last_heartbeat == 0 {
         // Shipping incidents but never a heartbeat: an older agent, or one
         // whose stream carries only incidents. Claiming it is dead would be a
@@ -91,7 +103,7 @@ const MAX_PER_HOST: usize = 500;
 /// database written by a *newer* build is refused rather than attempted: a
 /// downgrade that half-understands the schema would corrupt an audit trail
 /// people are meant to be able to trust.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Hard ceiling on rows kept on disk, independent of retention.
 ///
@@ -135,6 +147,8 @@ pub struct HostSummary {
     pub last_heartbeat: u64,
     pub agent_version: String,
     pub uptime_secs: u64,
+    /// Attestation rounds where the agent's own exec went unobserved.
+    pub attestation_misses: u64,
     pub events: u64,
     /// Ring-buffer drops. Non-zero means this host lost events, i.e. missed
     /// detections -- the panel must not present it as fully covered.
@@ -253,7 +267,9 @@ impl Store {
                  agent_version TEXT DEFAULT '',
                  uptime_secs INTEGER DEFAULT 0,
                  events INTEGER DEFAULT 0, drops INTEGER DEFAULT 0,
-                 decode_panics INTEGER DEFAULT 0
+                 decode_panics INTEGER DEFAULT 0,
+                 sensors_verified INTEGER,
+                 attestation_misses INTEGER DEFAULT 0
              );",
         )?;
 
@@ -309,7 +325,8 @@ impl Store {
         {
             let mut stmt = conn.prepare(
                 "SELECT host, first_seen, last_seen, last_heartbeat, kernel, ip,
-                        agent_version, uptime_secs, events, drops, decode_panics FROM hosts",
+                        agent_version, uptime_secs, events, drops, decode_panics,
+                        sensors_verified, attestation_misses FROM hosts",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
@@ -324,11 +341,13 @@ impl Store {
                     r.get::<_, i64>(8)? as u64,
                     r.get::<_, i64>(9)? as u64,
                     r.get::<_, i64>(10)? as u64,
+                    r.get::<_, Option<i64>>(11)?.map(|v| v != 0),
+                    r.get::<_, Option<i64>>(12)?.unwrap_or(0) as u64,
                 ))
             })?;
             let mut hosts = store.hosts.lock().unwrap();
             for row in rows.flatten() {
-                let (host, first, last, hb, kernel, ip, ver, up, ev, dr, dp) = row;
+                let (host, first, last, hb, kernel, ip, ver, up, ev, dr, dp, sv, am) = row;
                 let state = hosts.entry(host).or_default();
                 state.first_seen = first;
                 state.last_seen = state.last_seen.max(last);
@@ -344,6 +363,8 @@ impl Store {
                 state.events = ev;
                 state.drops = dr;
                 state.decode_panics = dp;
+                state.sensors_verified = sv;
+                state.attestation_misses = am;
             }
         }
 
@@ -370,6 +391,8 @@ impl Store {
         state.events = hb.events;
         state.drops = hb.drops;
         state.decode_panics = hb.decode_panics;
+        state.sensors_verified = hb.sensors_verified;
+        state.attestation_misses = hb.attestation_misses;
         if !kernel.is_empty() {
             state.kernel = kernel.to_string();
         }
@@ -383,14 +406,17 @@ impl Store {
             let conn = db.lock().unwrap();
             let _ = conn.execute(
                 "INSERT INTO hosts (host, first_seen, last_seen, last_heartbeat, kernel, ip,
-                                    agent_version, uptime_secs, events, drops, decode_panics)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                    agent_version, uptime_secs, events, drops, decode_panics,
+                                    sensors_verified, attestation_misses)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(host) DO UPDATE SET
                    last_seen=excluded.last_seen, last_heartbeat=excluded.last_heartbeat,
                    kernel=excluded.kernel, ip=excluded.ip,
                    agent_version=excluded.agent_version, uptime_secs=excluded.uptime_secs,
                    events=excluded.events, drops=excluded.drops,
-                   decode_panics=excluded.decode_panics",
+                   decode_panics=excluded.decode_panics,
+                   sensors_verified=excluded.sensors_verified,
+                   attestation_misses=excluded.attestation_misses",
                 rusqlite::params![
                     host,
                     first_seen as i64,
@@ -403,6 +429,8 @@ impl Store {
                     hb.events as i64,
                     hb.drops as i64,
                     hb.decode_panics as i64,
+                    hb.sensors_verified.map(|v| v as i64),
+                    hb.attestation_misses as i64,
                 ],
             );
         }
@@ -738,6 +766,7 @@ impl Store {
                     kernel: state.kernel.clone(),
                     ip: state.ip.clone(),
                     status: agent_status(state, now),
+                    attestation_misses: state.attestation_misses,
                     last_heartbeat: state.last_heartbeat,
                     agent_version: state.agent_version.clone(),
                     uptime_secs: state.uptime_secs,
@@ -750,7 +779,9 @@ impl Store {
         // quiet outranks a healthy one, because "no findings" from an agent
         // that is not reporting is not the same reassurance as "no findings"
         // from one that is.
-        let dark = |s: &str| matches!(s, "silent" | "stale");
+        // "blind" belongs here too, and outranks the others: a host reporting
+        // in while its sensors are detached looks healthiest and is worst.
+        let dark = |s: &str| matches!(s, "blind" | "silent" | "stale");
         out.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
@@ -844,8 +875,23 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             )),
         ));
     }
-    // v0 -> v1: the tables created below. Future steps append here, each
-    // guarded by `if found < N`, and run in order.
+    // v0 -> v1: the tables created below.
+    //
+    // v1 -> v2: attestation columns. Without these the blind state did not
+    // survive a restart -- a host whose sensors were detached reloaded as
+    // healthy, which is the one wrong answer this state exists to prevent.
+    // ALTER on an existing table rather than a rebuild, so history is kept.
+    if (1..2).contains(&found) {
+        for col in [
+            "ALTER TABLE hosts ADD COLUMN sensors_verified INTEGER",
+            "ALTER TABLE hosts ADD COLUMN attestation_misses INTEGER DEFAULT 0",
+        ] {
+            // A fresh database has no hosts table yet; the CREATE below covers
+            // it, so a failure here is only "already applied".
+            let _ = conn.execute(col, []);
+        }
+    }
+    // Future steps append here, each guarded by `if found < N`, and run in order.
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     Ok(())
 }
@@ -1053,6 +1099,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// An agent reporting in while its sensors are detached is the most
+    /// dangerous of the three states: a dead agent is visible, this one looks
+    /// healthy and sees nothing. It must outrank liveness.
+    #[test]
+    fn a_blind_agent_outranks_every_liveness_state() {
+        let fresh = |v: Option<bool>| HostState {
+            last_heartbeat: epoch(),
+            sensors_verified: v,
+            ..Default::default()
+        };
+        let now = epoch();
+        assert_eq!(agent_status(&fresh(Some(true)), now), "live");
+        assert_eq!(
+            agent_status(&fresh(None), now),
+            "live",
+            "unknown attestation is not blind"
+        );
+        assert_eq!(agent_status(&fresh(Some(false)), now), "blind");
+
+        // Even a heartbeat that arrived seconds ago cannot make it healthy.
+        let mut recent = fresh(Some(false));
+        recent.last_heartbeat = now;
+        assert_eq!(agent_status(&recent, now), "blind");
+    }
+
     #[test]
     fn agent_without_heartbeat_is_unknown_not_silent() {
         let state = HostState {
@@ -1068,8 +1139,18 @@ mod tests {
     #[test]
     fn silent_hosts_outrank_healthy_ones_at_equal_score() {
         let store = Store::new();
-        store.heartbeat("aaa-healthy", "", "", &HeartbeatRecord::new(60, 10, 0, 0));
-        store.heartbeat("zzz-silent", "", "", &HeartbeatRecord::new(60, 10, 0, 0));
+        store.heartbeat(
+            "aaa-healthy",
+            "",
+            "",
+            &HeartbeatRecord::new(60, 10, 0, 0, Some(true), 0),
+        );
+        store.heartbeat(
+            "zzz-silent",
+            "",
+            "",
+            &HeartbeatRecord::new(60, 10, 0, 0, Some(true), 0),
+        );
         // Age zzz-silent past the silence threshold.
         {
             let mut hosts = store.hosts.lock().unwrap();
@@ -1113,7 +1194,7 @@ mod tests {
     #[test]
     fn clean_host_is_visible_from_heartbeat_alone() {
         let store = Store::new();
-        let hb = HeartbeatRecord::new(120, 5_000, 0, 0);
+        let hb = HeartbeatRecord::new(120, 5_000, 0, 0, Some(true), 0);
         store.heartbeat("clean-01", "6.19", "10.0.0.9", &hb);
 
         let fleet = store.fleet();
@@ -1136,7 +1217,7 @@ mod tests {
             "busy-01",
             "",
             "",
-            &HeartbeatRecord::new(60, 900_000, 1_743, 2),
+            &HeartbeatRecord::new(60, 900_000, 1_743, 2, Some(true), 0),
         );
         let h = &store.fleet()[0];
         assert_eq!(h.drops, 1_743);
