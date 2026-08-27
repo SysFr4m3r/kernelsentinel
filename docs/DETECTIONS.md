@@ -182,6 +182,10 @@ A kernel module is loaded, detected at `do_init_module` (the real module name,
 read after parsing — not an attacker-supplied filename).
 
 - **Trigger:** `modprobe dummy` (a harmless, reversible standard module)
+- **Confirmed on real hardware:** the first container start after a boot loads `veth` and
+  `nf_conntrack_netlink`, each producing a MEDIUM incident at score 50 — at the alerting floor, from
+  the most routine container operation there is. Subsequent starts are quiet because the modules
+  are already resident, so this is easy to miss when testing on a warm host.
 - **False positives:** hosts load modules during normal operation — hardware
   hotplug, filesystem mounts, `systemd-modules-load` at boot. A lone module load
   is **medium**, so this is a real source of alert volume; the fix is baselining

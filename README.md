@@ -666,6 +666,16 @@ it — the failure mode replay tests cannot detect. Each scenario declares what 
 must produce in a `ks-expect:` header, so adding a detector without a scenario is
 visible rather than silent.
 
+The same run also answers the opposite question. `tests/noise/` holds ordinary
+work — an idle desktop, a compile, starting a container, a package-metadata
+refresh — and asserts it stays **silent** at the severity an operator actually
+alerts on. Anything that fires is reported as a `FALSE POSITIVE`, named, so it is
+a finding rather than an impression.
+
+That distinction is the whole point: a tool that catches every attack and fires
+twice a day on `dpkg` gets muted in week one, and then its detection quality
+stops mattering.
+
 > ⚠️ The attack scenarios in `tests/scenarios/` are **deliberately destructive** — they create SUID
 > binaries, load modules, and write to `/etc`. Run them only in a disposable VM, never on your host.
 

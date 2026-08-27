@@ -5,9 +5,17 @@
 #   sudo tests/attack/verify.sh suid_create        # one, by name
 #   sudo KS_ENFORCE=on tests/attack/verify.sh      # with enforcement armed
 #
-# This tests FALSE NEGATIVES: does an attack that really happened actually
-# produce the signal it should? It runs the agent at --min-severity info so a
-# correctly-suppressed low signal is not mistaken for a missing one. The replay tests in tests/ cannot answer that --
+# Two questions, one harness, chosen by each scenario's ks-expect header.
+#
+# FALSE NEGATIVES (tests/scenarios/, ks-expect: <signal>): did an attack that
+# really happened produce the signal it should? Run at --min-severity info, so a
+# correctly-suppressed low signal is not mistaken for a missing one.
+#
+# FALSE POSITIVES (tests/noise/, ks-expect: silence): does ordinary work stay
+# quiet? Run at the *operational* floor instead, because the claim being tested
+# is "this does not cry wolf in normal use", and alerting means MEDIUM and above.
+# A tool that catches every attack and fires twice a day on dpkg gets muted in
+# week one, at which point the detection quality stops mattering. The replay tests in tests/ cannot answer that --
 # they feed the detector events I constructed, which is how a container escape
 # detection shipped, passed 113 tests, and failed against the real attack. The
 # scenario runs the attack for real and the assertion reads the agent's own
@@ -19,6 +27,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="${KS_BIN:-$REPO/target/release/kernelsentinel}"
 SCENARIOS="$REPO/tests/scenarios"
+NOISE="$REPO/tests/noise"
 ENFORCE="${KS_ENFORCE:-off}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -48,12 +57,21 @@ run_one() {
 	fi
 
 	local out="$WORK/$name.ndjson" log="$WORK/$name.log" slog="$WORK/$name.scenario"
-	# --min-severity info on purpose. This suite asks "did the sensor fire",
-	# not "would it have alerted": setcap (40) and ptrace_attach (30) score
-	# below the default MEDIUM floor and are correctly suppressed in normal
-	# operation, which the first version of this harness misread as a missed
-	# detection. Alerting thresholds are covered by the replay tests.
-	"$BIN" run --json --min-severity info --enforce "$ENFORCE" >"$out" 2>"$log" &
+	# The floor depends on the question being asked.
+	#
+	# Attack scenarios run at info: they ask "did the sensor fire", not "would
+	# it have alerted". setcap (40) and ptrace_attach (30) sit below the default
+	# MEDIUM floor and are correctly suppressed in normal operation, which an
+	# earlier version of this harness misread as a missed detection.
+	#
+	# Noise scenarios run at the floor an operator actually alerts on, because
+	# the claim under test is "ordinary work does not cry wolf" -- and crying
+	# wolf means MEDIUM and above. Running these at info would report every
+	# correctly-suppressed low signal as a false positive, which is exactly the
+	# wrong answer.
+	local floor=info
+	[[ "$expect" == "silence" ]] && floor=medium
+	"$BIN" run --json --min-severity "$floor" --enforce "$ENFORCE" >"$out" 2>"$log" &
 	local agent=$!
 
 	# Wait for the sensors, rather than sleeping and hoping. A scenario that
@@ -95,6 +113,48 @@ run_one() {
 		fail=$((fail + 1)); FAILED+=("$name"); return
 	fi
 
+	if [[ "$expect" == "silence" ]]; then
+		# Inverted: anything at MEDIUM or above during ordinary work is a false
+		# positive, and naming it makes it actionable rather than "it is noisy".
+		local fired
+		fired="$(grep -o '"id":"[a-z_]*"' "$out" | sort | uniq -c \
+			| sed 's/^ *//;s/"id"://g;s/"//g' | tr '\n' ' ')"
+		if [[ -z "$fired" ]]; then
+			printf '  %-32s PASS  silent\n' "$name"
+			pass=$((pass + 1))
+		else
+			printf '  %-32s FALSE POSITIVE  %s\n' "$name" "$fired"
+			# Name the offending processes. "5 runtime_socket_access" says
+			# something is wrong; the subject and command line say what to fix,
+			# and whether it belongs in a baseline or in the detector.
+			python3 - "$out" <<'PYEOF' 2>/dev/null || true
+import json, sys
+seen = set()
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    subj = d.get("subject", {})
+    for sig in d.get("signals", []):
+        key = (sig.get("id"), subj.get("comm"), sig.get("cmdline") or subj.get("cmdline", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        cmd = (key[2] or "")[:88]
+        print(f"      {d.get('score','?'):>3}  {key[0]:<24} {key[1] or '?':<18} {cmd}")
+        lin = " > ".join(d.get("lineage", [])[-4:])
+        if lin:
+            print(f"           {lin}")
+PYEOF
+			fail=$((fail + 1)); FAILED+=("$name")
+		fi
+		return
+	fi
+
 	# The assertion: the agent's own output must name the expected signal.
 	if grep -q "\"$expect\"" "$out"; then
 		# From the matching incident specifically. Grepping the first score in
@@ -124,9 +184,19 @@ fi
 echo "attack suite -- enforcement: $ENFORCE"
 echo
 if [[ $# -gt 0 ]]; then
-	for n in "$@"; do run_one "$SCENARIOS/$n.sh"; done
+	for n in "$@"; do
+		if [[ -f "$SCENARIOS/$n.sh" ]]; then run_one "$SCENARIOS/$n.sh"
+		elif [[ -f "$NOISE/$n.sh" ]]; then run_one "$NOISE/$n.sh"
+		else echo "  no scenario named $n" >&2; fi
+	done
 else
+	echo "attacks -- must be detected"
 	for s in "$SCENARIOS"/*.sh; do run_one "$s"; done
+	if compgen -G "$NOISE/*.sh" >/dev/null; then
+		echo
+		echo "ordinary work -- must stay quiet"
+		for s in "$NOISE"/*.sh; do run_one "$s"; done
+	fi
 fi
 
 echo
@@ -134,7 +204,10 @@ echo "  $pass passed, $fail failed, $skip skipped"
 if [[ $fail -gt 0 ]]; then
 	echo "  failed: ${FAILED[*]}"
 	echo
-	echo "  A failure here means an attack really happened and the sensor did not"
-	echo "  report it. That is the failure mode replay tests cannot detect."
+	echo
+	echo "  FAIL          an attack ran and the sensor did not report it."
+	echo "  FALSE POSITIVE ordinary work produced an alert. Either the detection is"
+	echo "                too eager, or it belongs in a baseline -- both are findings."
+	echo "  ERROR         the scenario itself did not run; nothing was tested."
 	exit 1
 fi
