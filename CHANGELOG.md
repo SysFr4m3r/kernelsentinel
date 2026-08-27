@@ -3,6 +3,31 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
+## v0.2.1 — fixes a container escape detection that did not work
+
+**Upgrade from v0.2.0.** In v0.2.0 the kernel escape-hatch detection matched on
+file *paths*, and a container escape defeats that by construction: it
+bind-mounts the host's `/proc` somewhere else, and the kernel reports the path
+as seen in the writer's own mount namespace. A textbook escape —
+
+```
+docker run --privileged -v /proc:/hostproc alpine \
+  sh -c 'echo "|/tmp/x" > /hostproc/sys/kernel/core_pattern'
+```
+
+— was neither detected nor blocked, and `--enforce on` therefore gave false
+confidence against precisely the attack it advertised.
+
+Escape hatches are now identified by `(dev, inode)`, so the file is recognised
+however it is reached. This also correctly distinguishes a container writing the
+*host's* `core_pattern` from one writing its own, which no path comparison can.
+
+Verified by re-running the same attack: the write fails with `Operation not
+permitted`, the incident is recorded as `BLOCKED:` at 83/100, and the host's
+`core_pattern` is unchanged.
+
+Nothing else changed. If you installed v0.2.0, upgrade.
+
 ## v0.2.0 — container escape detection and optional enforcement
 
 ### Detection
