@@ -505,6 +505,38 @@ distinct — `matched`, `clean`, and `not scanned` when the target was gone befo
 last one is routine and honest: a memfd lives only as long as its process, and reporting a lost race
 as "clean" would be the dangerous failure.
 
+### Enforcement (optional, off by default)
+
+Everything above only *observes*. The LSM hooks can also **deny**, for one
+deliberately narrow case: writes to the kernel escape hatches
+(`core_pattern`, `modprobe`, `poweroff_cmd`, `uevent_helper`,
+`binfmt_misc/register`) from **outside the host's mount namespace**.
+
+```bash
+sudo kernelsentinel run --enforce audit     # report what would be blocked
+sudo kernelsentinel run --enforce on        # actually block it
+```
+
+**Run `audit` first.** It reports every operation enforcement *would* have
+blocked, and blocks nothing, so you find out what breaks before it breaks.
+
+Why only this: each of those files names a program the kernel runs as root on
+the host, and a containerised writer has no legitimate use for any of them. The
+blast radius of being wrong is "a container cannot set `core_pattern`". Widening
+the set is how a monitoring agent starts taking hosts down, so the deniable
+paths are pinned by a test.
+
+Every uncertain path fails **open**. No config, no known host namespace, an
+unreadable namespace on the task, or a full ring buffer — all allow. An agent
+that blocks something because it could not read a pointer is worse than one that
+misses a detection. Denial also refuses to arm at all if the host's mount
+namespace cannot be read, because without a reference there is no way to tell
+"inside a container" from "is the host".
+
+A blocked operation is still recorded, and the incident says `BLOCKED:` — an
+operation stopped without a trace is the worst of both worlds. The score is
+unchanged: blocking changes the outcome, not how serious the attempt was.
+
 ### Suppress routine behavior (baselining)
 
 Learn a host's normal from a clean capture, then apply it so routine actions (a plain `sudo`) stop
@@ -583,13 +615,14 @@ real capture.
 | M4 | `record`/`replay`, Docker lab, real-capture fixtures | ✅ core done |
 | M5 | YAML rule DSL (match + sequence rules) | ✅ first increment |
 | M6 | Container & namespace awareness | ✅ container id, context multiplier, runtime-socket, namespace and escape-hatch detection |
-| M7 | Baselining ✅ · heartbeat + drop telemetry ✅ · alert delivery ✅ · YARA ✅ · optional enforcement | 🚧 in progress |
+| M7 | Baselining ✅ · heartbeat + drop telemetry ✅ · alert delivery ✅ · YARA ✅ · optional enforcement ✅ | ✅ done |
 
 ### Limitations
 
 Stated up front, because a security tool that hides these is worse than one that has them.
 
-- **Detect-only.** No prevention. Enforcement via BPF-LSM return codes is a stretch goal, not a promise.
+- **Detect-only by default.** Enforcement exists (`--enforce`) but covers one narrow case: kernel
+  escape-hatch writes from a non-host mount namespace. Everything else observes and never blocks.
 - **Not an auditd replacement.** KernelSentinel logs what feeds detections, not everything.
 - **eBPF sees nothing before it attaches.** The `/proc` bootstrap reconstructs existing processes, but
   their history is inferred and marked as such.

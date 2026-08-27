@@ -245,6 +245,17 @@ fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
     // on a host is an escape from inside a container, because the program the
     // kernel runs lands outside the namespace that asked for it.
     if is_kernel_escape_hatch(&ev.filename) {
+        // Enforcement outcome leads the detail. An operation the kernel blocked
+        // reads very differently from one that succeeded, and burying that at
+        // the end of a sentence is how a responder wastes an hour on an attack
+        // that never landed.
+        let outcome = if ev.denied {
+            "BLOCKED: "
+        } else if ev.would_deny {
+            "would be blocked: "
+        } else {
+            ""
+        };
         let (score, detail) = if ev.container.is_empty() {
             (
                 45,
@@ -254,7 +265,8 @@ fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
             (
                 75,
                 format!(
-                    "container {} wrote {}, which the kernel executes as root on the host (escape)",
+                    "{outcome}container {} wrote {}, which the kernel executes as root on the \
+                     host (escape)",
                     ev.container, ev.filename
                 ),
             )

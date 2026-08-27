@@ -963,3 +963,53 @@ fn kernel_escape_hatch_writes_outrank_ordinary_persistence() {
     let other = sigs(&write_to(8004, "/etc/cron.d/evil", ""));
     assert_eq!(other[0].id, "persistence_write");
 }
+
+/// Enforcement outcome has to lead the detail. An operation the kernel blocked
+/// reads very differently from one that succeeded, and a responder who misses
+/// that wastes time on an attack that never landed.
+#[test]
+fn a_blocked_escape_says_so_and_is_still_recorded() {
+    fn hatch_write(pid: u32, denied: bool, would_deny: bool) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 3_000u64 + pid as u64, "type": 5, "tgid": pid, "ppid": 1,
+            "start_boottime": 900u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "sh", "filename": "/proc/sys/kernel/core_pattern",
+            "file_mode": 2, "watch_id": 5, "container": "docker:abc123",
+            "denied": denied, "would_deny": would_deny
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    let sigs = |ev: &Event| {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.apply(ev);
+        kernelsentinel::detect::signals_for_event(ev, &g)
+    };
+
+    // Blocked: still a signal, and the detail says it was stopped. A denial
+    // that produced no record would be the worst of both worlds.
+    let s = sigs(&hatch_write(7001, true, false));
+    assert_eq!(s.len(), 1, "a denied operation must still be recorded");
+    assert_eq!(s[0].id, "kernel_escape_hatch_write");
+    assert!(s[0].detail.starts_with("BLOCKED:"), "got: {}", s[0].detail);
+
+    // Audit: reported as hypothetical, because nothing was actually stopped.
+    let s = sigs(&hatch_write(7002, false, true));
+    assert!(
+        s[0].detail.starts_with("would be blocked:"),
+        "got: {}",
+        s[0].detail
+    );
+
+    // Detect-only: no enforcement language at all.
+    let s = sigs(&hatch_write(7003, false, false));
+    assert!(!s[0].detail.contains("BLOCKED"));
+    assert!(!s[0].detail.contains("would be blocked"));
+    assert!(s[0].detail.contains("escape"));
+
+    // The score is the same either way: blocking changes the outcome, not how
+    // serious the attempt was.
+    let blocked = sigs(&hatch_write(7004, true, false))[0].score;
+    let allowed = sigs(&hatch_write(7005, false, false))[0].score;
+    assert_eq!(blocked, allowed);
+}

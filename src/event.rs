@@ -177,6 +177,16 @@ impl RawEvent {
         self.file_mode & 0x2 != 0
     }
 
+    /// The kernel blocked this operation (EV_F_DENIED).
+    pub fn denied(&self) -> bool {
+        self.flags & (1 << 2) != 0
+    }
+
+    /// Audit mode: enforcement would have blocked it (EV_F_WOULD_DENY).
+    pub fn would_deny(&self) -> bool {
+        self.flags & (1 << 3) != 0
+    }
+
     pub fn truncated(&self) -> bool {
         self.flags & EV_F_TRUNCATED != 0
     }

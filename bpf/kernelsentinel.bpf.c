@@ -27,6 +27,9 @@ struct {
 
 /* fmode_t and st_mode bits; not BTF types, stable ABI, define here. */
 #define FMODE_WRITE 0x2
+/* vmlinux.h carries no errno definitions; an LSM hook denies by returning the
+ * negative errno the syscall should fail with. */
+#define EPERM 1
 #define S_ISUID 0x800   /* 04000 */
 #define S_ISGID 0x400   /* 02000 */
 #define S_IFMT  0xF000
@@ -47,6 +50,16 @@ struct {
 	__uint(max_entries, 1024);
 	__uint(map_flags, BPF_F_NO_PREALLOC); /* required for LPM_TRIE */
 } watched_paths SEC(".maps");
+
+/* Enforcement configuration, written once by userspace at startup. A map rather
+ * than a compile-time constant so the same binary can run detect-only, which is
+ * what it does unless explicitly told otherwise. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct enforce_cfg);
+} enforce SEC(".maps");
 
 static __always_inline void stat_inc(__u32 key)
 {
@@ -94,6 +107,42 @@ static __always_inline __u64 read_cap(const kernel_cap_t *cap)
 		val = ((__u64)hi << 32) | lo;
 	}
 	return val;
+}
+
+/* Should this operation be denied, and is denial armed?
+ *
+ * Returns ENFORCE_OFF (allow), ENFORCE_AUDIT (would deny, but allow) or
+ * ENFORCE_ON (deny). Every uncertain path returns OFF: no config, no host
+ * namespace, no readable namespace on the task. Failing open is the only
+ * acceptable default for code that can make syscalls fail -- a monitoring agent
+ * that blocks something because it could not read a pointer is worse than one
+ * that misses a detection.
+ */
+static __always_inline __u32 deny_decision(__u32 watch_flags)
+{
+	__u32 zero = 0, mnt = 0;
+	struct enforce_cfg *cfg;
+	struct task_struct *task;
+
+	if (!(watch_flags & WATCH_DENY_IN_NS))
+		return ENFORCE_OFF;
+
+	cfg = bpf_map_lookup_elem(&enforce, &zero);
+	if (!cfg || cfg->mode == ENFORCE_OFF || !cfg->host_mnt_ns)
+		return ENFORCE_OFF;
+
+	if (!bpf_core_type_exists(struct mnt_namespace))
+		return ENFORCE_OFF;
+
+	task = (struct task_struct *)bpf_get_current_task_btf();
+	mnt = BPF_CORE_READ(task, nsproxy, mnt_ns, ns.inum);
+
+	/* Unreadable namespace, or the host itself: allow. Only a task provably
+	 * in a *different* mount namespace is a candidate. */
+	if (!mnt || mnt == cfg->host_mnt_ns)
+		return ENFORCE_OFF;
+
+	return cfg->mode;
 }
 
 /* Namespace inode numbers for a task.
@@ -385,20 +434,30 @@ int BPF_PROG(handle_file_open, struct file *file)
 		return 0;
 	}
 
+	/* Decided before the event is submitted, so a denial is always recorded
+	 * -- an operation blocked without a trace is the worst of both worlds. */
+	__u32 decision = deny_decision(*watch);
+
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		stat_inc(STAT_RINGBUF_DROPS);
+		/* Never deny an operation we could not record. */
 		return 0;
 	}
 
 	fill_hdr(e, EV_FILE_OPEN);
 	e->file_mode = f_mode;
 	e->watch_id = *watch;
+	if (decision == ENFORCE_ON)
+		e->flags |= EV_F_DENIED;
+	else if (decision == ENFORCE_AUDIT)
+		e->flags |= EV_F_WOULD_DENY;
 	__builtin_memcpy(e->filename, key.path, sizeof(e->filename));
 
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);
-	return 0;
+
+	return decision == ENFORCE_ON ? -EPERM : 0;
 }
 
 /* lsm/path_chmod fires before the new mode is applied, so the inode still

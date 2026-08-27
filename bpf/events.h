@@ -27,6 +27,8 @@ enum event_type {
 /* flags */
 #define EV_F_TRUNCATED     (1 << 0)
 #define EV_F_DEGRADED_PATH (1 << 1)
+#define EV_F_DENIED        (1 << 2) /* the operation was blocked */
+#define EV_F_WOULD_DENY    (1 << 3) /* audit mode: enforcement would have blocked it */
 
 struct event {
 	__u64 ts_ns;          /* CLOCK_BOOTTIME */
@@ -84,6 +86,25 @@ struct path_key {
 /* watched-paths trie value: flags describing when a match should fire */
 #define WATCH_ON_WRITE (1u << 0) /* emit when the file was opened writable */
 #define WATCH_ON_READ  (1u << 1) /* emit when it was opened read-only */
+/* Eligible for denial when the actor is outside the host's mount namespace.
+ * Set only on paths where a containerised writer has no legitimate use, since
+ * this is the flag that decides whether a syscall fails. */
+#define WATCH_DENY_IN_NS (1u << 2)
+
+/* Enforcement is off unless asked for, and audit exists so an operator can see
+ * exactly what would break before anything does. A monitoring tool that starts
+ * denying syscalls by default is a tool that takes hosts down. */
+#define ENFORCE_OFF   0
+#define ENFORCE_AUDIT 1
+#define ENFORCE_ON    2
+
+struct enforce_cfg {
+	__u32 mode;
+	/* The host's mount-namespace inode. Zero disables denial entirely: with
+	 * no reference namespace there is no way to tell "inside a container"
+	 * from "is the host", and guessing would mean denying on the host. */
+	__u32 host_mnt_ns;
+};
 
 /* EV_EXEC_ANON `aux` source codes */
 #define EXEC_SRC_MEMFD   1  /* dentry name begins "memfd:" */

@@ -34,9 +34,32 @@ pub struct Stats {
 /// live from the BPF stats map, so a caller can report liveness without a
 /// second thread -- the daemon stays single-threaded, matching how graph
 /// reaping is driven off the same loop. `Duration::ZERO` disables it.
+/// Enforcement policy, mirroring `enum` values in bpf/events.h.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Enforce {
+    /// Detect only. The default, and what every LSM hook did before M7.
+    Off,
+    /// Report what would be blocked, block nothing.
+    Audit,
+    /// Actually deny.
+    On,
+}
+
+impl Enforce {
+    fn mode(self) -> u32 {
+        match self {
+            Enforce::Off => 0,
+            Enforce::Audit => 1,
+            Enforce::On => 2,
+        }
+    }
+}
+
 pub fn run<F, T>(
     stop: &AtomicBool,
     tick_every: Duration,
+    enforce: Enforce,
+    host_mnt_ns: u32,
     mut on_event: F,
     mut on_tick: T,
 ) -> Result<Stats>
@@ -58,7 +81,33 @@ where
     let watches = watchlist::default_watches();
     let loaded = populate_watches(&skel.maps.watched_paths, &watches)?;
 
+    // Written before attach, so no hook can ever observe a half-configured
+    // policy. Denial also requires a known host namespace: without a reference
+    // there is no way to tell "in a container" from "is the host", and the
+    // failure mode of guessing is denying on the host itself.
+    if enforce != Enforce::Off && host_mnt_ns == 0 {
+        anyhow::bail!(
+            "enforcement needs the host mount namespace, which could not be read from \
+             /proc/1/ns/mnt; refusing to arm denial without it"
+        );
+    }
+    let cfg = [enforce.mode().to_ne_bytes(), host_mnt_ns.to_ne_bytes()].concat();
+    skel.maps
+        .enforce
+        .update(&0u32.to_ne_bytes(), &cfg, libbpf_rs::MapFlags::ANY)
+        .context("writing the enforcement config")?;
+
     skel.attach().context("attaching BPF programs")?;
+    match enforce {
+        Enforce::Off => {}
+        Enforce::Audit => eprintln!(
+            "kernelsentinel: enforcement AUDIT -- reporting what would be denied, blocking nothing"
+        ),
+        Enforce::On => eprintln!(
+            "kernelsentinel: enforcement ON -- kernel escape-hatch writes from outside the host \
+             mount namespace will be denied"
+        ),
+    }
     eprintln!("kernelsentinel: watching {loaded} paths for suspicious writes");
 
     // The callback runs across libbpf's C stack, where a Rust panic cannot

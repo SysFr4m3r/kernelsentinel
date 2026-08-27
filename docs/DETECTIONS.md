@@ -249,7 +249,10 @@ what having escaped looks like from the outside.
 
 ## Cross-cutting limitations
 
-- **Detect-only.** No prevention. The LSM hooks *can* deny, but always return 0.
+- **Detect-only by default.** The LSM hooks return 0 unless `--enforce` is given, and enforcement
+  covers exactly one case: escape-hatch writes from a non-host mount namespace. Every uncertain
+  path fails open, denial refuses to arm without a known host namespace, and `--enforce audit`
+  reports what would be blocked without blocking it.
 - **Baseline is host-specific and time-bounded.** It learns from a clean capture;
   an attack present during learning is learned as normal. Learn on a known-good
   host/window.

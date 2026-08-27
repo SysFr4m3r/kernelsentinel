@@ -68,6 +68,12 @@ pub struct Event {
     pub argv: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
+    /// The kernel blocked this operation because enforcement was armed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub denied: bool,
+    /// Audit mode: enforcement would have blocked it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub would_deny: bool,
 
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub exit_code: u32,
@@ -183,6 +189,8 @@ impl From<&RawEvent> for Event {
             // journal, webhook, syslog -- ever holds the secret.
             argv: crate::redact::argv(r.argv()),
             truncated: r.truncated(),
+            denied: r.denied(),
+            would_deny: r.would_deny(),
             exit_code: r.exit_code,
             child_pid: r.child_pid,
             child_start_boottime: r.child_start_boottime,

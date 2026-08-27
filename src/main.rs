@@ -55,6 +55,11 @@ enum Command {
         /// detection, not a replacement for it.
         #[arg(long)]
         yara: Option<String>,
+        /// Block, rather than only report, a narrow set of container escapes:
+        /// off (default) | audit | on. `audit` reports what would be blocked
+        /// without blocking anything -- run that first.
+        #[arg(long, default_value = "off")]
+        enforce: String,
     },
     /// Capture raw events to an NDJSON file (no detection), for later replay.
     #[cfg(feature = "bpf")]
@@ -222,7 +227,8 @@ fn main() -> Result<()> {
             baseline,
             rules,
             yara,
-        } => run(max_processes, retain, json, baseline, rules, yara),
+            enforce,
+        } => run(max_processes, retain, json, baseline, rules, yara, &enforce),
     }
 }
 
@@ -252,6 +258,9 @@ fn record(out: &str) -> Result<()> {
     let stats = sensors::run(
         &STOP,
         Duration::ZERO,
+        // Capturing for later replay never enforces.
+        sensors::Enforce::Off,
+        0,
         |raw: RawEvent| {
             if raw.tgid == self_pid {
                 return;
@@ -701,7 +710,16 @@ fn run(
     baseline: Option<String>,
     rules: Option<String>,
     yara: Option<String>,
+    enforce: &str,
 ) -> Result<()> {
+    // Parsed before anything attaches: a typo must not silently leave a host
+    // unprotected, or silently arm denial.
+    let enforce_mode = match enforce.to_ascii_lowercase().as_str() {
+        "off" => sensors::Enforce::Off,
+        "audit" => sensors::Enforce::Audit,
+        "on" => sensors::Enforce::On,
+        other => anyhow::bail!("--enforce must be off, audit or on (got {other:?})"),
+    };
     let report = doctor::run();
     if report.fatal() {
         report.print();
@@ -771,6 +789,8 @@ fn run(
     let stats = sensors::run(
         &STOP,
         Duration::from_secs(heartbeat::INTERVAL_SECS),
+        enforce_mode,
+        host_ns,
         |raw: RawEvent| {
             if raw.tgid == self_pid {
                 return;
