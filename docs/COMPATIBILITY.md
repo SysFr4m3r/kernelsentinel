@@ -8,7 +8,7 @@ program types each sensor actually uses, not from a guess at a floor.
 | | |
 |---|---|
 | **Minimum kernel** | **5.11** — nothing loads below it |
-| **Full sensor set** | 5.11 with `CONFIG_BPF_LSM=y` **and** `bpf` in `/sys/kernel/security/lsm` |
+| **Full sensor set** | 5.11 with `CONFIG_BPF_LSM=y` **and** `bpf` in `/sys/kernel/security/lsm` — both, not either. Compiled-in but inactive gets you five of eleven |
 | **Architectures** | x86_64, aarch64 |
 | **Release binaries** | glibc 2.35+ (built on Ubuntu 22.04) |
 | **Privileges** | root, or `CAP_BPF` + `CAP_PERFMON` |
@@ -81,7 +81,7 @@ to start", and let `doctor` settle it.
 | **Kali rolling** | 7.0 | ✅ active by default | **verified** `kali-2026.2` — 11/11 sensors, tracepoint and `lsm/` sensors both confirmed firing; `bpf` already in `/sys/kernel/security/lsm`, no cmdline change |
 | Debian 12 (bookworm) | 6.1 | compiled in | expect to need `lsm=` on the cmdline |
 | Debian 11 (bullseye) | 5.10 | — | **below the 5.11 floor**, nothing loads |
-| Ubuntu 24.04 LTS | 6.8 | compiled in | |
+| **Ubuntu 24.04 LTS** | 6.17 (azure) | compiled in, **not active** | **verified** `ubuntu-24.04` — 5/11 sensors; only `exec` confirmed firing. The six `lsm/` sensors attach and stay inert until `bpf` is added to `lsm=`. Measured on a GitHub runner's azure kernel, not the stock generic one |
 | Ubuntu 22.04 LTS | 5.15 | compiled in | expect to need `lsm=` on the cmdline |
 | Fedora 38+ | 6.2+ | compiled in | |
 | Arch | current | compiled in | rolling, well above the floor |

@@ -670,6 +670,14 @@ TOCTOU-racy, which is a real detection bypass rather than a theoretical one. Fil
 hooks with `bpf_d_path()` on the resolved `struct file`. Even `argv` is read from the new process's
 `mm->arg_start` *after* the exec completes.
 
+**A sensor that attached is not a sensor that works.** The kernel accepts a BPF-LSM program whether
+or not `bpf` is in `/sys/kernel/security/lsm`; only the hook being *invoked* depends on that. So the
+attach count everyone reaches for is a claim about a syscall's return value, and on stock Ubuntu it
+read `11 of 11` while six sensors sat bound to hooks the kernel never called. Measured, not guessed:
+a real `chmod u+s` and a real read of `/etc/shadow` on that host produced nothing at all. The agent
+now reports `5 of 11 sensors active` there and names the six, because a monitoring tool that
+overstates its own coverage is worse than one that admits a gap.
+
 **Names may accuse, never exonerate.** `comm` is whatever a process last passed to
 `prctl(PR_SET_NAME)`, and an executable's path is a string in some mount namespace. Neither is
 evidence. So no rule that *suppresses* a signal is allowed to turn on a name: the programs whose
