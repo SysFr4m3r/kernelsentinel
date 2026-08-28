@@ -115,8 +115,20 @@ fn lsm_check() -> Status {
             if list.split(',').any(|l| l == "bpf") {
                 Status::Ok(format!("bpf LSM active ({list})"))
             } else {
+                // There is no kprobe fallback. This used to say there was, which
+                // is worse than saying nothing: an operator reading it concludes
+                // the file, ptrace and socket detections still work, and they do
+                // not. Worse still, the six lsm/ programs *attach* anyway --
+                // the kernel accepts them whether or not bpf is in the active
+                // LSM list -- so the agent's own "11 of 11 sensors attached" is
+                // not evidence to the contrary. Run scripts/compat-probe.sh,
+                // which provokes each sensor and reports which ones answered.
                 Status::Warn(format!(
-                    "bpf LSM not active ({list}) — LSM sensors will fall back to kprobes"
+                    "bpf LSM not active ({list}) — the six lsm/ sensors still attach, but their \
+                     hooks are only invoked when `bpf` is in this list, so file, \
+                     credential-theft, fileless-exec and socket detections are very likely \
+                     inert. `scripts/compat-probe.sh` provokes each sensor and reports which \
+                     ones answered; add `bpf` to the lsm= kernel command line to enable them."
                 ))
             }
         }

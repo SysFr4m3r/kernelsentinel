@@ -38,16 +38,54 @@ echo "--- doctor ---"
 
 echo
 echo "--- attach ---"
-timeout "$SECS" "$BIN" run --json --min-severity critical >/dev/null 2>"$log"
-rc=$?
-# 124 is timeout doing its job: the agent ran for the whole window without
-# dying, which is the outcome being tested.
-if [[ $rc -ne 124 && $rc -ne 0 ]]; then
-	echo "the agent exited $rc rather than running:" >&2
-	sed 's/^/  /' "$log" >&2
-	exit 1
-fi
+
+# Run the agent, wait for it to be genuinely ready, then provoke each family of
+# sensor and see which ones answer.
+#
+# Counting attachments is not enough, and the Ubuntu runner is why. The kernel
+# accepts an lsm/ program whether or not "bpf" is in the active LSM list -- the
+# attach succeeds either way, and only the hook being *invoked* depends on it.
+# So an agent can report eleven of eleven on a kernel where six of them will
+# never see an event. "Attached" is a claim about a syscall's return value;
+# "live" is a claim about the sensor doing its job, and only the second one is
+# worth putting in a compatibility table.
+out="$(mktemp)"
+work="$(mktemp -d /tmp/ks-probe.XXXXXX)"
+trap 'rm -rf "$log" "$out" "$work"' EXIT
+
+"$BIN" run --json --min-severity info >"$out" 2>"$log" &
+agent=$!
+
+waited=0
+until grep -q "ready, streaming events" "$log" 2>/dev/null; do
+	sleep 0.2
+	waited=$((waited + 1))
+	if ! kill -0 $agent 2>/dev/null || [[ $waited -gt $((SECS * 5)) ]]; then
+		echo "the agent never became ready:" >&2
+		sed 's/^/  /' "$log" >&2
+		exit 1
+	fi
+done
+
+# One provocation per sensor family, each chosen because a specific signal
+# should follow it and nothing else produces that signal.
+cp /bin/true "$work/ks-probe" 2>/dev/null || cp /usr/bin/true "$work/ks-probe"
+"$work/ks-probe" || true              # tracepoint exec -> exec_from_tmp
+chmod u+s "$work/ks-probe" || true    # lsm/path_chmod  -> suid_create
+cat /etc/shadow >/dev/null 2>&1 || true  # lsm/file_open -> credential_store_read
+
+sleep 1                               # let the ring buffer drain
+kill -INT $agent 2>/dev/null
+wait $agent 2>/dev/null
 sed 's/^/  /' "$log"
+
+live=""
+for pair in "exec:exec_from_tmp" "path_chmod:suid_create" "file_open:credential_store_read"; do
+	sensor="${pair%%:*}"; signal="${pair##*:}"
+	if grep -q "\"$signal\"" "$out"; then
+		live="${live:+$live,}$sensor"
+	fi
+done
 
 if ! grep -q "ready, streaming events" "$log"; then
 	echo "the agent never reached its ready line -- it did not finish starting" >&2
@@ -84,5 +122,15 @@ if [[ -r /etc/os-release ]]; then
 fi
 
 echo
-printf 'ks-compat: distro=%s kernel=%s arch=%s bpflsm=%s sensors=%s/%s missing=%s\n' \
-	"$distro" "$(uname -r)" "$(uname -m)" "$lsm" "$have" "$want" "${missing:-none}"
+printf 'ks-compat: distro=%s kernel=%s arch=%s bpflsm=%s sensors=%s/%s missing=%s live=%s\n' \
+	"$distro" "$(uname -r)" "$(uname -m)" "$lsm" "$have" "$want" "${missing:-none}" "${live:-none}"
+
+# The exec sensor is the one with no fallback, and the only one this can insist
+# on: without it there is no process graph. The lsm/ ones are allowed to be
+# absent -- that is what the compatibility table is for -- but they are not
+# allowed to be counted as attached while silently seeing nothing, so the result
+# line records what answered rather than what loaded.
+if [[ ",$live," != *",exec,"* ]]; then
+	echo "the exec sensor attached but produced no event for a real exec" >&2
+	exit 1
+fi
