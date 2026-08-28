@@ -32,8 +32,29 @@ ENFORCE="${KS_ENFORCE:-off}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-[[ $EUID -eq 0 ]] || { echo "must run as root (the agent attaches BPF)" >&2; exit 1; }
 [[ -x "$BIN" ]] || { echo "no binary at $BIN -- cargo build --release" >&2; exit 1; }
+
+# A binary older than the code it is supposed to be testing produces the most
+# expensive result this harness can give: a confident FAIL against a detection
+# that was fixed, or a confident PASS over one that is broken. It happened --
+# a scenario written for a new detection ran against yesterday's binary and
+# reported the old behaviour as a missed detection.
+#
+# Refuse rather than rebuild: this runs under sudo, and `cargo build` here would
+# leave a root-owned target/ behind.
+newest="$(find "$REPO/src" "$REPO/bpf" "$REPO/Cargo.toml" -type f -newer "$BIN" -print -quit 2>/dev/null)"
+if [[ -n "$newest" ]]; then
+	cat >&2 <<-EOF
+	$BIN is older than the source it tests.
+	  first newer file: $newest
+
+	Build it as your normal user, then re-run:
+	  cargo build --release
+	EOF
+	exit 1
+fi
+
+[[ $EUID -eq 0 ]] || { echo "must run as root (the agent attaches BPF)" >&2; exit 1; }
 
 # `ks-expect:` names the signal the scenario must produce; `ks-run:` says whether
 # it executes on the host or inside the lab container.
