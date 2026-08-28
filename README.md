@@ -130,6 +130,10 @@ and Alma do not ship. The agent attaches each program separately and names the o
 a kernel without BPF-LSM keeps lineage, credential transitions and module loading rather than
 refusing to start. See **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)**.
 
+**Cost**: 0.2% of one core and 27 MB idle; 8,262 events/sec sustained with zero loss at 10% of a
+core. Loss begins not at a particular rate but when a workload leaves the agent no core to run on —
+measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**.
+
 **The process graph** gives detections what per-event rules cannot see: PID-reuse-proof identity
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
@@ -714,6 +718,8 @@ stops mattering.
   match/sequence rule DSL, conditions, and scoping.
 - **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)** — which kernels and distributions run this,
   what each sensor requires, and what is lost without BPF-LSM.
+- **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)** — CPU, memory, event throughput and the rate at
+  which the ring buffer starts dropping, reproducible with `scripts/bench.sh`.
 - **[deploy/](deploy/)** — systemd units and an install script for a real deployment.
 
 ### License
