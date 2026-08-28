@@ -66,8 +66,7 @@ jobs:
 
       # The agent binary is compiled against this runner's vmlinux.h. CO-RE is
       # what makes that portable: libbpf relocates field offsets against the
-      # target kernel's own BTF at load time. Verifying the object loads here
-      # catches a broken build before it reaches anyone.
+      # target kernel's own BTF at load time.
       - name: Smoke-test the built binaries
         run: |
           ./target/release/kernelsentinel --version
@@ -79,6 +78,23 @@ jobs:
             echo "server build still exposes 'run' -- the bpf feature leaked" >&2
             exit 1
           fi
+
+      # Load the object into a kernel before publishing it.
+      #
+      # The step above used to claim it did this. It does not -- --version,
+      # rules and replay are userspace paths that never touch BPF, so a release
+      # could ship an agent whose programs the verifier rejects and every check
+      # here would pass. That is not hypothetical: the first CI run that
+      # actually attached found clang compiling a conditional pointer assignment
+      # into `ptr &= mask`, which the verifier refuses. Releases are built with a
+      # different clang from any developer machine, so this is exactly where
+      # that class of failure appears.
+      #
+      # It asserts the object loads and `exec` attaches, not that all eleven
+      # sensors do -- the runner has no BPF-LSM active and losing those six is
+      # supported behaviour.
+      - name: The agent must actually load on a kernel
+        run: sudo -E KS_BIN=./target/release/kernelsentinel ./scripts/compat-probe.sh
 
       - name: Verify package contents
         run: |

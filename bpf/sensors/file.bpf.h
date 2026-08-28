@@ -23,8 +23,26 @@ int BPF_PROG(handle_file_open, struct file *file)
 	struct path_key key = {};
 	struct file_id fid = {};
 	struct event *e;
-	__u32 *watch = NULL;
-	__u32 *hatch = NULL;
+	/* Both map results are carried as scalars rather than as pointers.
+	 *
+	 * Nulling a map pointer to mean "no match" reads naturally and is a load
+	 * failure waiting to happen: clang is free to compile
+	 *
+	 *     if (!(flags & WANT)) p = NULL;
+	 *
+	 * into a branchless select -- build a 0/-1 mask from the test and AND it
+	 * into the pointer -- and the verifier rejects that outright with
+	 * "bitwise operator &= on pointer prohibited". Whether it does so depends
+	 * on the compiler, so the same source builds a loadable object on one
+	 * machine and an unloadable one on another. Keeping the decision on
+	 * scalars removes the choice.
+	 *
+	 * watch_flags is 0 when nothing matched: every watch carries at least one
+	 * direction bit, so a stored value is never 0 (asserted in
+	 * watchlist::tests::every_watch_has_a_direction).
+	 */
+	__u32 watch_flags = 0;
+	int is_hatch = 0;
 	long len;
 
 	__u32 f_mode = BPF_CORE_READ(file, f_mode);
@@ -41,7 +59,7 @@ int BPF_PROG(handle_file_open, struct file *file)
 	if (f_mode & FMODE_WRITE) {
 		fid.ino = BPF_CORE_READ(file, f_inode, i_ino);
 		fid.dev = BPF_CORE_READ(file, f_inode, i_sb, s_dev);
-		hatch = bpf_map_lookup_elem(&escape_targets, &fid);
+		is_hatch = bpf_map_lookup_elem(&escape_targets, &fid) != NULL;
 	}
 
 	/* bpf_d_path is GPL-only and allowlisted to a set of hooks that take a
@@ -53,8 +71,11 @@ int BPF_PROG(handle_file_open, struct file *file)
 		len = sizeof(key.path);
 	key.prefixlen = (__u32)(len - 1) * 8;
 
-	watch = bpf_map_lookup_elem(&watched_paths, &key);
-	if (watch) {
+	__u32 *w = bpf_map_lookup_elem(&watched_paths, &key);
+	if (w) {
+		/* Read the flags out once; every decision below is on the scalar. */
+		__u32 flags = *w;
+
 		/* A watch opts in to a direction. Reads of credential files are
 		 * the theft shape; writes are the persistence shape, and most
 		 * watched paths care about only one. Requiring an explicit
@@ -62,19 +83,19 @@ int BPF_PROG(handle_file_open, struct file *file)
 		 * authentication -- from flooding userspace merely because it
 		 * is watched at all. */
 		if (f_mode & FMODE_WRITE) {
-			if (!(*watch & WATCH_ON_WRITE))
-				watch = NULL;
-		} else if (!(*watch & WATCH_ON_READ)) {
-			watch = NULL;
+			if (flags & WATCH_ON_WRITE)
+				watch_flags = flags;
+		} else if (flags & WATCH_ON_READ) {
+			watch_flags = flags;
 		}
 	}
 
-	if (!watch && !hatch)
+	if (!watch_flags && !is_hatch)
 		return 0;
 
 	/* Decided before the event is submitted, so a denial is always recorded
 	 * -- an operation blocked without a trace is the worst of both worlds. */
-	__u32 decision = deny_decision(hatch != NULL);
+	__u32 decision = deny_decision(is_hatch);
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
@@ -85,8 +106,8 @@ int BPF_PROG(handle_file_open, struct file *file)
 
 	fill_hdr(e, EV_FILE_OPEN);
 	e->file_mode = f_mode;
-	e->watch_id = watch ? *watch : 0;
-	if (hatch)
+	e->watch_id = watch_flags;
+	if (is_hatch)
 		e->flags |= EV_F_ESCAPE_TARGET;
 	if (decision == ENFORCE_ON)
 		e->flags |= EV_F_DENIED;

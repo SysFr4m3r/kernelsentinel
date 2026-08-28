@@ -220,6 +220,22 @@ mod tests {
         }
     }
 
+    /// `handle_file_open` uses `watch_flags == 0` to mean "nothing matched",
+    /// which is only sound while no real watch can have zero flags. A watch with
+    /// no direction bits would be stored in the trie, match a path, and then be
+    /// silently discarded as a miss.
+    #[test]
+    fn every_watch_has_a_direction() {
+        for w in default_watches() {
+            assert_ne!(w.flags, 0, "{} has no direction bits", w.prefix);
+            assert!(
+                w.flags & (WATCH_ON_WRITE | WATCH_ON_READ) != 0,
+                "{} must watch reads, writes or both",
+                w.prefix
+            );
+        }
+    }
+
     #[test]
     fn encode_key_layout_matches_bpf_struct() {
         let key = encode_key("/etc/").unwrap();
