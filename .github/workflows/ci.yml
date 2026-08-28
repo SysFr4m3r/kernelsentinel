@@ -91,8 +91,14 @@ jobs:
       - name: Build
         run: cargo build
 
-      - name: What kernel is this
+      - name: What kernel and compiler is this
+        # Both matter and they are not the same question. release.yml pins
+        # clang-15; this job takes the runner image's default, which is how the
+        # two workflows came to build the object with different compilers -- and
+        # why a verifier rejection could appear here while every published
+        # release loaded fine.
         run: |
+          clang --version | head -1
           uname -a
           echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
           echo "btf: $(ls -l /sys/kernel/btf/vmlinux 2>/dev/null || echo absent)"
