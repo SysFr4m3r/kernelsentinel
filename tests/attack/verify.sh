@@ -72,6 +72,11 @@ run_one() {
 	# without one produces a scenario that fails and looks like a missed
 	# detection -- which is exactly what happened to setcap.
 	caps="$(header "$script" ks-caps)"
+	# A third question, alongside "was it detected" and "did anything fire".
+	# `ks-forbid` names one signal that must NOT appear, and runs at info so
+	# the absence is real rather than an artefact of the alerting floor.
+	local forbid
+	forbid="$(header "$script" ks-forbid)"
 	if [[ -z "$expect" ]]; then
 		printf '  %-32s SKIP  (no ks-expect header)\n' "$name"
 		skip=$((skip + 1)); return
@@ -90,8 +95,16 @@ run_one() {
 	# wolf means MEDIUM and above. Running these at info would report every
 	# correctly-suppressed low signal as a false positive, which is exactly the
 	# wrong answer.
+	# Silence scenarios ask "does ordinary work cry wolf", and crying wolf means
+	# MEDIUM and above -- at info every correctly-suppressed low signal would
+	# read as a false positive.
+	#
+	# A forbid scenario asks the opposite question about one specific signal,
+	# and must run at info: `credential_store_read` scores 30, so at the medium
+	# floor its absence proves nothing. Suppression could be entirely broken and
+	# a medium-floor run would still be silent.
 	local floor=info
-	[[ "$expect" == "silence" ]] && floor=medium
+	[[ "$expect" == "silence" && -z "$forbid" ]] && floor=medium
 	"$BIN" run --json --min-severity "$floor" --enforce "$ENFORCE" >"$out" 2>"$log" &
 	local agent=$!
 
@@ -132,6 +145,23 @@ run_one() {
 		# combined log printed the agent shutting down and hid the real error.
 		sed 's/^/      /' "$slog" | tail -4
 		fail=$((fail + 1)); FAILED+=("$name"); return
+	fi
+
+	if [[ -n "$forbid" ]]; then
+		# Absence of one named signal. This is the only assertion that can
+		# catch a *suppression* that has stopped working: the signal firing
+		# here means the thing that was supposed to be recognised was not.
+		if grep -q "\"$forbid\"" "$out"; then
+			printf '  %-32s FIRED %s (must have been suppressed)\n' "$name" "$forbid"
+			grep "\"$forbid\"" "$out" | head -2 | sed 's/^/      /' | cut -c1-160
+			fail=$((fail + 1)); FAILED+=("$name")
+		else
+			printf '  %-32s PASS  no %s\n' "$name" "$forbid"
+			grep -hE 'NOT exercised|DOES exercise|in use|re-run with' "$slog" 2>/dev/null \
+				| sed 's/^\[noise\] /        note: /' || true
+			pass=$((pass + 1))
+		fi
+		return
 	fi
 
 	if [[ "$expect" == "silence" ]]; then
@@ -236,6 +266,7 @@ if [[ $fail -gt 0 ]]; then
 	echo "  FAIL          an attack ran and the sensor did not report it."
 	echo "  FALSE POSITIVE ordinary work produced an alert. Either the detection is"
 	echo "                too eager, or it belongs in a baseline -- both are findings."
+	echo "  FIRED         a signal that should have been suppressed was reported."
 	echo "  ERROR         the scenario itself did not run; nothing was tested."
 	exit 1
 fi
