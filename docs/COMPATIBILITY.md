@@ -24,6 +24,14 @@ The agent attaches each program separately and reports which ones did not, so a
 kernel missing BPF-LSM loses the file, ptrace, exec-source and socket sensors
 while keeping the rest — it does not refuse to start.
 
+**An attach count is not a health check.** The kernel accepts an `lsm/` program
+whether or not `bpf` is in the active LSM list; only the hook being *invoked*
+depends on that. So a host without BPF-LSM can report `11 of 11 sensors
+attached` while six of them never see an event. `scripts/compat-probe.sh`
+provokes each sensor family and reports which ones actually answered, which is
+what the `live=` field in [compat-results.txt](compat-results.txt) records — and
+the only claim worth putting in the table below.
+
 | Sensor | Needs | Kernel | Lost without BPF-LSM |
 |---|---|---|---|
 | exec | tracepoint, ring buffer, `bpf_get_current_task_btf` | 5.11 | — |
@@ -61,7 +69,7 @@ to start", and let `doctor` settle it.
 
 | Distribution | Kernel | BPF-LSM | |
 |---|---|---|---|
-| **Kali rolling** | 7.0 | ✅ active by default | **verified** `kali-2026.2` — 11/11 sensors, `bpf` already in `/sys/kernel/security/lsm`, no cmdline change |
+| **Kali rolling** | 7.0 | ✅ active by default | **verified** `kali-2026.2` — 11/11 sensors, tracepoint and `lsm/` sensors both confirmed firing; `bpf` already in `/sys/kernel/security/lsm`, no cmdline change |
 | Debian 12 (bookworm) | 6.1 | compiled in | expect to need `lsm=` on the cmdline |
 | Debian 11 (bullseye) | 5.10 | — | **below the 5.11 floor**, nothing loads |
 | Ubuntu 24.04 LTS | 6.8 | compiled in | |
