@@ -138,7 +138,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on three levels. 161 unit and integration tests, including detections replayed from
+**Tested** on four levels. 161 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. Twenty [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -147,6 +147,13 @@ silent, because a tool that catches everything and fires on `docker run` gets mu
 of those asserts the *absence* of a specific signal rather than general quiet — the only assertion
 shape that can catch a suppression having stopped working, which no amount of attack scenarios
 can, since a suppression that fails open makes the attack tests pass harder.
+
+And the sensors are loaded into a real kernel on every push, which is newer than the rest of this
+list and found more than it should have: a verifier rejection that only one compiler produced, and
+an agent reporting eleven working sensors on a host where six were inert. CI attaches on x86_64 and
+aarch64, and boots the runner's own kernel under QEMU with `lsm=...,bpf` appended so the six
+BPF-LSM sensors — most of the detection surface — fire somewhere other than the machine this was
+written on.
 
 ---
 

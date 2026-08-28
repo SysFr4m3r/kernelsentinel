@@ -133,7 +133,7 @@ sudo ./scripts/compat-probe.sh
 ```
 
 ```
-ks-compat: kernel=7.0.12+kali-amd64 arch=x86_64 bpflsm=active sensors=11/11 missing=none
+ks-compat: distro=kali-2026.2 kernel=7.0.12+kali-amd64 arch=x86_64 bpflsm=active sensors=11/11 missing=none live=exec,path_chmod,file_open
 ```
 
 That line is what turns an inferred row into a verified one, and it is the most

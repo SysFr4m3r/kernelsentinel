@@ -3,6 +3,96 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
+## v0.3.0 — the agent stops overstating what it can see
+
+**Upgrade from v0.2.1, especially on Ubuntu, Debian or RHEL.** On those hosts
+v0.2.1 reported `11 of 11 sensors attached` while six of them saw nothing.
+
+### The agent no longer counts sensors that cannot fire
+
+A BPF-LSM program attaches whether or not `bpf` is in `/sys/kernel/security/lsm`
+— the kernel accepts it either way, and only the hook being *invoked* depends on
+that list. Every distribution that ships `CONFIG_BPF_LSM=y` without enabling it
+therefore ran an agent that claimed full coverage and had none of the file,
+credential-theft, fileless-exec or container-socket detections.
+
+Measured on a GitHub runner rather than reasoned about: eleven programs
+attached, a real exec produced an event, a real `chmod u+s` and a real read of
+`/etc/shadow` produced nothing at all. The agent now reads the LSM list at
+startup and reports `5 of 11 sensors active` there, naming the six and why. The
+count says *active* rather than *attached*, because "attached" describes a
+syscall's return value, not a sensor doing its job.
+
+Nothing is lost that your host ever had. What changes is that the report is
+true. If you run on a distribution where BPF-LSM is compiled in but inactive,
+`docs/COMPATIBILITY.md` has the one-line boot parameter that turns it on.
+
+`doctor` also stopped claiming those sensors "fall back to kprobes". There is no
+kprobe fallback and there never was.
+
+### Suppression by file identity, not by process name
+
+`credential_read` suppressed the programs whose job is authentication by
+matching `comm`, which the process itself chooses. `cp /bin/cat /tmp/sudo &&
+/tmp/sudo /etc/shadow` produced no signal at all — not a reduced score, nothing.
+
+Suppression now requires the reader's executable to *be* one of the host's
+authentication binaries, matched by `(device, inode)` and resolved at startup.
+`shell_from_network_daemon` gains the same identity check while keeping its name
+test, because the asymmetry matters: a name that suppresses a signal is a
+one-line bypass, a name that raises one only ever accuses a liar of its own
+behaviour. Names may accuse, never exonerate.
+
+### Baselines carry evidence instead of a verdict
+
+A `(signal, exe)` pair seen once during learning used to be normal forever, at
+10% score. An attacker resident while you recorded a "clean" capture whitelisted
+themselves with a single action, and a looped payload was indistinguishable from
+a habit.
+
+Suppression is now proportional to the evidence behind it: how many times a pair
+was seen, how much of the learning window it spanned, and how long ago the
+baseline was learned. One sighting keeps ~85% of its score. A burst confined to
+one instant caps at half confidence however often it repeated. A baseline decays
+after 14 days and suppresses nothing past 90. Every one of those fails toward
+alerting.
+
+Existing baseline files still load. They carry no timestamps, so every entry
+reads as one burst of unknown age — weaker than before, and the startup line
+says so. Re-learn from a capture spanning hours.
+
+### `budget` — measure the alert volume
+
+```bash
+kernelsentinel record --out normal-day.ndjson
+kernelsentinel budget --capture normal-day.ndjson
+```
+
+Record a host doing ordinary work and every incident in that capture is a false
+positive by construction. Reports incidents at each severity floor, what caused
+them, and what a baseline removed. First measurement, on a desktop over 2.3
+hours: zero alerts at the default floor.
+
+### A verifier rejection that only one compiler produced
+
+`handle_file_open` used a null map pointer to mean "no match", which clang may
+compile into `ptr &= mask` — an instruction the verifier rejects outright.
+Whether it did depended on the compiler, so the same source built a loadable
+object on one machine and an unloadable one on another. Published releases were
+not affected; a runner image bump would eventually have made them so.
+
+### Verification
+
+CI now loads the BPF object into a kernel, which it had never done — that is how
+both the verifier rejection and the false attach count were found. It attaches
+on x86_64 and aarch64, and boots the runner's own kernel under QEMU with
+`lsm=...,bpf` appended so the six BPF-LSM sensors are exercised somewhere other
+than a developer machine. The release pipeline refuses to publish an agent that
+cannot attach.
+
+`COMPATIBILITY.md` may now mark a row "verified" only when a probe actually ran
+there and its output is recorded, enforced by a test.
+
 ## v0.2.1 — fixes a container escape detection that did not work
 
 **Upgrade from v0.2.0.** In v0.2.0 the kernel escape-hatch detection matched on

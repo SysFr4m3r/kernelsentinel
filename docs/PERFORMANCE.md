@@ -102,6 +102,16 @@ The synthetic saturation load is exec-heavy because that is the cheapest way to
 generate a high event rate. A workload that is heavy on *watched file writes*
 would stress a different path, and is not covered here.
 
+**These numbers were taken before a starting-line bug was fixed.** `bench.sh`
+waited for a log line that the agent printed *before* attaching its sensors, so
+the load could begin a fraction of a second early and some of its events were
+generated while nothing was watching. That direction under-counts — it makes
+throughput look slightly better and drops look slightly rarer than they are —
+so the figures above are a mild best case rather than a wrong answer. The
+harness now waits for a line that only appears once every program is attached
+and the ring buffer is built; re-running `scripts/bench.sh` produces numbers
+without that skew.
+
 ---
 
 # Alert budget
