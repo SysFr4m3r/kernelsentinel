@@ -75,6 +75,31 @@ years. CachyOS is the one worth actually checking rather than assuming — it
 ships custom-tuned kernels, and a non-stock config is precisely where a default
 like `CONFIG_LSM` might diverge.
 
+### Producing a row
+
+`scripts/compat-probe.sh` loads the sensors on whatever kernel it is run on and
+prints one line describing the result:
+
+```bash
+sudo ./scripts/compat-probe.sh
+```
+
+```
+ks-compat: kernel=7.0.12+kali-amd64 arch=x86_64 bpflsm=active sensors=11/11 missing=none
+```
+
+That line is what turns an inferred row into a verified one, and it is the most
+useful thing a
+[compatibility report](https://github.com/SysFr4m3r/kernelsentinel/issues/new?template=compatibility.yml)
+can carry. CI runs the same probe on the GitHub runner's kernel, which is a
+different kernel and LSM configuration from any developer machine.
+
+The probe deliberately does **not** require all eleven sensors. Losing the six
+`lsm/` ones is supported behaviour, and a check demanding the full set would fail
+every correctly-degrading kernel while passing only on machines that already
+work. It asserts the object loads and that `exec` attaches; the rest is recorded,
+not demanded.
+
 Verify rather than trust a table — `doctor` answers all of it in one line each,
 on any distribution, without needing a row here:
 

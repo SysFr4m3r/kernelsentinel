@@ -62,3 +62,44 @@ jobs:
 
       - name: Validate shipped rules
         run: cargo run --quiet -- rules --dir rules
+
+  # The check CI never had: load the object into a kernel.
+  #
+  # Everything above compiles the BPF object and runs unprivileged replay tests,
+  # so until now every claim about *attaching* rested on one developer machine --
+  # which attaches 11 of 11 and therefore cannot exercise the path where some
+  # sensors are unavailable. The runner is a different kernel with a different
+  # LSM configuration, which makes it a genuine second data point and, most
+  # likely, the first test of the degradation path.
+  attach:
+    name: attach on the runner kernel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install BPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libbpf-dev \
+                                   linux-tools-common linux-tools-generic
+
+      - name: Generate vmlinux.h from the runner's BTF
+        run: ./scripts/gen-vmlinux.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build
+
+      - name: What kernel is this
+        run: |
+          uname -a
+          echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
+          echo "btf: $(ls -l /sys/kernel/btf/vmlinux 2>/dev/null || echo absent)"
+
+      - name: Attach the sensors
+        # Asserts the object loads and `exec` attaches -- not that all eleven do.
+        # A kernel without BPF-LSM losing six sensors is documented, supported
+        # behaviour, and demanding the full set here would fail every correctly
+        # degrading kernel and pass only on machines like the author's.
+        run: sudo -E ./scripts/compat-probe.sh
