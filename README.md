@@ -404,6 +404,15 @@ A ready-made deployment (hardened units, install script) lives in **[deploy/](de
 > The server then binds `127.0.0.1` and warns. Never expose plain HTTP off localhost — the ingest key
 > travels in a header.
 
+### Contributing
+
+The most useful contributions are not code. `docs/COMPATIBILITY.md` has one
+verified row, the false-positive rate has never been measured on a busy host
+over a long period, and a detection that misses is the most serious kind of bug
+here. **[CONTRIBUTING.md](CONTRIBUTING.md)** says what to send and what a
+detection needs to be accepted; **[SECURITY.md](SECURITY.md)** covers reporting a
+vulnerability privately.
+
 ### Reading an incident
 
 The dashboard updates in real time: it holds a long-poll open and refreshes the moment an agent ships
@@ -733,6 +742,15 @@ Dual-licensed, split by directory:
   ([`LICENSE-APACHE`](LICENSE-APACHE), [`LICENSE-MIT`](LICENSE-MIT)) — the Rust ecosystem convention.
 
 Unless you state otherwise, contributions are accepted under these same terms.
+
+### Contributing
+
+The most useful contributions are not code. `docs/COMPATIBILITY.md` has one
+verified row, the false-positive rate has never been measured on a busy host
+over a long period, and a detection that misses is the most serious kind of bug
+here. **[CONTRIBUTING.md](CONTRIBUTING.md)** says what to send and what a
+detection needs to be accepted; **[SECURITY.md](SECURITY.md)** covers reporting a
+vulnerability privately.
 
 ### Reading
 

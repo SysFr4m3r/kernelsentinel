@@ -1,0 +1,36 @@
+name: False positive
+description: It alerted on something ordinary
+title: "fp: <what was happening>"
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are among the most valuable reports this project can get. A
+        detection that fires on ordinary work gets the whole tool muted, at
+        which point its detection quality stops mattering.
+
+        **Before pasting:** an incident record contains command lines, file
+        paths and your hostname. Secrets passed as arguments are redacted
+        (`--password <redacted>`), but paths and hostnames are not — redact
+        anything you would not post publicly.
+  - type: textarea
+    id: incident
+    attributes:
+      label: The incident
+      description: From `run --json`, or the panel's detail view.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: activity
+    attributes:
+      label: What was actually happening
+      placeholder: "A routine `apt upgrade`. Nobody was logged in."
+    validations:
+      required: true
+  - type: input
+    id: frequency
+    attributes:
+      label: How often does it fire?
+      placeholder: "Every deploy, roughly 20 times a day"

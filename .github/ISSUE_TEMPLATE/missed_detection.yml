@@ -1,0 +1,38 @@
+name: Missed detection
+description: Something happened and it did not fire
+title: "miss: <what was not caught>"
+labels: ["missed-detection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most serious kind of report here. A container escape detection once
+        passed 113 tests and CI, shipped in a release, and failed against the
+        real attack — only running the attack found it.
+
+        If you can, check `docs/DETECTIONS.md` first: the known evasions are
+        listed per detection, and a documented one is a limitation rather than
+        a bug. Reporting it anyway is fine — it tells us the limitation matters.
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you do?
+      description: Exact commands, if you can share them. Reproducibility is the whole value.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Which detection should have fired?
+      placeholder: "suid_create — I created a SUID root binary in /tmp"
+    validations:
+      required: true
+  - type: textarea
+    id: startup
+    attributes:
+      label: The agent's startup lines
+      description: >
+        The "N of 11 sensors attached" line matters — if the relevant sensor
+        could not attach on your kernel, that is the answer.
+      render: text

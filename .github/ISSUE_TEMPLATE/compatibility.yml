@@ -1,0 +1,46 @@
+name: Compatibility report
+description: Tell us whether it runs on your kernel and distribution
+title: "compat: <distribution> <kernel>"
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `docs/COMPATIBILITY.md` has **one** verified row. Everything else is
+        inferred from shipped kernel versions and default configs, which change.
+        Your `doctor` output turns a guess into a fact — including a report that
+        it does *not* work, which is just as useful.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `sudo kernelsentinel doctor`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: startup
+    attributes:
+      label: First lines of `sudo kernelsentinel run`
+      description: >
+        The "N of 11 sensors attached" line, and any sensors it named as
+        unavailable. Ctrl-C once the event stream starts.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+      placeholder: "Rocky Linux 9.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - All sensors attached
+        - Some sensors unavailable, agent ran
+        - Agent would not start
+    validations:
+      required: true
