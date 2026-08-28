@@ -98,6 +98,19 @@ years. CachyOS is the one worth actually checking rather than assuming — it
 ships custom-tuned kernels, and a non-stock config is precisely where a default
 like `CONFIG_LSM` might diverge.
 
+### What is still untested anywhere but one machine
+
+CI attaches the sensors on a GitHub runner, whose kernel has BPF-LSM compiled in
+but not active — and a hosted runner cannot be rebooted with a different command
+line. So the six `lsm/` sensors, which carry most of the detection surface, have
+never fired anywhere except the developer machine in the table below. They are
+covered by replay tests against recorded captures, and by the attack suite when
+someone runs it locally, but no automated run has seen one of them observe a real
+event on a kernel other than that one.
+
+Closing it means booting a kernel under QEMU with `lsm=...,bpf` appended, which
+is what `.github/workflows/vm-spike.yml` exists to size up.
+
 ### Producing a row
 
 `scripts/compat-probe.sh` loads the sensors on whatever kernel it is run on and
