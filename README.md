@@ -138,7 +138,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on three levels. 150 unit and integration tests, including detections replayed from
+**Tested** on three levels. 157 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. Twenty [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -505,7 +505,8 @@ That drops the `bpf` feature, so `build.rs` never invokes clang and the binary n
 20 MB instead of 37 MB and carries no collector code it cannot run.
 
 It keeps everything that does not need a kernel: `serve`, `ship`, `replay`, `investigate`,
-`baseline`, `rules`, `tree`, `doctor`. Only `run` and `record` are absent, because only they collect.
+`baseline`, `budget`, `rules`, `tree`, `doctor`. Only `run` and `record` are absent, because only
+they collect.
 
 The role is still chosen by subcommand rather than by binary name — a separate name would need a
 workspace split for no functional gain, since one crate builds all its binaries with the same
@@ -611,6 +612,42 @@ kernelsentinel: 47 patterns (31 strong), 6.2h learning window, learned 0d ago
 A suppressed signal says so in the incident, with the evidence behind it — `[baseline: seen 42x,
 confidence 91%]` — because an alert that quietly did not fire is indistinguishable from a detector
 that broke.
+
+### Measure how noisy it is (alert budget)
+
+The attack suite proves detections fire and the noise suite proves five short scenarios stay quiet.
+Neither answers the question you actually decide on: **how many alerts will this produce per day on
+my machine, and what are they?**
+
+Record a host doing ordinary work, then measure the capture. If nothing malicious happened while it
+was recording, *every* incident in it is a false positive — the capture is the assertion, since
+nothing here can label ground truth on its own:
+
+```bash
+kernelsentinel record --out normal-day.ndjson     # while the host does its usual work
+kernelsentinel budget --capture normal-day.ndjson
+```
+
+```
+  floor       incidents    per day
+  INFO              118      123.1
+  LOW               118      123.1
+  MEDIUM             70       73.0
+  HIGH               47       49.0
+  CRITICAL            1        1.0
+
+  what fired at medium
+         38x  privilege_escalation
+         32x  module_load
+```
+
+Pass `--baseline` to measure with one applied, and it shows what the baseline removed rather than
+asserting a benefit — on the capture above, 73 medium alerts a day became zero. `--json` emits the
+same measurement for tracking it across releases.
+
+It refuses to extrapolate a daily rate from a capture under an hour, for the same reason a baseline
+entry seen once earns almost no confidence: a number invented from thin evidence is worse than no
+number.
 
 ---
 

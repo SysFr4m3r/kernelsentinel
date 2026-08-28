@@ -98,6 +98,30 @@ enum Command {
         #[arg(short, long)]
         out: String,
     },
+    /// Measure the alert budget of a capture: how many incidents it produces at
+    /// each severity floor, and what caused them.
+    ///
+    /// Record a host doing ordinary work, then every incident this reports is a
+    /// false positive -- the capture is the assertion, since nothing here can
+    /// label ground truth on its own.
+    Budget {
+        /// Capture to measure.
+        #[arg(short, long)]
+        capture: String,
+        /// Measure with this baseline applied, and show what it removed.
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Directory of YAML detection rules to include.
+        #[arg(long)]
+        rules: Option<String>,
+        /// The floor the offender breakdown is attributed at -- the one you
+        /// would actually alert on.
+        #[arg(long, default_value = "medium")]
+        min_severity: String,
+        /// Emit the measurement as JSON, for tracking it over time.
+        #[arg(long)]
+        json: bool,
+    },
     /// Investigate one process from a capture: lineage, timeline, risk, ATT&CK.
     Investigate {
         /// PID to investigate.
@@ -194,6 +218,13 @@ fn main() -> Result<()> {
             rules,
         } => replay(&input, json, baseline, rules),
         Command::Baseline { capture, out } => baseline_build(&capture, &out),
+        Command::Budget {
+            capture,
+            baseline,
+            rules,
+            min_severity,
+            json,
+        } => budget_report(&capture, baseline, rules, &min_severity, json),
         Command::Investigate { pid, capture } => investigate(pid, &capture),
         Command::Tree { pid } => tree(pid),
         Command::Serve {
@@ -539,6 +570,26 @@ fn baseline_build(capture: &str, out: &str) -> Result<()> {
     Ok(())
 }
 
+/// Measure how much noise a capture produces. See `kernelsentinel::budget`.
+fn budget_report(
+    capture: &str,
+    baseline: Option<String>,
+    rules: Option<String>,
+    min_severity: &str,
+    json: bool,
+) -> Result<()> {
+    let floor = parse_severity(min_severity)?;
+    let text =
+        std::fs::read_to_string(capture).with_context(|| format!("reading capture {capture}"))?;
+    let b = kernelsentinel::budget::measure(&text, baseline.as_deref(), rules.as_deref(), floor);
+    if json {
+        emit(&serde_json::to_string(&b)?);
+    } else {
+        emit(&b.render(floor));
+    }
+    Ok(())
+}
+
 /// Investigate one process from a capture. Replays the whole file to rebuild
 /// the graph and detection state, then prints everything known about the target
 /// pid: identity, lineage, credential history, its event timeline, the signals
@@ -756,16 +807,7 @@ fn run(
     enforce: &str,
     min_severity: &str,
 ) -> Result<()> {
-    let floor = match min_severity.to_ascii_lowercase().as_str() {
-        "info" => Severity::Info,
-        "low" => Severity::Low,
-        "medium" => Severity::Medium,
-        "high" => Severity::High,
-        "critical" => Severity::Critical,
-        other => anyhow::bail!(
-            "--min-severity must be info, low, medium, high or critical (got {other:?})"
-        ),
-    };
+    let floor = parse_severity(min_severity)?;
     // Parsed before anything attaches: a typo must not silently leave a host
     // unprotected, or silently arm denial.
     let enforce_mode = match enforce.to_ascii_lowercase().as_str() {
@@ -968,6 +1010,22 @@ fn emit(line: &str) {
 }
 
 /// Same, for status/summary messages on stderr. Never panics on a broken pipe.
+/// Parse a `--min-severity` value. Shared by `run` and `budget` so a floor
+/// means the same thing whether it is deciding what to alert on or what to
+/// count.
+fn parse_severity(s: &str) -> Result<Severity> {
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "info" => Severity::Info,
+        "low" => Severity::Low,
+        "medium" => Severity::Medium,
+        "high" => Severity::High,
+        "critical" => Severity::Critical,
+        other => anyhow::bail!(
+            "--min-severity must be info, low, medium, high or critical (got {other:?})"
+        ),
+    })
+}
+
 fn status(line: &str) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }

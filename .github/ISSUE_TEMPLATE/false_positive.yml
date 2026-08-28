@@ -34,3 +34,21 @@ body:
     attributes:
       label: How often does it fire?
       placeholder: "Every deploy, roughly 20 times a day"
+  - type: textarea
+    id: budget
+    attributes:
+      label: Alert budget (optional, but the most useful thing here)
+      description: |
+        A measured rate beats an estimate. Record the host doing ordinary work
+        for a few hours, then:
+
+        ```
+        kernelsentinel record --out normal-day.ndjson
+        kernelsentinel budget --capture normal-day.ndjson --json
+        ```
+
+        This counts incidents and names what caused them; it contains no
+        command lines, only signal ids and executable paths. It is also the
+        one number nobody has measured at scale, so even a boring result is
+        worth having.
+      render: json
