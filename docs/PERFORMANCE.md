@@ -101,3 +101,88 @@ benchmark rather than only its output is that you can measure your own.
 The synthetic saturation load is exec-heavy because that is the cheapest way to
 generate a high event rate. A workload that is heavy on *watched file writes*
 would stress a different path, and is not covered here.
+
+---
+
+# Alert budget
+
+Throughput above answers "can it keep up". This answers the question an operator
+actually decides on: **how many alerts per day, and what are they?** A tool that
+catches everything and pages twice a day gets muted in week one, at which point
+its detection quality stops mattering.
+
+## Method
+
+Nothing here can label ground truth, so the definition is operational: record a
+host doing ordinary work, and every incident in that capture is a false positive
+by construction. The capture is the assertion.
+
+```bash
+sudo kernelsentinel record --out normal-day.ndjson   # while the host does its usual work
+kernelsentinel budget --capture normal-day.ndjson
+```
+
+`budget` replays the capture once per severity floor — reporting is stateful, so
+the counts cannot be derived by filtering a single pass — and refuses to
+extrapolate a daily rate from under an hour of recording.
+
+## First measurement
+
+Kali 7.0.12, 8 cores, 8 GB, single-user desktop. **2.3 hours** of ordinary
+interactive work: shell, `apt`, `ssh`, editing, building.
+
+| floor | incidents | per day |
+|---|---:|---:|
+| info | 13 | 138.5 |
+| low | 13 | 138.5 |
+| **medium** | **0** | **0.0** |
+| high | 0 | 0.0 |
+| critical | 0 | 0.0 |
+
+219,066 events at 27 events/sec. **Zero alerts at the default `medium` floor**,
+with no baseline applied.
+
+That is the number the design is built around: the low-severity signals fired 13
+times and none of them reached the alerting floor on their own, which is exactly
+what scoring `privilege_escalation` and `credential_store_read` below the floor
+is for. Whether they *chain* into something is the question those signals exist
+to answer, and here nothing did.
+
+## What fired below the floor
+
+| count | signal | mostly |
+|---:|---|---|
+| 7 | `cross_uid_proc_read` | `/usr/bin/pidof` |
+| 5 | `privilege_escalation` | `sudo`, `apt` |
+| 2 | `ssh_private_key_read` | `/usr/bin/ssh` |
+
+All three are behaving correctly and are worth naming:
+
+- **`pidof` reads other users' `/proc` entries** as its whole job. Reading
+  another user's `/proc/<pid>/cmdline` goes through `ptrace_may_access`, so the
+  ptrace sensor sees it. Six of the seven cross-uid reads on this host were one
+  utility doing what it exists to do.
+- **`ssh` reads your private key** to authenticate with it. That is the same file
+  access an exfiltration would perform, distinguishable only by what happens
+  next — which is precisely why the signal scores 35 and cannot alert alone.
+- **`privilege_escalation`** on `sudo` and `apt` is every ordinary escalation on
+  the box.
+
+Each is a baseline candidate rather than a detector bug. On a host where these
+recur, `kernelsentinel baseline` learns them and `budget --baseline` shows what
+that removed.
+
+## What this does not establish
+
+One desktop, one user, 2.3 hours. It says nothing yet about:
+
+- a busy multi-user server, a CI runner, or a container host, where the event
+  rate and the mix of routine behaviour are both different
+- a full day: the extrapolation multiplies 2.3 hours of *interactive* use across
+  24, which over-counts an idle night and under-counts a working day
+- anything at fleet scale, which is the number that would actually settle it
+
+If you run this, `budget --json` in a
+[false-positive report](https://github.com/SysFr4m3r/kernelsentinel/issues/new?template=false_positive.yml)
+is the single most useful thing this project can receive. It carries signal ids
+and executable paths, no command lines.

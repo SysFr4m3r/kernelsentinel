@@ -649,6 +649,12 @@ It refuses to extrapolate a daily rate from a capture under an hour, for the sam
 entry seen once earns almost no confidence: a number invented from thin evidence is worse than no
 number.
 
+**Measured once so far:** 2.3 hours of ordinary desktop use, 219,066 events at 27/sec, **zero
+alerts at the default `medium` floor** with no baseline applied. Thirteen low-severity signals
+fired and none reached the floor alone — which is what scoring them below it is for. That is one
+desktop, not a fleet; [docs/PERFORMANCE.md](docs/PERFORMANCE.md) has the breakdown and what it does
+not establish.
+
 ---
 
 ## Design notes

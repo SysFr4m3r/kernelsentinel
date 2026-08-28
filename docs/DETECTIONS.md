@@ -137,7 +137,10 @@ are suppressed; theft is reaching *outside* your tree.
 
 - **Trigger:** as an unprivileged user, read `/proc/<root-pid>/environ`.
 - **False positives:** monitoring agents and `ps`-like tools that legitimately read
-  across uids. Baseline them.
+  across uids. Baseline them. **Measured:** on a single-user desktop over 2.3
+  hours this fired 7 times, 6 of them `/usr/bin/pidof` — reading another user's
+  `/proc/<pid>/cmdline` goes through `ptrace_may_access`, so the ptrace sensor
+  sees it. None reached the alerting floor. See docs/PERFORMANCE.md.
 - **Evasions:** same-uid reads are filtered in-kernel to kill the systemd/runc
   introspection flood — so a root attacker reading another *root* process's
   `environ`/`maps` is not flagged (a `/proc/pid/mem` read still is, as it uses
@@ -155,6 +158,10 @@ read was filtered in-kernel and the daemon never saw it.
 - **Signal ids:** **`credential_store_read`** (30) for `/etc/shadow` and `/etc/gshadow`;
   **`ssh_private_key_read`** (35) for SSH private keys.
 - **Trigger:** `sudo cat /etc/shadow`, or `cat ~/.ssh/id_ed25519` as another user.
+- **`ssh` reading your own private key is indistinguishable from theft** at the
+  moment of the read — only what happens next separates them, which is why this
+  scores below the floor rather than alerting. Measured at 2 occurrences in 2.3
+  hours of desktop use, neither reaching the floor.
 - **Deliberately below the alerting floor.** Reading `/etc/shadow` is what authentication *is*, so on
   its own this must not alert; it earns weight only in a lineage with something else. The same
   discipline as `privilege_escalation`: a signal that fires during normal operation cannot be allowed
