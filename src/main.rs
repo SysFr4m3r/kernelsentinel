@@ -270,6 +270,9 @@ fn record(out: &str) -> Result<()> {
         "kernelsentinel: recording to {out} (ctrl-c to stop)"
     ));
 
+    let trusted = kernelsentinel::fileid::TrustedBinaries::resolve_host();
+    status(&format!("kernelsentinel: {}", trusted.summary()));
+
     let mut count = 0u64;
     let stats = sensors::run(
         &STOP,
@@ -281,7 +284,11 @@ fn record(out: &str) -> Result<()> {
             if raw.tgid == self_pid {
                 return;
             }
-            let ev = Event::from(&raw);
+            let mut ev = Event::from(&raw);
+            // Resolved on the recording host and written into the capture: a
+            // replay elsewhere must reproduce what this host decided, not
+            // re-derive it from the replaying machine's own /usr/bin.
+            ev.resolve_trust(&trusted);
             // A serialize/write failure to the capture file is worth stopping for,
             // unlike a broken stdout pipe; surface it and shut down.
             match serde_json::to_string(&ev) {
@@ -682,7 +689,9 @@ fn investigate(pid: u32, capture: &str) -> Result<()> {
 /// view is wrong too.
 fn tree(root_pid: Option<u32>) -> Result<()> {
     let mut graph = ProcessGraph::new(usize::MAX, Duration::from_secs(0));
-    let result = scan::bootstrap(&mut graph);
+    // `tree` prints structure and runs no detections, so nothing here consults
+    // the trusted table.
+    let result = scan::bootstrap(&mut graph, &kernelsentinel::fileid::TrustedBinaries::none());
 
     let roots = match root_pid {
         Some(pid) => graph
@@ -803,7 +812,20 @@ fn run(
         }
         None => None,
     };
-    let boot = scan::bootstrap(&mut graph);
+    // Resolve the trusted system binaries before the scan, so processes that
+    // predate the agent are recognised too. Like the host mount namespace, this
+    // is host state read once at startup: consulting the filesystem per event
+    // would let a mid-flight package upgrade change a detection's answer.
+    let trusted = kernelsentinel::fileid::TrustedBinaries::resolve_host();
+    status(&format!("kernelsentinel: {}", trusted.summary()));
+    if !trusted.unresolved().is_empty() {
+        status(&format!(
+            "kernelsentinel: not installed here: {}",
+            trusted.unresolved().join(", ")
+        ));
+    }
+
+    let boot = scan::bootstrap(&mut graph, &trusted);
     // Recorded once here rather than consulted per event, so detection stays
     // deterministic when the same capture is replayed elsewhere.
     let host_ns = scan::host_mnt_ns();
@@ -843,7 +865,8 @@ fn run(
             // Before any other filtering: the canary is a real exec and must be
             // counted as observed even though it is our own child.
             canary.observe(raw.tgid);
-            let ev = Event::from(&raw);
+            let mut ev = Event::from(&raw);
+            ev.resolve_trust(&trusted);
             graph.apply(&ev);
 
             // Detection runs after the graph update so lineage queries see this

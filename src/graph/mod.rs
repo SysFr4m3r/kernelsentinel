@@ -48,6 +48,15 @@ pub struct ProcNode {
     pub children: Vec<ProcKey>,
     pub comm: String,
     pub exe: String,
+    /// The canonical name of the trusted system binary this process is running,
+    /// established by file identity at exec. Empty means "not a known system
+    /// binary", including for every process whose exec was never observed.
+    ///
+    /// Deliberately not derived from `comm` or `exe`: both are strings the
+    /// process can arrange to say anything. A detection that turns on this
+    /// field is asking what the kernel mapped, not what the process calls
+    /// itself.
+    pub trusted: String,
     pub argv: Vec<String>,
     pub uid: u32,
     pub euid: u32,
@@ -67,6 +76,7 @@ impl ProcNode {
             children: Vec::new(),
             comm: String::new(),
             exe: String::new(),
+            trusted: String::new(),
             argv: Vec::new(),
             uid: 0,
             euid: 0,
@@ -332,10 +342,12 @@ impl ProcessGraph {
     fn on_exec(&mut self, ev: &Event) {
         let key = self.resolve(ev.tgid, ev.start_boottime);
         let (comm, exe, argv) = (ev.comm.clone(), ev.filename.clone(), ev.argv.clone());
+        let trusted = ev.exe_trusted.clone();
         let node = self.ensure(key, Origin::Observed);
         node.comm = comm;
         node.exe = exe;
         node.argv = argv;
+        node.trusted = trusted;
         node.uid = ev.uid;
         node.euid = ev.euid;
         node.cgroup_id = ev.cgroup_id;

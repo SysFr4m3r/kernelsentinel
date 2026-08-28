@@ -48,9 +48,30 @@ pub fn run() -> Report {
         ("privileges", priv_check()),
         ("bpf lsm", lsm_check()),
         ("memlock", memlock_check()),
+        ("trusted binaries", trusted_check()),
     ];
 
     Report { checks }
+}
+
+/// Which of the host's authentication programs and network daemons could be
+/// resolved to a file identity.
+///
+/// Worth showing before anything runs, because the consequence is asymmetric. An
+/// unresolved *credential reader* means its reads are no longer suppressed and
+/// will alert -- noisy, but visible. The count going to zero would mean every
+/// authentication on the host starts producing signals, and finding that out
+/// from the alert stream is the slow way.
+fn trusted_check() -> Status {
+    let t = crate::fileid::TrustedBinaries::resolve_host();
+    let msg = t.summary();
+    if t.is_empty() {
+        Status::Warn(format!(
+            "{msg} -- nothing recognised, so every authentication read will alert"
+        ))
+    } else {
+        Status::Ok(msg)
+    }
 }
 
 fn kernel_check() -> Status {

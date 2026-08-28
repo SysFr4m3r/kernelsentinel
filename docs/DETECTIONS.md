@@ -94,8 +94,18 @@ command-injection shape.
 - **Trigger:** a request to a vulnerable app that runs `system("/bin/sh")`.
 - **False positives:** CGI scripts, deploy hooks, and health checks that shell out
   from a web server. Baseline the specific parent→shell pairs.
+- **Matched by identity or by name.** A daemon in the ancestry counts if its
+  executable is a known daemon binary by `(device, inode)`, **or** if its `comm`
+  looks like one. The two halves cover different gaps: identity catches a
+  compromised nginx that renamed itself before spawning the shell, and the name
+  catches shebang-script daemons like `gunicorn` and `uwsgi`, whose mapped
+  executable is really the Python interpreter.
+- **Names may accuse, never exonerate.** Consulting `comm` is safe *here* because
+  a match only ever raises a signal — a process falsely called `nginx` accuses
+  itself. The mirror image, where a name suppresses a signal, is not permitted
+  anywhere; see `credential_store_read`.
 - **Evasions:** a payload that is not a recognized shell binary (a custom
-  interpreter, a statically-linked tool) is not matched by name; the daemon-list
+  interpreter, a statically-linked tool) is not matched by name; the daemon table
   is also not exhaustive.
 
 ### `exec_from_tmp` — base 20 · T1036
@@ -151,13 +161,23 @@ read was filtered in-kernel and the daemon never saw it.
   to alert alone.
 - **False positives:** every authentication path reads the credential store. The obvious readers —
   `unix_chkpwd`, `sshd`, `sudo`, `su`, `login`, `passwd`, `systemd-logind`, `polkitd`, `sssd` and
-  friends — are suppressed by `comm` in-detector. Backup agents, config management, and vulnerability
-  scanners will still fire; baseline them.
-- **Evasions:** suppression is by `comm`, which an attacker controls — a payload named `sshd` reading
-  `/etc/shadow` is not reported. That is a deliberate trade: matching on the executable path instead
-  would be stronger but would not survive the `/proc` bootstrap for pre-existing processes, and the
-  noise reduction is what makes the signal usable at all. Reading a credential file through a hard
-  link, a bind mount, or a copy made earlier is also not matched, since the watch is on the path.
+  friends — are suppressed, but only when the reader's **executable** is one of those programs,
+  matched by `(device, inode)`. Backup agents, config management, and vulnerability scanners will
+  still fire; baseline them.
+- **Suppression is by file identity, never by name.** This previously matched `comm`, which the
+  process itself sets: `prctl(PR_SET_NAME, "sshd")`, or a copy of `cat` at `/tmp/sudo`, produced no
+  signal at all. The stated reason for accepting that was that path matching would not survive the
+  `/proc` bootstrap for processes older than the agent — which is no longer true: the bootstrap
+  stats `/proc/<pid>/exe`, so a pre-existing `sshd` is identified the same way a freshly exec'd one
+  is. The regression scenario is `tests/scenarios/credential_read_name_spoof.sh`.
+- **When identity cannot be resolved, the signal fires.** A credential reader installed somewhere
+  the table does not list is simply not recognised, and its reads alert. The failure direction is
+  noise, never silence — `run` prints which programs it could not find at startup so the gap is
+  visible rather than discovered from an alert.
+- **Evasions:** an attacker who can write to `/usr/bin` can replace a real authentication binary,
+  but that requires privileges that already defeat this detection by other means. Reading a
+  credential file through a hard link, a bind mount, or a copy made earlier is not matched, since
+  the *watch* is still on the path — only the suppression is identity-based.
   Only `/etc/shadow`, `/etc/gshadow` and SSH private keys are read-watched; `authorized_keys` is not,
   because it is read on every single login.
 

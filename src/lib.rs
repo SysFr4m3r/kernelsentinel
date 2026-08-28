@@ -7,6 +7,7 @@ pub mod decoded;
 pub mod detect;
 pub mod doctor;
 pub mod event;
+pub mod fileid;
 pub mod graph;
 pub mod heartbeat;
 pub mod http;

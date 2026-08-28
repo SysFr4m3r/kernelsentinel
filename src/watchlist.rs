@@ -94,13 +94,19 @@ pub const ESCAPE_HATCHES: &[&str] = &[
     "/proc/sys/fs/binfmt_misc/register",
 ];
 
-/// `(dev, inode)` for each escape hatch that exists on this host, for the BPF
+/// The identity of each escape hatch that exists on this host, for the BPF
 /// identity map. Absent files are skipped rather than guessed at.
-pub fn escape_hatch_ids() -> Vec<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
+///
+/// The device number goes through `FileId`, which converts glibc's `dev_t`
+/// encoding into the kernel's `s_dev` form. Every hatch here lives on a
+/// pseudo-filesystem with major 0, where the two encodings happen to produce
+/// the same number -- so this was correct before the conversion existed, but
+/// only by accident, and any hatch added on a real filesystem would have
+/// silently never matched.
+pub fn escape_hatch_ids() -> Vec<crate::fileid::FileId> {
     ESCAPE_HATCHES
         .iter()
-        .filter_map(|p| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino())))
+        .filter_map(|p| crate::fileid::FileId::of(p))
         .collect()
 }
 

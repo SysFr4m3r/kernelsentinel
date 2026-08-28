@@ -24,7 +24,12 @@ pub struct ScanResult {
 }
 
 /// Populate `graph` with every process currently visible in /proc.
-pub fn bootstrap(graph: &mut ProcessGraph) -> ScanResult {
+///
+/// `trusted` names the processes already running a known system binary. Without
+/// it every pre-existing `sshd` and `systemd-logind` would be unrecognised, and
+/// the credential-read suppression they exist for would not apply to the very
+/// daemons that were running before the agent started.
+pub fn bootstrap(graph: &mut ProcessGraph, trusted: &crate::fileid::TrustedBinaries) -> ScanResult {
     let hz = clock_ticks_hz();
     let ns_per_tick = 1_000_000_000u64 / hz;
 
@@ -46,7 +51,7 @@ pub fn bootstrap(graph: &mut ProcessGraph) -> ScanResult {
             continue;
         };
 
-        match scan_one(pid, ns_per_tick) {
+        match scan_one(pid, ns_per_tick, trusted) {
             Some((node, ppid)) => {
                 edges.push((node.key, ppid));
                 graph.insert_scanned(node);
@@ -61,7 +66,11 @@ pub fn bootstrap(graph: &mut ProcessGraph) -> ScanResult {
     ScanResult { scanned, failed }
 }
 
-fn scan_one(pid: u32, ns_per_tick: u64) -> Option<(ProcNode, u32)> {
+fn scan_one(
+    pid: u32,
+    ns_per_tick: u64,
+    trusted: &crate::fileid::TrustedBinaries,
+) -> Option<(ProcNode, u32)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
 
     // comm is in parentheses and may itself contain spaces or parens, so
@@ -86,6 +95,14 @@ fn scan_one(pid: u32, ns_per_tick: u64) -> Option<(ProcNode, u32)> {
     node.exe = fs::read_link(format!("/proc/{pid}/exe"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Identity comes from stat'ing the magic link, not from the string it
+    // resolves to: the link text is a path in the process's own mount namespace
+    // and can read `(deleted)`, while the stat lands on the mapped file itself.
+    if let Some(id) = crate::fileid::FileId::of(&format!("/proc/{pid}/exe")) {
+        if let Some((name, _)) = trusted.lookup(id) {
+            node.trusted = name.to_string();
+        }
+    }
     if let Some((uid, euid)) = read_ids(pid) {
         node.uid = uid;
         node.euid = euid;

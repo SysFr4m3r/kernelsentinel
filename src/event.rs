@@ -56,6 +56,9 @@ pub struct RawEvent {
     pub cap_effective: u64,
     pub old_cap_effective: u64,
     pub child_start_boottime: u64,
+    /// Identity of the mapped executable (EV_EXEC only). See the note in
+    /// bpf/events.h: this is the file, not the name it goes by.
+    pub exe_ino: u64,
 
     pub pid: u32,
     pub tgid: u32,
@@ -80,6 +83,9 @@ pub struct RawEvent {
     pub mnt_ns: u32,
     pub pid_ns: u32,
     pub net_ns: u32,
+    /// s_dev of `exe_ino`'s superblock, in the kernel's encoding -- convert a
+    /// userspace `dev_t` with `fileid::kernel_dev` before comparing.
+    pub exe_dev: u32,
 
     pub r#type: u16,
     pub flags: u16,

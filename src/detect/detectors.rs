@@ -5,6 +5,7 @@
 
 use crate::decoded::Event;
 use crate::event::EventType;
+use crate::fileid::{Role, TrustedBinaries};
 use crate::graph::{ProcKey, ProcessGraph};
 
 use super::signal::Signal;
@@ -163,33 +164,6 @@ fn ptrace(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
     )]
 }
 
-/// Programs whose whole job is to read the credential store. Every
-/// authentication on the host goes through one of these, so without this the
-/// signal would fire dozens of times a day on a machine where nothing happened.
-/// Matched on `comm`, which is what the kernel gives us here.
-const CREDENTIAL_READERS: &[&str] = &[
-    "unix_chkpwd",
-    "sshd",
-    "sudo",
-    "su",
-    "login",
-    "passwd",
-    "chpasswd",
-    "gpasswd",
-    "newgrp",
-    "usermod",
-    "useradd",
-    "userdel",
-    "vipw",
-    "systemd-logind",
-    "polkitd",
-    "sssd",
-    "agetty",
-    "gdm-session-wor",
-    "lightdm",
-    "accounts-daemon",
-];
-
 /// A read of the credential store or of an SSH private key -- the theft shape,
 /// as opposed to the tampering shape `sensitive_write` covers.
 ///
@@ -199,8 +173,18 @@ const CREDENTIAL_READERS: &[&str] = &[
 /// discipline applied to `privilege_escalation`: a signal that fires during
 /// normal operation must not be able to alert by itself.
 fn credential_read(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
-    let comm = graph.get(&key).map(|n| n.comm.as_str()).unwrap_or("");
-    if CREDENTIAL_READERS.contains(&comm) {
+    // Suppressed only for a process whose *executable* is one of the host's
+    // authentication programs, established by file identity at exec.
+    //
+    // This used to match on `comm`, which the process picks: `prctl(PR_SET_NAME,
+    // "sudo")`, or a copy of `cat` at /tmp/sudo, returned no signal at all. A
+    // suppression rule keyed on an attacker-controlled string is not a rule, and
+    // a miss here is silent -- no reduced score to notice, just nothing.
+    //
+    // Identity has no fallback on purpose. If the table cannot resolve a
+    // program, its reads alert; the failure direction is noise, never silence.
+    let trusted = graph.get(&key).map(|n| n.trusted.as_str()).unwrap_or("");
+    if TrustedBinaries::has_role(trusted, Role::CredentialReader) {
         return vec![];
     }
     let (score, id, what): (u32, &'static str, &str) =
@@ -435,12 +419,30 @@ fn shell_from_network_daemon(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> 
     if !is_shell(&ev.filename) {
         return Vec::new();
     }
-    // Walk the shell's ancestry for a web/db daemon.
+    // Walk the shell's ancestry for a web/db daemon, by verified identity first
+    // and by name second.
+    //
+    // The asymmetry with `credential_read` is deliberate. There a name could
+    // suppress a signal, so only identity is allowed to decide. Here a match
+    // only ever *raises* one, so the union of both tests is strictly better than
+    // either: identity catches a compromised nginx that renamed itself before
+    // spawning the shell, and the name catches the shebang-script daemons whose
+    // mapped executable is really the Python interpreter.
     let daemon = graph
         .ancestry(&key)
         .into_iter()
-        .find(|n| is_web_or_db_daemon(&n.comm))
-        .map(|n| format!("{}({})", n.comm, n.key.pid));
+        .find(|n| {
+            TrustedBinaries::has_role(&n.trusted, Role::NetworkDaemon)
+                || TrustedBinaries::name_looks_like_daemon(&n.comm)
+        })
+        .map(|n| {
+            let who = if n.trusted.is_empty() {
+                n.comm.clone()
+            } else {
+                n.trusted.clone()
+            };
+            format!("{}({})", who, n.key.pid)
+        });
 
     match daemon {
         Some(d) => vec![Signal::new(
@@ -464,30 +466,6 @@ fn is_shell(path: &str) -> bool {
         "sh", "bash", "dash", "zsh", "ash", "ksh", "fish", "csh", "tcsh",
     ];
     SHELLS.contains(&shell_name(path))
-}
-
-/// Web and database servers -- daemons that face the network but have no
-/// legitimate reason to spawn a shell. sshd is intentionally absent.
-fn is_web_or_db_daemon(comm: &str) -> bool {
-    const DAEMONS: &[&str] = &[
-        "nginx",
-        "apache2",
-        "httpd",
-        "php-fpm",
-        "php-fpm7",
-        "php-fpm8",
-        "tomcat",
-        "node",
-        "gunicorn",
-        "uwsgi",
-        "mysqld",
-        "mariadbd",
-        "postgres",
-        "redis-server",
-        "mongod",
-        "memcached",
-    ];
-    DAEMONS.iter().any(|d| comm == *d || comm.starts_with(d))
 }
 
 /// Connecting to the Docker/containerd control socket. A process that can talk

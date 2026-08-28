@@ -836,27 +836,33 @@ fn credential_reads_are_detected_suppressed_and_scored_below_the_floor() {
         });
         serde_json::from_str(&v.to_string()).unwrap()
     }
-    fn exec_event(pid: u32, comm: &str) -> Event {
+    /// `trusted` is what identity resolution concluded on the monitored host:
+    /// the canonical name of the system binary this process is *actually*
+    /// running, or empty for anything unrecognised. `comm` is separate on
+    /// purpose -- the whole point is that the two can disagree.
+    fn exec_event(pid: u32, comm: &str, trusted: &str) -> Event {
         let v = serde_json::json!({
             "ts_ns": 1_000u64 + pid as u64, "type": 1, "tgid": pid, "ppid": 1,
             "start_boottime": 1_000u64 + pid as u64,
             "uid": 1000, "gid": 1000, "euid": 1000, "egid": 1000, "cgroup_id": 1,
-            "comm": comm, "filename": format!("/usr/bin/{comm}"), "argv": [comm]
+            "comm": comm, "filename": format!("/usr/bin/{comm}"), "argv": [comm],
+            "exe_trusted": trusted
         });
         serde_json::from_str(&v.to_string()).unwrap()
     }
 
     let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
-    let signals_for = |g: &mut ProcessGraph, pid: u32, comm: &str, path: &str, write: bool| {
-        let e = exec_event(pid, comm);
-        g.apply(&e);
-        let o = open_event(pid, comm, path, write);
-        g.apply(&o);
-        kernelsentinel::detect::signals_for_event(&o, g)
-    };
+    let signals_for =
+        |g: &mut ProcessGraph, pid: u32, comm: &str, trusted: &str, path: &str, write: bool| {
+            let e = exec_event(pid, comm, trusted);
+            g.apply(&e);
+            let o = open_event(pid, comm, path, write);
+            g.apply(&o);
+            kernelsentinel::detect::signals_for_event(&o, g)
+        };
 
     // An unexpected reader of /etc/shadow is a signal...
-    let sigs = signals_for(&mut g, 4001, "curl", "/etc/shadow", false);
+    let sigs = signals_for(&mut g, 4001, "curl", "", "/etc/shadow", false);
     assert_eq!(sigs.len(), 1, "an unexpected read must be detected");
     assert_eq!(sigs[0].id, "credential_store_read");
     assert!(
@@ -867,23 +873,47 @@ fn credential_reads_are_detected_suppressed_and_scored_below_the_floor() {
 
     // ...but the programs whose job is authentication are not. Without this the
     // signal would fire on every sudo, ssh login and getent on the box.
-    for reader in ["unix_chkpwd", "sshd", "sudo", "su"] {
+    //
+    // Suppression turns on `exe_trusted`, which only an identity match against
+    // the host's own binaries can set -- not on `comm`.
+    for (i, reader) in ["unix_chkpwd", "sshd", "sudo", "su"].iter().enumerate() {
         let sigs = signals_for(
             &mut g,
-            4100 + reader.len() as u32,
+            4100 + i as u32,
+            reader,
             reader,
             "/etc/shadow",
             false,
         );
         assert!(
             sigs.is_empty(),
-            "{reader} reading shadow must be suppressed"
+            "the real {reader} reading shadow must be suppressed"
         );
+    }
+
+    // The bypass this replaced. `comm` is whatever the process says it is: one
+    // prctl, or a copy of cat at /tmp/sudo, and the old membership test returned
+    // no signal at all. Calling yourself sudo must buy nothing.
+    for (i, name) in ["unix_chkpwd", "sshd", "sudo", "su"].iter().enumerate() {
+        let sigs = signals_for(
+            &mut g,
+            4150 + i as u32,
+            name, // says it is an authentication program...
+            "",   // ...but its executable is not one
+            "/etc/shadow",
+            false,
+        );
+        assert_eq!(
+            sigs.len(),
+            1,
+            "a process merely named {name} must not suppress a credential read"
+        );
+        assert_eq!(sigs[0].id, "credential_store_read");
     }
 
     // An SSH private key read scores higher: sshd loads host keys once at
     // startup, so anything else reading them is far more diagnostic.
-    let sigs = signals_for(&mut g, 4200, "cat", "/etc/ssh/ssh_host_rsa_key", false);
+    let sigs = signals_for(&mut g, 4200, "cat", "", "/etc/ssh/ssh_host_rsa_key", false);
     assert_eq!(sigs[0].id, "ssh_private_key_read");
     assert!(sigs[0].score > 30);
     assert_eq!(
@@ -893,7 +923,7 @@ fn credential_reads_are_detected_suppressed_and_scored_below_the_floor() {
     );
 
     // A write to the same path is still the tampering signal, not the read one.
-    let sigs = signals_for(&mut g, 4300, "curl", "/etc/shadow", true);
+    let sigs = signals_for(&mut g, 4300, "curl", "", "/etc/shadow", true);
     assert_eq!(
         sigs[0].id, "cred_config_write",
         "writes keep their own signal"
@@ -1236,5 +1266,74 @@ fn kernel_autoloaded_modules_do_not_alert_but_a_person_loading_one_does() {
     assert_eq!(
         sigs[0].id, "module_load",
         "veth loaded by hand is still a load"
+    );
+}
+
+/// A shell spawned by a network daemon is the webshell shape. Which processes
+/// count as network daemons is decided by identity *and* by name, and the two
+/// halves cover different holes.
+///
+/// The asymmetry with credential reads is the point. There, a name could
+/// suppress a signal, so only a verified identity is allowed to decide. Here a
+/// match only ever raises one, so consulting both is strictly better than
+/// either: names may accuse, never exonerate.
+#[test]
+fn a_daemon_is_recognised_by_identity_or_by_name_but_never_excused() {
+    fn exec(pid: u32, ppid: u32, comm: &str, trusted: &str, path: &str) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 1_000u64 + pid as u64, "type": 1, "tgid": pid, "ppid": ppid,
+            "start_boottime": 1_000u64 + pid as u64,
+            "uid": 33, "gid": 33, "euid": 33, "egid": 33, "cgroup_id": 1,
+            "comm": comm, "filename": path, "argv": [path],
+            "exe_trusted": trusted
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    fn fork(parent: u32, child: u32) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 900u64 + child as u64, "type": 3, "tgid": parent, "ppid": 1,
+            "start_boottime": 1_000u64 + parent as u64,
+            "child_pid": child, "child_start_boottime": 1_000u64 + child as u64,
+            "uid": 33, "gid": 33, "euid": 33, "egid": 33, "cgroup_id": 1
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+
+    // daemon (however it is identified) -> /bin/sh
+    let fired = |comm: &str, trusted: &str| -> bool {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        let d = exec(5000, 1, comm, trusted, "/usr/sbin/whatever");
+        g.apply(&d);
+        g.apply(&fork(5000, 5001));
+        let sh = exec(5001, 5000, "sh", "", "/bin/sh");
+        g.apply(&sh);
+        kernelsentinel::detect::signals_for_event(&sh, &g)
+            .iter()
+            .any(|s| s.id == "shell_from_network_daemon")
+    };
+
+    // A compiled daemon that renamed itself before spawning the shell. `comm`
+    // says kworker, which is exactly what an attacker with code execution
+    // inside nginx would arrange; identity still says nginx.
+    assert!(
+        fired("kworker/2:1", "nginx"),
+        "renaming the process must not defeat the detection"
+    );
+
+    // A shebang-script daemon: the kernel's mapped executable is really the
+    // Python interpreter, so identity resolves to something that is not in the
+    // daemon table. The name is what is left, and it is enough.
+    assert!(
+        fired("gunicorn", ""),
+        "script daemons must still be caught by name"
+    );
+
+    // The plain case, both agreeing.
+    assert!(fired("nginx", "nginx"));
+
+    // And nothing that is neither.
+    assert!(
+        !fired("bash", ""),
+        "an ordinary shell chain must not look like a webshell"
     );
 }

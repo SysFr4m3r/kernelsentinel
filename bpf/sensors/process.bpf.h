@@ -14,6 +14,7 @@ SEC("tp/sched/sched_process_exec")
 int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 {
 	struct event *e;
+	struct task_struct *task;
 	unsigned int fname_off;
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -22,8 +23,16 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 		return 0;
 	}
 
+	task = (struct task_struct *)bpf_get_current_task_btf();
 	fill_hdr(e, EV_EXEC);
-	fill_ns(e, (struct task_struct *)bpf_get_current_task_btf());
+	fill_ns(e, task);
+
+	/* sched_process_exec fires after the new image is installed, so exe_file
+	 * is already the binary that is now running rather than the one that
+	 * called execve. A kernel thread has no mm and these read as zero, which
+	 * userspace treats as "unknown" and never as a match. */
+	e->exe_ino = BPF_CORE_READ(task, mm, exe_file, f_inode, i_ino);
+	e->exe_dev = BPF_CORE_READ(task, mm, exe_file, f_inode, i_sb, s_dev);
 
 	/* __data_loc: low 16 bits are the offset from the start of the record */
 	fname_off = ctx->__data_loc_filename & 0xFFFF;

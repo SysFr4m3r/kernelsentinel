@@ -127,11 +127,43 @@ pub struct Event {
     /// capture time so it persists into a replayed capture.
     #[serde(default, skip_serializing_if = "is_empty_str")]
     pub container: String,
+
+    /// Identity of the executable this process is running (exec events).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub exe_ino: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub exe_dev: u32,
+    /// The canonical name of the trusted system binary this executable *is*,
+    /// resolved by file identity at capture time. Empty means "not one of
+    /// them", which is the safe reading: it suppresses nothing and grants
+    /// nothing.
+    ///
+    /// Resolved here, on the monitored host, rather than at detection time,
+    /// because only this host knows what its own `/usr/bin/sudo` is. Recording
+    /// the answer means a replayed capture reproduces the decision the agent
+    /// actually made instead of re-deriving it from whichever machine happens
+    /// to be replaying it.
+    #[serde(default, skip_serializing_if = "is_empty_str")]
+    pub exe_trusted: String,
 }
 
 impl Event {
     pub fn event_type(&self) -> EventType {
         EventType::from(self.r#type)
+    }
+
+    /// The identity of this process's executable, if the event carried one.
+    pub fn exe_id(&self) -> crate::fileid::FileId {
+        crate::fileid::FileId::new(self.exe_dev, self.exe_ino)
+    }
+
+    /// Name this event's executable against the host's trusted-binary table.
+    /// Called once on the way out of the ring buffer, so the answer travels
+    /// with the event into a capture.
+    pub fn resolve_trust(&mut self, trusted: &crate::fileid::TrustedBinaries) {
+        if let Some((name, _)) = trusted.lookup(self.exe_id()) {
+            self.exe_trusted = name.to_string();
+        }
     }
 
     pub fn opened_for_write(&self) -> bool {
@@ -217,6 +249,11 @@ impl From<&RawEvent> for Event {
             container: crate::container::parse_container(&r.cgroup_name())
                 .map(|c| c.label())
                 .unwrap_or_default(),
+            exe_ino: r.exe_ino,
+            exe_dev: r.exe_dev,
+            // Left empty here: `From<&RawEvent>` has no host to ask. The caller
+            // resolves it with `resolve_trust` once, where the table lives.
+            exe_trusted: String::new(),
         }
     }
 }

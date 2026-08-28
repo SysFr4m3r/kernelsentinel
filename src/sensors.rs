@@ -100,14 +100,14 @@ where
     // through a bind mount at some other location, where no watched prefix
     // applies. Populated before attach so no open can slip past a partial map.
     let hatches = watchlist::escape_hatch_ids();
-    for (dev, ino) in &hatches {
-        // struct file_id { u64 ino; u32 dev; u32 _pad; }
-        let mut key = [0u8; 16];
-        key[..8].copy_from_slice(&ino.to_ne_bytes());
-        key[8..12].copy_from_slice(&(*dev as u32).to_ne_bytes());
+    for id in &hatches {
         skel.maps
             .escape_targets
-            .update(&key, &1u32.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
+            .update(
+                &id.to_map_key(),
+                &1u32.to_ne_bytes(),
+                libbpf_rs::MapFlags::ANY,
+            )
             .context("populating the escape-target map")?;
     }
     eprintln!(

@@ -138,8 +138,8 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on three levels. 138 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. Nineteen [attack scenarios](#testing) that run the
+**Tested** on three levels. 150 unit and integration tests, including detections replayed from
+**real kernel captures** committed as fixtures. Twenty [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And four noise scenarios asserting ordinary work stays silent, because a
@@ -623,6 +623,16 @@ Hooking `commit_creds` and diffing old against new credentials catches *every* t
 TOCTOU-racy, which is a real detection bypass rather than a theoretical one. File sensors use LSM
 hooks with `bpf_d_path()` on the resolved `struct file`. Even `argv` is read from the new process's
 `mm->arg_start` *after* the exec completes.
+
+**Names may accuse, never exonerate.** `comm` is whatever a process last passed to
+`prctl(PR_SET_NAME)`, and an executable's path is a string in some mount namespace. Neither is
+evidence. So no rule that *suppresses* a signal is allowed to turn on a name: the programs whose
+credential reads are excused are matched by `(device, inode)` against the host's real binaries,
+resolved once at startup, and a copy of `cat` at `/tmp/sudo` is not sudo. A rule that only ever
+*raises* a signal may still consult a name, because the worst a liar achieves is accusing itself —
+that is what still catches shebang-script daemons like `gunicorn`, whose mapped executable is really
+the Python interpreter. `doctor` reports how many system binaries it could resolve, because an
+unresolved credential reader means its reads start alerting.
 
 **Process identity is `(pid, start_boottime)`, never a bare PID.** PIDs recycle within seconds on a
 busy host, and a recycled PID means attributing an attacker's action to an innocent process.

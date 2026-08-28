@@ -41,6 +41,14 @@ struct event {
 	__u64 cap_effective;      /* new/current effective capability set */
 	__u64 old_cap_effective;  /* EV_CRED_CHANGE only */
 	__u64 child_start_boottime; /* EV_FORK only */
+	/* Identity of the process's mapped executable, EV_EXEC only: the inode of
+	 * mm->exe_file and the device of its superblock. `comm` is whatever the
+	 * process last set with prctl and the exec path is a string in some mount
+	 * namespace; this is the file the kernel actually mapped. It is what
+	 * userspace matches against the trusted-binary table, so that being
+	 * *named* sudo is not the same as being sudo. Zero for a kernel thread,
+	 * which has no mm. */
+	__u64 exe_ino;
 
 	__u32 pid;
 	__u32 tgid;
@@ -69,6 +77,7 @@ struct event {
 	__u32 mnt_ns;
 	__u32 pid_ns;
 	__u32 net_ns;
+	__u32 exe_dev; /* s_dev of exe_ino's superblock; see exe_ino */
 
 	__u16 type;
 	__u16 flags;
