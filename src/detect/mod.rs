@@ -76,19 +76,33 @@ impl Engine {
     }
 
     /// Apply the baseline to a signal set: a signal whose (id, exe) pair is
-    /// known-normal on this host keeps only KNOWN_FACTOR of its score. exe is
-    /// resolved from the process the signal fired on.
+    /// known-normal on this host keeps a fraction of its score, and how large a
+    /// fraction depends on how well evidenced that pair is. exe is resolved from
+    /// the process the signal fired on.
+    ///
+    /// The reduction is written into the detail rather than applied silently. A
+    /// suppressed alert that never says why it was suppressed is indistinguish-
+    /// able from a detector that failed, and the operator investigating a near
+    /// miss needs to see that a baseline entry -- and how strong an entry --
+    /// stood between them and the alert.
     fn adjust_for_baseline(&self, signals: &mut [Signal], graph: &ProcessGraph) {
         let Some(baseline) = &self.baseline else {
             return;
         };
         for sig in signals.iter_mut() {
             let exe = graph.get(&sig.key).map(|n| n.exe.as_str()).unwrap_or("");
-            if baseline.known(sig.id, exe) {
-                let reduced = (sig.score as f64 * baseline::KNOWN_FACTOR).round() as u32;
-                sig.detail = format!("{} [baseline: known-normal]", sig.detail);
-                sig.score = reduced;
+            let factor = baseline.factor(sig.id, exe);
+            if factor >= 1.0 {
+                continue;
             }
+            let conf = baseline.confidence(sig.id, exe);
+            sig.detail = format!(
+                "{} [baseline: seen {}x, confidence {:.0}%]",
+                sig.detail,
+                baseline.count(sig.id, exe),
+                conf * 100.0
+            );
+            sig.score = (sig.score as f64 * factor).round() as u32;
         }
     }
 

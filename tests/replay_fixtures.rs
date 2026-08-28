@@ -229,9 +229,10 @@ fn learn(path: &str) -> Baseline {
         }
         let ev: Event = serde_json::from_str(line).unwrap();
         g.apply(&ev);
+        b.note_event(ev.ts_ns);
         for sig in signals_for_event(&ev, &g) {
             let exe = g.get(&sig.key).map(|n| n.exe.clone()).unwrap_or_default();
-            b.observe(sig.id, &exe);
+            b.observe(sig.id, &exe, sig.ts_ns);
         }
     }
     b
@@ -263,34 +264,106 @@ fn replay_with(
     out
 }
 
+/// A baseline built from a realistic learning period -- the same two pairs the
+/// module_load capture produces, but seen repeatedly across a day rather than
+/// once inside nine seconds -- must suppress the routine chain below Medium.
+///
+/// This is the guarantee baselining exists for, stated at the evidence level
+/// that earns it. `a_short_capture_does_not_earn_full_suppression` covers what
+/// happens when the evidence is not there.
+fn day_long_baseline() -> Baseline {
+    const HOUR_NS: u64 = 3_600_000_000_000;
+    let mut b = Baseline::new();
+    for i in 0..24u64 {
+        b.note_event(i * HOUR_NS);
+        b.observe("privilege_escalation", "/usr/bin/sudo", i * HOUR_NS);
+        b.observe("module_load", "/usr/sbin/modprobe", i * HOUR_NS);
+    }
+    b
+}
+
 #[test]
 fn baseline_suppresses_routine_sudo_modprobe() {
-    // A capture of `sudo modprobe dummy` alerts CRITICAL without a baseline.
-    // Learned as normal (its own patterns), it must drop below Medium.
-    let baseline = learn("tests/fixtures/module_load.ndjson");
-    assert!(baseline.known("privilege_escalation", "/usr/bin/sudo"));
-
     let without = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, None);
     assert!(
         !without.is_empty(),
-        "routine sudo modprobe is CRITICAL without a baseline"
+        "routine sudo modprobe alerts without a baseline"
     );
 
+    let with = replay_with(
+        "tests/fixtures/module_load.ndjson",
+        Severity::Medium,
+        Some(day_long_baseline()),
+    );
+    assert!(
+        with.is_empty(),
+        "a well-evidenced baseline should suppress routine sudo modprobe, got {with:?}"
+    );
+}
+
+/// The learning capture here is nine seconds long and contains one `sudo
+/// modprobe dummy`. That is not evidence that either action is routine on this
+/// host, and the baseline must not act as though it were -- under the old
+/// membership test a single sighting bought full suppression, which is exactly
+/// what an attacker resident during the "clean" recording would want.
+///
+/// It still helps: the alert drops a severity band. It just does not vanish.
+#[test]
+fn a_short_capture_does_not_earn_full_suppression() {
+    let baseline = learn("tests/fixtures/module_load.ndjson");
+    assert!(baseline.known("privilege_escalation", "/usr/bin/sudo"));
+    assert_eq!(
+        baseline.strong(),
+        0,
+        "nothing in a nine-second capture is well evidenced"
+    );
+
+    let without = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, None);
     let with = replay_with(
         "tests/fixtures/module_load.ndjson",
         Severity::Medium,
         Some(baseline),
     );
     assert!(
-        with.is_empty(),
-        "baseline should suppress routine sudo modprobe, got {with:?}"
+        !with.is_empty(),
+        "a thin baseline must not silence anything"
+    );
+    assert!(
+        with[0].1 < without[0].1,
+        "it should still reduce: {} -> {}",
+        without[0].1,
+        with[0].1
+    );
+}
+
+/// An expired baseline suppresses nothing. Decay fails toward alerting, so a
+/// baseline nobody has re-learned for four months stops hiding things instead
+/// of quietly hiding more of them as the host drifts away from what it learned.
+#[test]
+fn an_expired_baseline_suppresses_nothing() {
+    let without = replay_with("tests/fixtures/module_load.ndjson", Severity::Medium, None);
+
+    let mut expired = day_long_baseline();
+    let learned = expired.learned_at_ms;
+    expired.evaluate_at(learned + 200 * 86_400_000);
+    assert!(expired.is_expired());
+
+    let with = replay_with(
+        "tests/fixtures/module_load.ndjson",
+        Severity::Medium,
+        Some(expired),
+    );
+    assert_eq!(
+        with, without,
+        "an expired baseline must be indistinguishable from no baseline"
     );
 }
 
 #[test]
 fn baseline_preserves_novel_attack_signal() {
     // A baseline learned from routine sudo (no SUID creation) must NOT hide a
-    // real SUID-creation chain. suid_create is novel, so it keeps full score;
+    // real SUID-creation chain, at any confidence. suid_create is novel, so it
+    // is not in the baseline at all and keeps its full score;
     // the routine escalation is downweighted. The incident survives -- baselining
     // must suppress the routine part without hiding the novel part.
     let baseline = learn("tests/fixtures/module_load.ndjson");

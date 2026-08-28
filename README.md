@@ -138,7 +138,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on three levels. 128 unit and integration tests, including detections replayed from
+**Tested** on three levels. 138 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. Nineteen [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -578,9 +578,36 @@ Learn a host's normal from a clean capture, then apply it so routine actions (a 
 alerting while novel behavior still fires:
 
 ```bash
+kernelsentinel record --out clean.ndjson          # while the host does its normal work
 kernelsentinel baseline --capture clean.ndjson --out host.baseline
 sudo kernelsentinel run --baseline host.baseline
 ```
+
+**Record for hours, not minutes.** A baseline entry is evidence, not a verdict, and how much of a
+signal's score it suppresses depends on how good that evidence is:
+
+| | |
+|---|---|
+| **Support** | How many times the pair was seen. One sighting is not a habit, and keeps ~85% of its score. |
+| **Recurrence** | How much of the learning window it spanned. Ten thousand occurrences inside three seconds is one burst, and is capped at half confidence however many times it repeats. |
+| **Freshness** | Full strength for 14 days, then decaying to nothing at 90. Past that the baseline suppresses **nothing** and says so. |
+
+Two things follow, both deliberate. An attacker already resident while you record a "clean" capture
+cannot whitelist themselves with a single action — that was the old behavior, where membership alone
+bought full suppression. And a baseline nobody has re-learned in four months gets out of the way
+instead of quietly hiding more as the host drifts from what it learned. **Every one of these
+degrades toward alerting**, never toward silence.
+
+`baseline` tells you what it produced, and warns when the capture was too thin to evidence anything:
+
+```
+kernelsentinel: learned 47 patterns from 214933 events -> host.baseline
+kernelsentinel: 47 patterns (31 strong), 6.2h learning window, learned 0d ago
+```
+
+A suppressed signal says so in the incident, with the evidence behind it — `[baseline: seen 42x,
+confidence 91%]` — because an alert that quietly did not fire is indistinguishable from a detector
+that broke.
 
 ---
 

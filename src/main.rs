@@ -324,6 +324,7 @@ fn replay(input: &str, json: bool, baseline: Option<String>, rules: Option<Strin
     let mut engine = Engine::new(Severity::Low);
     if let Some(path) = &baseline {
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
+        status(&format!("kernelsentinel: baseline: {}", b.summary()));
         engine = engine.with_baseline(b);
     }
     if let Some(dir) = &rules {
@@ -497,21 +498,37 @@ fn baseline_build(capture: &str, out: &str) -> Result<()> {
             Err(_) => continue,
         };
         graph.apply(&ev);
+        // Every event widens the learning window, not only the ones that signal:
+        // the window is how long the host was watched, and it is what tells a
+        // pair seen once in a day from a pair seen once in a second.
+        baseline.note_event(ev.ts_ns);
         for sig in detect::signals_for_event(&ev, &graph) {
             let exe = graph
                 .get(&sig.key)
                 .map(|node| node.exe.clone())
                 .unwrap_or_default();
-            baseline.observe(sig.id, &exe);
+            baseline.observe(sig.id, &exe, sig.ts_ns);
         }
         n += 1;
     }
     baseline.events_observed = n;
+    let (total, strong) = (baseline.len(), baseline.strong());
     baseline.save(out)?;
     status(&format!(
-        "kernelsentinel: learned {} known-normal patterns from {n} events -> {out}",
-        baseline.len()
+        "kernelsentinel: learned {total} patterns from {n} events -> {out}"
     ));
+    status(&format!("kernelsentinel: {}", baseline.summary()));
+
+    // A capture too short or too thin to evidence anything still produces a
+    // file, and the file still loads. Without this the operator finds out from
+    // an alert volume that never dropped, months later.
+    if strong == 0 && total > 0 {
+        status(
+            "kernelsentinel: no pattern is well evidenced -- every entry was seen too few times \
+             or within too short a window to suppress much. Record a clean capture spanning \
+             hours of the host's normal cycle and learn from that.",
+        );
+    }
     Ok(())
 }
 
@@ -763,10 +780,7 @@ fn run(
     let mut engine = Engine::new(floor);
     if let Some(path) = &baseline {
         let b = Baseline::load(path).with_context(|| format!("loading baseline {path}"))?;
-        status(&format!(
-            "kernelsentinel: applying baseline ({} known patterns)",
-            b.len()
-        ));
+        status(&format!("kernelsentinel: baseline: {}", b.summary()));
         engine = engine.with_baseline(b);
     }
     if let Some(dir) = &rules {
