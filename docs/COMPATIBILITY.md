@@ -48,14 +48,20 @@ way from nothing.
 compiled in, it must also be listed in `/sys/kernel/security/lsm`, which usually
 means adding `lsm=...,bpf` to the kernel command line.
 
-Only one row below is **verified** — the machine this was developed on. The rest
-are inferred from each distribution's shipped kernel version and default config,
-and a default can change between releases. Treat them as "where to start", and
-let `doctor` settle it.
+A row may say **verified** only when `scripts/compat-probe.sh` has actually
+loaded the sensors there and its output is recorded in
+[compat-results.txt](compat-results.txt). Each verified row carries the
+distribution id the probe reported and the sensor count it observed, and a test
+fails if either disagrees with the recorded evidence — so "verified" cannot be
+typed next to a guess, and a count cannot drift away from what was measured.
+
+Every other row is inferred from that distribution's shipped kernel version and
+default config, and a default can change between releases. Treat them as "where
+to start", and let `doctor` settle it.
 
 | Distribution | Kernel | BPF-LSM | |
 |---|---|---|---|
-| **Kali rolling** | 7.0 | ✅ active by default | **verified** — `bpf` already in `/sys/kernel/security/lsm`, no cmdline change |
+| **Kali rolling** | 7.0 | ✅ active by default | **verified** `kali-2026.2` — 11/11 sensors, `bpf` already in `/sys/kernel/security/lsm`, no cmdline change |
 | Debian 12 (bookworm) | 6.1 | compiled in | expect to need `lsm=` on the cmdline |
 | Debian 11 (bullseye) | 5.10 | — | **below the 5.11 floor**, nothing loads |
 | Ubuntu 24.04 LTS | 6.8 | compiled in | |

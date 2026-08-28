@@ -266,3 +266,118 @@ fn the_readme_scenario_counts_are_current() {
         "README should say there are {noise} noise scenarios"
     );
 }
+
+/// A `ks-compat:` line as `compat-probe.sh` prints it.
+struct CompatResult {
+    distro: String,
+    sensors: u32,
+    total: u32,
+}
+
+fn recorded_results() -> Vec<CompatResult> {
+    read("docs/compat-results.txt")
+        .lines()
+        .filter(|l| l.trim_start().starts_with("ks-compat:"))
+        .map(|line| {
+            let field = |k: &str| -> String {
+                line.split_whitespace()
+                    .find_map(|t| t.strip_prefix(k).map(str::to_string))
+                    .unwrap_or_else(|| panic!("result line has no {k}: {line}"))
+            };
+            let sensors = field("sensors=");
+            let (have, want) = sensors
+                .split_once('/')
+                .unwrap_or_else(|| panic!("malformed sensors= in {line}"));
+            CompatResult {
+                distro: field("distro="),
+                sensors: have.parse().expect("sensor count"),
+                total: want.parse().expect("sensor total"),
+            }
+        })
+        .collect()
+}
+
+/// Rows in the COMPATIBILITY table claiming to be verified, as
+/// `(distro id, sensors observed)` taken from the row's own text.
+fn verified_rows() -> Vec<(String, u32)> {
+    read("docs/COMPATIBILITY.md")
+        .lines()
+        .filter(|l| l.trim_start().starts_with('|') && l.contains("**verified**"))
+        .map(|line| {
+            // The id is the backticked token immediately after **verified**;
+            // rows carry other backticked text, so anchor on that.
+            let after = line
+                .split("**verified**")
+                .nth(1)
+                .expect("checked by the filter");
+            let id = after
+                .split('`')
+                .nth(1)
+                .unwrap_or_else(|| {
+                    panic!("a verified row must name the distro the probe reported: {line}")
+                })
+                .to_string();
+            let sensors = after
+                .split_whitespace()
+                .find_map(|t| t.split_once('/').and_then(|(a, _)| a.parse::<u32>().ok()))
+                .unwrap_or_else(|| panic!("a verified row must state its sensor count: {line}"));
+            (id, sensors)
+        })
+        .collect()
+}
+
+/// "Verified" has to mean a probe ran somewhere, not that someone was confident.
+///
+/// Thirteen of the table's rows are inferred and say so. The risk is not that
+/// they are wrong -- they are labelled -- but that one gets promoted to verified
+/// because it looked right, which is how a table of guesses acquires authority
+/// it has not earned.
+#[test]
+fn every_verified_row_has_a_recorded_probe_result() {
+    let results = recorded_results();
+    assert!(
+        !results.is_empty(),
+        "docs/compat-results.txt records no probe output, so no row can be verified"
+    );
+    for (distro, claimed) in verified_rows() {
+        let found = results
+            .iter()
+            .find(|r| r.distro == distro)
+            .unwrap_or_else(|| {
+                panic!(
+                    "COMPATIBILITY.md marks `{distro}` verified, but no ks-compat line in \
+                 docs/compat-results.txt reports that distro. Run scripts/compat-probe.sh \
+                 there and record its output, or mark the row inferred."
+                )
+            });
+        assert_eq!(
+            claimed, found.sensors,
+            "COMPATIBILITY.md says {distro} attaches {claimed} sensors; the recorded probe \
+             says {}. The evidence wins.",
+            found.sensors
+        );
+    }
+}
+
+/// The probe reports `N of M`, where M is however many programs the agent tried
+/// to attach. If a sensor is added and a result is not re-measured, the recorded
+/// total silently disagrees with the code and every row built on it is stale.
+#[test]
+fn recorded_results_cover_the_current_sensor_count() {
+    let sensors = read("src/sensors.rs")
+        .lines()
+        .filter(|l| l.trim_start().starts_with("attach!("))
+        .count() as u32;
+    assert!(
+        sensors > 0,
+        "no attach! invocations found in src/sensors.rs"
+    );
+    for r in recorded_results() {
+        assert_eq!(
+            r.total, sensors,
+            "docs/compat-results.txt has a result for {} against {} sensors, but \
+             src/sensors.rs now attaches {sensors}. Re-run the probe there.",
+            r.distro, r.total
+        );
+    }
+}
