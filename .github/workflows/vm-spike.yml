@@ -66,10 +66,27 @@ jobs:
           qemu-system-x86_64 -accel help 2>&1 | head -10
 
       - name: Does a KVM boot actually work
-        # The decisive test. -accel kvm fails loudly if the device is missing or
-        # unusable, which is more reliable than inferring it from /dev/kvm's
-        # existence and permissions.
+        # -accel kvm fails loudly if the device is missing or unusable, which is
+        # more reliable than inferring it from /dev/kvm's existence and mode.
+        #
+        # Three attempts, because the failures mean different things: "No such
+        # file" is no virtualisation and settles the design, while "Permission
+        # denied" is only a group membership away from working and settles
+        # nothing until the permission is granted.
         run: |
-          if qemu-system-x86_64 -accel kvm -nographic -no-reboot -kernel /dev/null 2>&1 | head -5; then
-            echo "(the kernel argument is deliberately bogus; only the accelerator error matters)"
-          fi
+          try() {
+            echo "--- $1 ---"
+            shift
+            "$@" -accel kvm -nographic -no-reboot -kernel /dev/null 2>&1 | head -3 || true
+          }
+          try "as the runner user" qemu-system-x86_64
+          try "as root" sudo qemu-system-x86_64
+
+          echo "--- after opening the device up ---"
+          sudo chmod 666 /dev/kvm 2>&1 || echo "chmod failed"
+          ls -l /dev/kvm 2>&1 || echo "still absent"
+          try "unprivileged again" qemu-system-x86_64
+
+          echo
+          echo "A bogus -kernel is deliberate: the accelerator is initialised"
+          echo "before the image is read, so only the accel error matters here."
