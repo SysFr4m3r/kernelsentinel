@@ -1,0 +1,15 @@
+# Verified compatibility results.
+#
+# One line per environment where scripts/compat-probe.sh has actually loaded the
+# sensors, pasted verbatim from its output. This file is evidence, not
+# documentation: docs/COMPATIBILITY.md may only mark a row "verified" if a
+# matching line exists here, which tests/docs_consistency.rs enforces.
+#
+# Thirteen of that table's rows are inferred from shipped kernel versions and
+# default configs. This is how they get retired -- one real run at a time,
+# including runs that show the tool working less well than the table guessed.
+#
+# To add one:
+#   sudo ./scripts/compat-probe.sh
+# and paste the ks-compat line below.
+

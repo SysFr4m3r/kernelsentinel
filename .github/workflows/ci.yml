@@ -109,3 +109,46 @@ jobs:
         # behaviour, and demanding the full set here would fail every correctly
         # degrading kernel and pass only on machines like the author's.
         run: sudo -E ./scripts/compat-probe.sh
+
+  # aarch64. The compatibility table claims x86_64 and aarch64; build.rs rejects
+  # anything else at compile time, which is an assertion about what we refuse,
+  # not evidence that arm64 works. Nothing has ever built or attached there.
+  #
+  # A separate job rather than a matrix on `attach`, so if arm runners are not
+  # available to this repo the x86_64 result still arrives instead of the whole
+  # workflow waiting on a label nobody will service.
+  attach-arm64:
+    name: attach on aarch64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install BPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libbpf-dev \
+                                   linux-tools-common linux-tools-generic
+
+      - name: Generate vmlinux.h from the runner's BTF
+        run: ./scripts/gen-vmlinux.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: What kernel and compiler is this
+        run: |
+          clang --version | head -1
+          uname -a
+
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        # The detection logic is architecture-independent, but the wire layout
+        # is not: tests/wire_layout.rs compares struct event against its Rust
+        # mirror under C alignment rules, and that is worth running somewhere
+        # other than x86_64.
+        run: cargo test
+
+      - name: Attach the sensors
+        run: sudo -E ./scripts/compat-probe.sh

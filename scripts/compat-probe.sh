@@ -73,6 +73,16 @@ missing="$(grep -oE 'unavailable: [a-z_]+' "$log" | sed 's/unavailable: //' | pa
 lsm=inactive
 grep -qw bpf /sys/kernel/security/lsm 2>/dev/null && lsm=active
 
+# The distribution identifier is what lets a result line be matched back to a
+# row in docs/COMPATIBILITY.md. Without it a recorded result cannot retire the
+# claim it was produced to check.
+distro=unknown
+if [[ -r /etc/os-release ]]; then
+	# shellcheck disable=SC1091
+	. /etc/os-release
+	distro="${ID:-unknown}-${VERSION_ID:-rolling}"
+fi
+
 echo
-printf 'ks-compat: kernel=%s arch=%s bpflsm=%s sensors=%s/%s missing=%s\n' \
-	"$(uname -r)" "$(uname -m)" "$lsm" "$have" "$want" "${missing:-none}"
+printf 'ks-compat: distro=%s kernel=%s arch=%s bpflsm=%s sensors=%s/%s missing=%s\n' \
+	"$distro" "$(uname -r)" "$(uname -m)" "$lsm" "$have" "$want" "${missing:-none}"
