@@ -108,6 +108,22 @@ fn priv_check() -> Status {
     }
 }
 
+/// Is the bpf LSM in the kernel's active list?
+///
+/// `None` when the file cannot be read (securityfs not mounted), which is
+/// genuinely unknown rather than false -- a caller must not treat it as proof
+/// either way.
+///
+/// This decides whether the six `lsm/` sensors do anything, and it is the only
+/// way to know: attaching them succeeds regardless. Measured on an Ubuntu
+/// runner with `bpf` absent from this list -- all eleven programs attached, and
+/// a real `chmod u+s` and a real read of `/etc/shadow` both produced nothing.
+pub fn bpf_lsm_active() -> Option<bool> {
+    fs::read_to_string("/sys/kernel/security/lsm")
+        .ok()
+        .map(|list| list.trim().split(',').any(|l| l == "bpf"))
+}
+
 fn lsm_check() -> Status {
     match fs::read_to_string("/sys/kernel/security/lsm") {
         Ok(list) => {

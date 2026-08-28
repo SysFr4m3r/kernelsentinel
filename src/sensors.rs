@@ -14,6 +14,22 @@ use std::io::Write;
 use crate::event::RawEvent;
 use crate::watchlist::{self, Watch};
 
+/// Sensors whose BPF programs are `lsm/` hooks.
+///
+/// They attach on any kernel with BPF-LSM compiled in, but the kernel only
+/// invokes the hook when `bpf` is in `/sys/kernel/security/lsm`. Without that
+/// they are attached and permanently silent, which is why they are not counted
+/// as available. Kept in step with the BPF source by the test at the bottom of
+/// this file.
+const LSM_SENSORS: &[&str] = &[
+    "file_open",
+    "path_chmod",
+    "inode_setxattr",
+    "ptrace",
+    "bprm_check",
+    "socket_connect",
+];
+
 mod skel {
     #![allow(dead_code, non_snake_case, non_camel_case_types, clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/kernelsentinel.skel.rs"));
@@ -123,14 +139,24 @@ where
 
     // Attach one program at a time rather than all-or-nothing.
     //
-    // skel.attach() fails the whole load if any single program cannot attach,
-    // and the ones that fail on a given kernel are predictable: BPF-LSM is off
-    // by default on RHEL, Rocky and older Debian/Ubuntu, so every lsm/ hook
-    // fails there. All-or-nothing turns "five of eleven sensors work" into
-    // "the agent refuses to start", which is the wrong trade for a monitoring
-    // tool -- partial visibility beats none, as long as it says which part.
+    // skel.attach() fails the whole load if any single program cannot attach.
+    // All-or-nothing turns "five of eleven sensors work" into "the agent refuses
+    // to start", which is the wrong trade for a monitoring tool -- partial
+    // visibility beats none, as long as it says which part.
+    //
+    // This used to say the lsm/ hooks "fail" on a kernel without BPF-LSM. They
+    // do not. Measured on an Ubuntu runner with `bpf` absent from
+    // /sys/kernel/security/lsm: all eleven attached, and a real `chmod u+s` and
+    // a real read of /etc/shadow produced nothing at all. The kernel accepts an
+    // lsm/ program whether or not the bpf LSM is active; only the hook being
+    // invoked depends on it. Attach failure is therefore not how this
+    // degradation shows up, and counting attachments reported eleven working
+    // sensors on a host with five. See the LSM_SENSORS adjustment below.
     let mut links = Vec::new();
     let mut attached: Vec<&str> = Vec::new();
+    // Sensors whose programs are `lsm/` hooks, and therefore inert without the
+    // bpf LSM. Kept in step with the BPF source by
+    // sensors::tests::lsm_sensor_list_matches_the_bpf_source.
     let mut missing: Vec<(&str, String)> = Vec::new();
     macro_rules! attach {
         ($prog:ident, $name:literal) => {
@@ -155,6 +181,31 @@ where
     attach!(handle_module, "module_load");
     attach!(handle_socket_connect, "socket_connect");
 
+    // A successful attach is not a working sensor. If the bpf LSM is not in the
+    // kernel's active list, every lsm/ program is attached to a hook the kernel
+    // will never call, so report them as unavailable rather than counting them.
+    //
+    // Reporting the truth here costs a host nothing it actually had, and the
+    // alternative is an operator reading "11 of 11 sensors attached" and
+    // believing the file, credential-theft, fileless-exec and container-socket
+    // detections are watching. They are not.
+    if crate::doctor::bpf_lsm_active() == Some(false) {
+        let inert: Vec<&str> = attached
+            .iter()
+            .copied()
+            .filter(|n| LSM_SENSORS.contains(n))
+            .collect();
+        attached.retain(|n| !LSM_SENSORS.contains(n));
+        for name in inert {
+            missing.push((
+                name,
+                "attached, but `bpf` is not in /sys/kernel/security/lsm, so the kernel never \
+                 invokes the hook"
+                    .to_string(),
+            ));
+        }
+    }
+
     // exec is not optional: without it there is no process graph, and every
     // detection is an attribution to a process we never saw start.
     if !attached.contains(&"exec") {
@@ -164,7 +215,7 @@ where
         );
     }
     eprintln!(
-        "kernelsentinel: {} of {} sensors attached",
+        "kernelsentinel: {} of {} sensors active",
         attached.len(),
         attached.len() + missing.len()
     );
@@ -280,5 +331,31 @@ fn read_stats(map: &impl MapCore) -> Stats {
         emitted: get(0),
         drops: get(1),
         decode_panics: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LSM_SENSORS;
+
+    /// A sensor added as an `lsm/` program but left out of `LSM_SENSORS` would
+    /// be counted as available on a kernel where it can never fire -- the exact
+    /// false assurance this list exists to prevent, reintroduced quietly.
+    #[test]
+    fn lsm_sensor_list_matches_the_bpf_source() {
+        let mut found = 0usize;
+        for entry in std::fs::read_dir("bpf/sensors").expect("bpf/sensors") {
+            let path = entry.expect("dir entry").path();
+            let src = std::fs::read_to_string(&path).expect("sensor source");
+            found += src.matches("SEC(\"lsm/").count();
+        }
+        assert_eq!(
+            found,
+            LSM_SENSORS.len(),
+            "bpf/sensors declares {found} lsm/ programs but LSM_SENSORS names {}. \
+             Add it to the list, or it will be counted as working on a kernel \
+             where the hook is never invoked.",
+            LSM_SENSORS.len()
+        );
     }
 }

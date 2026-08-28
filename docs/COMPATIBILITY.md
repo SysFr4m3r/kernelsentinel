@@ -24,13 +24,22 @@ The agent attaches each program separately and reports which ones did not, so a
 kernel missing BPF-LSM loses the file, ptrace, exec-source and socket sensors
 while keeping the rest — it does not refuse to start.
 
-**An attach count is not a health check.** The kernel accepts an `lsm/` program
+**An attach is not a working sensor.** The kernel accepts an `lsm/` program
 whether or not `bpf` is in the active LSM list; only the hook being *invoked*
-depends on that. So a host without BPF-LSM can report `11 of 11 sensors
-attached` while six of them never see an event. `scripts/compat-probe.sh`
-provokes each sensor family and reports which ones actually answered, which is
-what the `live=` field in [compat-results.txt](compat-results.txt) records — and
-the only claim worth putting in the table below.
+depends on that. Measured on an Ubuntu runner with `bpf` absent from the list:
+all eleven programs attached, and a real `chmod u+s` and a real read of
+`/etc/shadow` produced nothing at all.
+
+So the agent no longer counts them. It reads `/sys/kernel/security/lsm` at
+startup and, when `bpf` is missing, reports the six `lsm/` sensors as
+unavailable with that as the reason — `5 of 11 sensors active`, not `11 of 11`.
+Nothing is lost that the host ever had; what changes is that the operator is no
+longer told the file, credential-theft, fileless-exec and container-socket
+detections are watching when they are not.
+
+`scripts/compat-probe.sh` provokes each sensor family and records which ones
+answered in the `live=` field of [compat-results.txt](compat-results.txt). That
+is the claim the table below rests on.
 
 | Sensor | Needs | Kernel | Lost without BPF-LSM |
 |---|---|---|---|

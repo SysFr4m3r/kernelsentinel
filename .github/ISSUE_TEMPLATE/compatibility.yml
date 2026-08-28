@@ -22,7 +22,7 @@ body:
     attributes:
       label: First lines of `sudo kernelsentinel run`
       description: >
-        The "N of 11 sensors attached" line, and any sensors it named as
+        The "N of 11 sensors active" line, and any sensors it named as
         unavailable. Ctrl-C once the event stream starts.
       render: text
     validations:
@@ -39,7 +39,7 @@ body:
     attributes:
       label: Outcome
       options:
-        - All sensors attached
+        - All sensors active
         - Some sensors unavailable, agent ran
         - Agent would not start
     validations:
