@@ -134,8 +134,8 @@ refusing to start. See **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)**.
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on three levels. 114 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. Thirteen [attack scenarios](#testing) that run the
+**Tested** on three levels. 128 unit and integration tests, including detections replayed from
+**real kernel captures** committed as fixtures. Nineteen [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And four noise scenarios asserting ordinary work stays silent, because a
@@ -682,6 +682,11 @@ sudo tests/attack/verify.sh
 ```bash
 sudo KS_ENFORCE=on tests/attack/verify.sh
 ```
+
+Documentation drift is a test, not a habit. `tests/docs_consistency.rs` asserts that every signal
+the detectors can emit is documented in `docs/DETECTIONS.md` and has an attack scenario, that the
+kernel floor in `doctor.rs` matches what the docs claim, and that the counts quoted here are current.
+Each of those was wrong at some point, and each was found by someone noticing — which does not scale.
 
 A failure there means an attack really happened and the sensor did not report
 it — the failure mode replay tests cannot detect. Each scenario declares what it

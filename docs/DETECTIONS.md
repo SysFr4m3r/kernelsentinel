@@ -138,6 +138,8 @@ A **read** of `/etc/shadow` or `/etc/gshadow` (30), or of an SSH **private** key
 `sensitive_write`; reading them is theft, and until now was invisible: watches were write-only, so a
 read was filtered in-kernel and the daemon never saw it.
 
+- **Signal ids:** **`credential_store_read`** (30) for `/etc/shadow` and `/etc/gshadow`;
+  **`ssh_private_key_read`** (35) for SSH private keys.
 - **Trigger:** `sudo cat /etc/shadow`, or `cat ~/.ssh/id_ed25519` as another user.
 - **Deliberately below the alerting floor.** Reading `/etc/shadow` is what authentication *is*, so on
   its own this must not alert; it earns weight only in a lineage with something else. The same
@@ -168,6 +170,13 @@ sees the firehose of unrelated opens. Scored by target:
 | `/etc/sudoers*`, `/etc/shadow` | 35 | credential/authz tampering |
 | `/etc/cron*`, systemd units | 30 | scheduled/service persistence |
 | other watched path | 20 | |
+
+The signal id in an incident names the variant, not the family, so an alert reads
+`ldso_preload_write` rather than `sensitive_write`. The ids are
+**`ldso_preload_write`** (40), **`authorized_keys_write`** (35),
+**`cred_config_write`** (35, sudoers and shadow), **`persistence_write`** (30, cron and
+systemd units) and **`sensitive_write`** (20, any other watched path — `/etc/passwd`,
+`/root/.ssh/`). Searching the docs for the id in front of you should find it.
 
 - **Trigger:** `echo /tmp/evil.so > /etc/ld.so.preload`
 - **False positives:** package upgrades rewrite systemd units and cron; `ssh-copy-id`
