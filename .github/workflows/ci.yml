@@ -152,3 +152,58 @@ jobs:
 
       - name: Attach the sensors
         run: sudo -E ./scripts/compat-probe.sh
+
+  # The six lsm/ sensors, on a kernel where they can actually fire.
+  #
+  # The runner's kernel has CONFIG_BPF_LSM=y but no `bpf` in its LSM list, and a
+  # hosted runner cannot be rebooted with a different command line -- so the
+  # `attach` job above correctly reports 5 of 11 and cannot test the other six.
+  # That is most of the detection surface, and until now it fired nowhere except
+  # one developer machine.
+  #
+  # The kernel is not the obstacle, the boot parameter is. Boot the same image
+  # under QEMU with lsm=...,bpf appended and all eleven come up.
+  lsm-vm:
+    name: lsm sensors in a VM
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install BPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libbpf-dev \
+                                   linux-tools-common linux-tools-generic
+
+      - name: Generate vmlinux.h from the runner's BTF
+        run: ./scripts/gen-vmlinux.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build
+
+      - name: Install QEMU and initramfs tools
+        run: sudo apt-get install -y qemu-system-x86 busybox-static cpio
+
+      - name: Make KVM usable
+        # The runner has /dev/kvm as root:kvm 0660 and the runner user is not in
+        # the kvm group. Without this the boot still works under emulation, just
+        # slower, so this is an optimisation and not a requirement.
+        run: |
+          sudo chmod 666 /dev/kvm || echo "no /dev/kvm; the VM will use emulation"
+          ls -l /dev/kvm || true
+
+      - name: Take a readable copy of the running kernel
+        # /boot/vmlinuz-* is mode 0600 root:root on the runner.
+        run: |
+          sudo cp "/boot/vmlinuz-$(uname -r)" /tmp/vmlinuz
+          sudo chmod 644 /tmp/vmlinuz
+          ls -l /tmp/vmlinuz
+
+      - name: Boot with bpf in the LSM list and check the sensors fire
+        # Fails if only `exec` answered: that would mean the guest came up
+        # without the bpf LSM, so the run tested nothing the `attach` job does
+        # not already cover, and passing it would be worse than failing.
+        run: ./tests/vm/run.sh /tmp/vmlinuz

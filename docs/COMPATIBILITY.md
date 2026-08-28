@@ -108,8 +108,20 @@ covered by replay tests against recorded captures, and by the attack suite when
 someone runs it locally, but no automated run has seen one of them observe a real
 event on a kernel other than that one.
 
-Closing it means booting a kernel under QEMU with `lsm=...,bpf` appended, which
-is what `.github/workflows/vm-spike.yml` exists to size up.
+That gap is now closed by `tests/vm/run.sh`, which CI runs on every push. It
+boots the runner's own kernel image under QEMU with `lsm=...,bpf` appended --
+the kernel already has `CONFIG_BPF_LSM=y`, only the boot parameter was missing
+-- and provokes each sensor family inside the guest. Everything lives in an
+initramfs, so there is no virtiofs, 9p or disk image to vary between kernels.
+The job fails if only `exec` answers, because a guest that came up without the
+bpf LSM has tested nothing the ordinary runner does not already cover.
+
+Locally, on the developer machine and without KVM, the whole boot takes about
+twelve seconds:
+
+```bash
+tests/vm/run.sh                     # or: tests/vm/run.sh /path/to/vmlinuz
+```
 
 ### Producing a row
 
