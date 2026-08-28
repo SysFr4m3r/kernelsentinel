@@ -69,7 +69,10 @@ run() { # run <mode>
 	local pid=$!
 
 	local waited=0
-	until grep -q "sensors attached" "$out" 2>/dev/null; do
+	# See the note in tests/attack/verify.sh: the old marker was printed before
+	# anything attached, so the load could start against a kernel with no
+	# programs on it and the run would under-count.
+	until grep -q "ready, streaming events" "$out" 2>/dev/null; do
 		sleep 0.2; waited=$((waited + 1))
 		if ! kill -0 $pid 2>/dev/null || ((waited > 100)); then
 			echo "  $mode: agent failed to attach" >&2; return 1

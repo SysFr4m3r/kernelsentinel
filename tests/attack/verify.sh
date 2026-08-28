@@ -111,7 +111,11 @@ run_one() {
 	# Wait for the sensors, rather than sleeping and hoping. A scenario that
 	# runs before the hooks attach would look exactly like a missed detection.
 	local waited=0
-	until grep -q "sensors attached" "$log" 2>/dev/null; do
+	# Wait for the ready line specifically -- printed by sensors::run once every
+	# program is attached and the ring buffer is built. It used to wait on
+	# "sensors attached", which main() printed before attaching anything, so
+	# the guard this loop exists to be was racing the thing it guarded.
+	until grep -q "ready, streaming events" "$log" 2>/dev/null; do
 		sleep 0.2; waited=$((waited + 1))
 		if ! kill -0 $agent 2>/dev/null || [[ $waited -gt 100 ]]; then
 			printf '  %-32s ERROR (agent did not attach)\n' "$name"

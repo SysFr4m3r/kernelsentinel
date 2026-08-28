@@ -49,6 +49,10 @@ if [[ $rc -ne 124 && $rc -ne 0 ]]; then
 fi
 sed 's/^/  /' "$log"
 
+if ! grep -q "ready, streaming events" "$log"; then
+	echo "the agent never reached its ready line -- it did not finish starting" >&2
+	exit 1
+fi
 attached="$(grep -oE '[0-9]+ of [0-9]+ sensors attached' "$log" | head -1)"
 if [[ -z "$attached" ]]; then
 	echo "the agent never reported an attach count -- it did not get that far" >&2

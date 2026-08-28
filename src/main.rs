@@ -882,7 +882,10 @@ fn run(
         }
     ));
 
-    status("kernelsentinel: sensors attached, streaming events (ctrl-c to stop)\n");
+    // Not "attached" -- nothing is attached until sensors::run is called below,
+    // and claiming otherwise is what let two harnesses start work against a
+    // kernel with no programs on it. sensors::run prints the ready line.
+    status("kernelsentinel: starting sensors...");
     if !json {
         emit(&format!(
             "{:<12} {:<7} {:<7} {:<6} {:<16} {}",

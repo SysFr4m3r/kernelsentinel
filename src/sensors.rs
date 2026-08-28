@@ -218,6 +218,17 @@ where
     .context("registering ring buffer callback")?;
     let rb = rb.build().context("building ring buffer")?;
 
+    // The ready signal, and the only line that means what it says: every
+    // program is attached, the maps are populated and the ring buffer is built,
+    // so from here an event that happens is an event that is seen.
+    //
+    // It exists because the message that used to serve this purpose was printed
+    // by main() *before* sensors::run was even called. Two harnesses waited on
+    // it -- the attack suite, under a comment about how a scenario running
+    // before the hooks attach looks exactly like a missed detection, and the
+    // benchmark, which would have started its load against nothing.
+    eprintln!("kernelsentinel: ready, streaming events (ctrl-c to stop)");
+
     let mut last_tick = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         match rb.poll(Duration::from_millis(200)) {
