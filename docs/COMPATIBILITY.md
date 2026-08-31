@@ -189,6 +189,10 @@ The fleet server has no kernel requirement of any kind. Build it with
 
 ## Architectures
 
-x86_64 and aarch64 are supported; `build.rs` rejects anything else at compile
-time rather than producing an object for the wrong target. Release binaries are
+x86_64 and aarch64 are both **built, tested and attached in CI** — the aarch64
+job compiles the BPF object, runs the full test suite, and loads the sensors on
+an arm64 kernel. Until recently this row was an assertion about what `build.rs`
+*refuses*, which is not the same as evidence that the supported targets work.
+`build.rs` still rejects anything else at compile time rather than producing an
+object for the wrong target. Release binaries are
 published for x86_64 only — build from source for aarch64.

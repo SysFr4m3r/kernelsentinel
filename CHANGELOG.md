@@ -3,6 +3,50 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
+## v0.3.1 — enforcement stops announcing a control it cannot apply
+
+**Upgrade if you run `--enforce on` anywhere.** In v0.3.0 and earlier it
+reported that escape-hatch writes would be denied whether or not the sensor that
+denies them was alive.
+
+### `--enforce on` no longer claims a control it cannot apply
+
+Denial is implemented by the `file_open` program returning `-EPERM`. On a kernel
+where that program is inert, nothing can be blocked — and the agent printed
+"kernel escape-hatch writes from outside the host mount namespace will be
+denied" regardless.
+
+That is the worst assurance this tool could give. The sensor count was a
+monitoring gap; this was a security control that existed only in the line
+announcing it, with an operator who armed it and stopped worrying. Enforcement
+now disarms itself when `file_open` is not active, rewrites the policy map to
+off so nothing downstream reads a policy that cannot be applied, and says so.
+
+It does not refuse to start, unlike the unknown-host-namespace case, because the
+failure modes differ in kind: an unknown namespace risks denying *on the host*,
+which is actively harmful, while an inert sensor risks not denying, which is a
+gap — and refusing to start would also discard the five sensors that do work.
+
+### The panel shows how much of a host the agent can see
+
+Attestation answers whether an agent can see *anything* — it execs a child every
+heartbeat and checks its own sensors observed it. But the canary speaks only for
+`exec`, so a host with six inert sensors passed it and rendered as an
+unqualified green. That is the ordinary state wherever BPF-LSM is compiled in
+but not enabled, and an operator scanning a fleet had no way to see it.
+
+The heartbeat now carries how many sensors can observe an event and how many
+exist, and the fleet view shows `5/11 sensors` beside a live host, with a banner
+on the host page naming the detections that cannot fire there. The badge is
+silent when a host is fully covered, so it means something when it appears.
+
+Coverage is deliberately not folded into the status: a partially covered host is
+not "blind", its agent is reporting and its exec sensor works, and conflating
+the two would either understate a detached agent or overstate a limited one.
+
+Server schema goes to v3, migrated in place so history is kept. An agent too old
+to report coverage sends zeros, and those do not overwrite a known count.
+
 ## v0.3.0 — the agent stops overstating what it can see
 
 **Upgrade from v0.2.1, especially on Ubuntu, Debian or RHEL.** On those hosts
@@ -29,24 +73,6 @@ true. If you run on a distribution where BPF-LSM is compiled in but inactive,
 
 `doctor` also stopped claiming those sensors "fall back to kprobes". There is no
 kprobe fallback and there never was.
-
-### `--enforce on` no longer claims a control it cannot apply
-
-Denial is implemented by the `file_open` program returning `-EPERM`. On a kernel
-where that program is inert, nothing can be blocked — and the agent printed
-"kernel escape-hatch writes from outside the host mount namespace will be
-denied" regardless.
-
-That is the worst assurance this tool could give. The sensor count was a
-monitoring gap; this was a security control that existed only in the line
-announcing it, with an operator who armed it and stopped worrying. Enforcement
-now disarms itself when `file_open` is not active, rewrites the policy map to
-off so nothing downstream reads a policy that cannot be applied, and says so.
-
-It does not refuse to start, unlike the unknown-host-namespace case, because the
-failure modes differ in kind: an unknown namespace risks denying *on the host*,
-which is actively harmful, while an inert sensor risks not denying, which is a
-gap — and refusing to start would also discard the five sensors that do work.
 
 ### Suppression by file identity, not by process name
 
