@@ -5,6 +5,31 @@ line is in the commit history.
 
 ## v0.3.3 — unreleased
 
+### Privilege escalation through a username
+
+A session token's payload is `username|role|expiry`, signed and then split on
+`|`. Usernames were only checked for being non-empty, so an account named
+`mallory|admin|99999999999` produced a five-field payload — and reading the
+first three fields took the *username's* second field as the role and its third
+as the expiry.
+
+An account issued as `viewer` for eight hours validated as **`admin` until the
+year 5138**, on a signature the server had genuinely produced. Nothing about the
+token was forged, so no signature check could notice.
+
+Creating a user requires an admin, so this is not reachable by an unprivileged
+account on its own — but "an admin creates an account using a name the requester
+supplied" is an ordinary workflow, and the result is that person holding admin
+permanently.
+
+Fixed in two independent places. Token payloads must have exactly three fields,
+which also protects a database that already contains such a user, since the
+restriction below cannot retroactively rename one. And usernames are now limited
+to letters, digits and `. _ - @ +`, up to 64 characters.
+
+**If you run the fleet server with multiple accounts, check your user list for a
+username containing `|`.**
+
 ### Release drift is a test failure
 
 Twice a release was tagged, work continued, and the new entries were written

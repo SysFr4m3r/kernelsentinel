@@ -31,10 +31,25 @@ pub fn validate(secret: &[u8], token: &str) -> Option<(String, String)> {
         return None;
     }
     let payload = String::from_utf8(payload).ok()?;
-    let mut parts = payload.split('|');
-    let username = parts.next()?.to_string();
-    let role = parts.next()?.to_string();
-    let exp: u64 = parts.next()?.parse().ok()?;
+    // Exactly three fields, or the token is not one this server issued the way
+    // it thinks it did.
+    //
+    // The payload is `username|role|expiry`, and the username is chosen by
+    // whoever asked for the account. A username of `mallory|admin|99999999999`
+    // produces a payload with five fields, and taking the first three of those
+    // reads the *username's* second field as the role and its third as the
+    // expiry -- so an account issued as `viewer` for eight hours validated as
+    // `admin` until the year 5138, using a signature the server itself made.
+    //
+    // Usernames are now restricted at creation so this cannot be stored, but a
+    // database predating that restriction may already hold one, and a signature
+    // check cannot notice: the token is genuine. Counting the fields can.
+    let parts: Vec<&str> = payload.split('|').collect();
+    let [username, role, exp] = parts.as_slice() else {
+        return None;
+    };
+    let (username, role) = (username.to_string(), role.to_string());
+    let exp: u64 = exp.parse().ok()?;
     if now() >= exp {
         return None;
     }
@@ -78,6 +93,35 @@ fn ct_eq(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A username cannot smuggle a role or an expiry through the delimiter.
+    ///
+    /// The payload is `username|role|expiry`. Issued for `viewer` with an
+    /// eight-hour life, an account named `mallory|admin|99999999999` used to
+    /// validate as `admin` until the year 5138 -- on a signature the server had
+    /// genuinely produced, so nothing about the token was forged.
+    #[test]
+    fn a_username_cannot_smuggle_a_role_through_the_delimiter() {
+        let secret = b"server-secret";
+        let token = super::issue(secret, "mallory|admin|99999999999", "viewer", 60);
+        assert_eq!(
+            super::validate(secret, &token),
+            None,
+            "a payload with more than three fields is not a token this server can read"
+        );
+
+        // The ordinary case still works.
+        let good = super::issue(secret, "mallory", "viewer", 60);
+        assert_eq!(
+            super::validate(secret, &good),
+            Some(("mallory".into(), "viewer".into()))
+        );
+
+        // And a truncated payload is refused rather than half-read.
+        let short = super::issue(secret, "mallory", "viewer", 60);
+        let short = &short[..short.find('.').unwrap()];
+        assert_eq!(super::validate(secret, short), None);
+    }
     use super::*;
 
     #[test]

@@ -651,9 +651,29 @@ impl Store {
     }
 
     /// Create a user. Fails if the database is absent or the name is taken.
+    /// Characters a username may contain.
+    ///
+    /// Restricted because the session token's payload is `username|role|expiry`
+    /// and the username is chosen by whoever asked for the account: a username
+    /// containing the delimiter used to validate as whatever role it named. The
+    /// token parser now refuses such payloads outright, so this is the second of
+    /// two independent guards rather than the only one -- but a name that cannot
+    /// be stored is better than a name that has to be parsed carefully forever.
+    ///
+    /// The set is what real accounts use, including email-shaped ones.
+    fn username_ok(u: &str) -> bool {
+        !u.is_empty()
+            && u.len() <= 64
+            && u.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@' | '+'))
+    }
+
     pub fn create_user(&self, username: &str, password: &str, role: &str) -> Result<(), String> {
-        if username.is_empty() || password.len() < 8 {
-            return Err("username required and password must be >= 8 chars".into());
+        if !Self::username_ok(username) {
+            return Err("username must be 1-64 chars of letters, digits, . _ - @ +".into());
+        }
+        if password.len() < 8 {
+            return Err("password must be >= 8 chars".into());
         }
         let role = if role == "viewer" { "viewer" } else { "admin" };
         let Some(db) = &self.db else {
@@ -1434,6 +1454,26 @@ mod tests {
     /// a real count would make a downgrade look like a fix and an upgrade look
     /// like a regression, and would erase the one field that says a host is
     /// half blind.
+    /// The username restriction is the second guard on the session-token
+    /// delimiter, and it has to admit the names real deployments use.
+    #[test]
+    fn usernames_that_could_confuse_a_token_are_refused() {
+        for good in ["alice", "a.b_c-d", "ops@example.com", "svc+ci", "A1"] {
+            assert!(Store::username_ok(good), "{good} should be allowed");
+        }
+        for bad in [
+            "",
+            "mallory|admin|99999999999",
+            "has space",
+            "new\nline",
+            "sql'quote",
+        ] {
+            assert!(!Store::username_ok(bad), "{bad:?} should be refused");
+        }
+        assert!(!Store::username_ok(&"a".repeat(65)), "length is bounded");
+        assert!(Store::username_ok(&"a".repeat(64)));
+    }
+
     #[test]
     fn an_old_agents_zeros_do_not_erase_a_known_coverage() {
         let store = Store::new();
