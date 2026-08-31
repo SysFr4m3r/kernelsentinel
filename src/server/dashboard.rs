@@ -309,7 +309,8 @@ code.cmd.hero{margin-top:8px;font-size:12px}
   });
 })();
 const SV={CRITICAL:'crit',HIGH:'high',MEDIUM:'med',LOW:'low',INFO:'info',OK:'ok'};
-const svVar=s=>`var(--${SV[s]})`,svBg=s=>`var(--${SV[s]}-bg)`;
+const svKey=s=>Object.prototype.hasOwnProperty.call(SV,s)?SV[s]:'faint';
+const svVar=s=>`var(--${svKey(s)})`,svBg=s=>`var(--${svKey(s)}-bg)`;
 const order=['CRITICAL','HIGH','MEDIUM','LOW','INFO'];
 const names={T1003:"OS Credential Dumping",T1036:"Masquerading","T1055.008":"Ptrace System Calls",T1068:"Exploitation for Privilege Escalation",T1098:"Account Manipulation",T1543:"Create/Modify System Process","T1547.006":"Kernel Modules and Extensions",T1548:"Abuse Elevation Control","T1548.001":"Setuid and Setgid",T1552:"Unsecured Credentials","T1574.006":"Dynamic Linker Hijacking",T1611:"Escape to Host",T1620:"Reflective Code Loading"};
 let HOSTS=[];
@@ -498,6 +499,21 @@ const fleet=document.getElementById('fleet'),hostview=document.getElementById('h
 // compromised host back into the panel. Escape at every interpolation.
 const ESCMAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>ESCMAP[c]);}
+// Numbers get coerced rather than escaped.
+//
+// An incident is whatever a monitored host sent: the server keeps the record
+// verbatim and the panel receives it with only `_id` and triage fields added.
+// So `d.score` is a number in a well-formed incident and absolutely anything in
+// a hostile one, and `<span class="badge">${num(d.score)}</span>` put it straight
+// into innerHTML. A host could name its own score `<img src=x onerror=...>` and
+// run script in the admin's authenticated session -- the same path the string
+// escaping above closed for comm, paths and argv, left open on the fields
+// nobody thought of as text.
+//
+// Coercion beats escaping for these: a number cannot carry markup at all, and a
+// host sending a string where a score belongs is malformed whatever its intent,
+// so rendering the fallback is the right outcome rather than a lost one.
+function num(v,fallback){const n=Number(v);return Number.isFinite(n)?n:(fallback===undefined?0:fallback);}
 function showView(el){[fleet,hostview,auditview,usersview,activityview].forEach(v=>v&&v.classList.add('hidden'));el.classList.remove('hidden');window.scrollTo(0,0);}
 document.getElementById('hostlist').addEventListener('click',e=>{const b=e.target.closest('.host');if(b)openHost(HOSTS[+b.dataset.i]);});
 document.getElementById('back').addEventListener('click',()=>showView(fleet));
@@ -544,7 +560,7 @@ async function openHost(h,selectId){
     det.textContent=live?'Nothing to inspect — this host is clean.':'Nothing to inspect — and this host is not currently reporting.';
     return;}
   feed.innerHTML=incs.map((d,i)=>{const line=(d.lineage||[]).length?d.lineage.map(esc).join('  ›  '):'(no lineage recorded)';const chips=(d.attack||[]).map(t=>`<span class="tk">${esc(t)}</span>`).join('');const rtag=d._resolved?'<span class="rtag">✓ resolved</span>':'';const t=incTime(d);
-    const ttag=t.ms?`<span class="itime" title="${t.exact?'when it happened on the host':'when the server received it — the agent did not supply an event time'}">${tsago(Math.floor(t.ms/1000))}${t.exact?'':' (received)'}</span>`:'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${d.score}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}${ttag}</span>${rtag}</button>`;}).join('');
+    const ttag=t.ms?`<span class="itime" title="${t.exact?'when it happened on the host':'when the server received it — the agent did not supply an event time'}">${tsago(Math.floor(t.ms/1000))}${t.exact?'':' (received)'}</span>`:'';return `<button class="inc ${d._resolved?'resolved':''}" role="option" aria-selected="false" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}"><span class="badge">${num(d.score)}</span><span class="subj">${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?num(d.subject.pid,'?'):'?'}</em></span><span class="sv-tag">${esc(d.severity)}</span><span class="line mono">${line}</span><span class="chips">${chips}${ttag}</span>${rtag}</button>`;}).join('');
   det.className='detail empty';det.textContent='Select an incident to see its lineage, signals, and ATT&CK mapping.';
   const pick=btn=>{feed.querySelectorAll('.inc').forEach(b=>b.setAttribute('aria-selected','false'));btn.setAttribute('aria-selected','true');renderInc(incs[+btn.dataset.i]);};
   feed.querySelectorAll('.inc').forEach(btn=>btn.addEventListener('click',()=>pick(btn)));
@@ -564,8 +580,8 @@ function renderInc(d){const det=document.getElementById('detail');det.className=
     const when=s.ts?tsabs(s.ts).slice(11):'';          // HH:MM:SS UTC
     const off=sorted.length>1?offset(s.ts_ns-t0):'';
     const stamp=(when||off)?`<span class="sigtime mono">${when}${when&&off?' ':''}${off?`<i>${off}</i>`:''}</span>`:'';
-    return `<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}${stamp}</span><span class="pts">+${s.score}</span></div>`;
-  }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${d.score}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?d.subject.pid:'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?d.subject.uid:'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${d.score}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div>${yaraSec(d)}<div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${b.base??d.score}</b><span>+ chain</span><b>${b.chain_bonus??0}</b>${mult}<span class="eq">= ${d.score}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
+    return `<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}${stamp}</span><span class="pts">+${num(s.score)}</span></div>`;
+  }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${num(d.score)}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?num(d.subject.pid,'?'):'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?num(d.subject.uid,'?'):'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${num(d.score)}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div>${yaraSec(d)}<div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${num(b.base??d.score)}</b><span>+ chain</span><b>${num(b.chain_bonus,0)}</b>${mult}<span class="eq">= ${num(d.score)}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
   const rb=det.querySelector('.resolvebtn');
   if(rb)rb.addEventListener('click',()=>resolveIncident(d._id,det.querySelector('.rnote').value));}
 
@@ -644,8 +660,8 @@ function renderActivity(){
     const t=incTime(d);
     const chips=(d.attack||[]).map(x=>`<span class="tk">${esc(x)}</span>`).join('');
     return `<button class="inc" data-i="${i}" style="--sv:${svVar(d.severity)};--sv-bg:${svBg(d.severity)}">`+
-      `<span class="badge">${d.score}</span>`+
-      `<span class="subj"><b class="ahost">${esc(d._host||'?')}</b> ${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?d.subject.pid:'?'}</em></span>`+
+      `<span class="badge">${num(d.score)}</span>`+
+      `<span class="subj"><b class="ahost">${esc(d._host||'?')}</b> ${esc((d.subject&&d.subject.comm)||'—')} <em>pid ${d.subject?num(d.subject.pid,'?'):'?'}</em></span>`+
       `<span class="sv-tag">${esc(d.severity)}</span>`+
       `<span class="line mono">${(d.lineage||[]).map(esc).join('  ›  ')||'(no lineage recorded)'}</span>`+
       `<span class="chips">${chips}<span class="itime">${t.ms?tsago(Math.floor(t.ms/1000))+(t.exact?'':' (received)'):''}</span></span>`+
@@ -728,6 +744,86 @@ mod tests {
                 .count(),
             2,
             "only showLogin() and loginVisible() may touch the gate's display"
+        );
+    }
+}
+
+#[cfg(test)]
+mod interpolation_tests {
+    use super::PAGE;
+
+    /// No field of an incident may reach `innerHTML` unfiltered.
+    ///
+    /// The panel receives the record a monitored host sent, verbatim -- the
+    /// server adds `_id` and the triage fields and changes nothing else. So
+    /// every value in it is attacker-controlled, including the ones that are
+    /// numbers in a well-formed incident. Strings go through `esc()`; numbers
+    /// go through `num()`, which is stronger because a number cannot carry
+    /// markup at all.
+    ///
+    /// This scans the shipped page for any `${...}` naming an incident field
+    /// without one of those, which is how `${d.score}` survived the pass that
+    /// escaped comm, paths and argv: nobody thought of a score as text.
+    #[test]
+    fn every_incident_field_is_escaped_or_coerced() {
+        let mut raw: Vec<String> = Vec::new();
+        let bytes = PAGE.as_bytes();
+        let mut i = 0usize;
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'$' && bytes[i + 1] == b'{' {
+                // Track nesting: these templates contain nested ${...}.
+                let (mut depth, mut j) = (0usize, i + 1);
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let expr = &PAGE[i + 2..j.min(PAGE.len())];
+                let touches_incident = [
+                    "d.score",
+                    "d.subject",
+                    "s.score",
+                    "s.id",
+                    "s.detail",
+                    "s.cmdline",
+                    "d.severity",
+                    "d.lineage",
+                    "d.attack",
+                    "b.base",
+                    "b.chain_bonus",
+                    "d.signals",
+                ]
+                .iter()
+                .any(|f| expr.contains(f));
+                // `map(esc)` escapes every element; the substring "esc(" does
+                // not appear in it, so check for the bare callback too.
+                let escaped = expr.contains("esc(") || expr.contains("(esc)");
+                if touches_incident && !escaped && !expr.contains("num(") {
+                    // `.length` on an array is a count the panel computes, not
+                    // a value the host supplies.
+                    if !expr.contains(".length")
+                        && !expr.contains("svVar(")
+                        && !expr.contains("svBg(")
+                    {
+                        raw.push(expr.to_string());
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+        assert!(
+            raw.is_empty(),
+            "these incident fields reach innerHTML unfiltered: {raw:#?}"
         );
     }
 }

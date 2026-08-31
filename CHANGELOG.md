@@ -5,6 +5,31 @@ line is in the commit history.
 
 ## v0.3.1 — enforcement stops announcing a control it cannot apply
 
+### Stored XSS from a monitored host to the admin's browser
+
+The panel receives the incident record a host sent, verbatim — the server keeps
+it raw and adds only `_id` and the triage fields. String fields were escaped
+after an earlier XSS, but the numeric ones never were, because nobody thinks of
+a score as text.
+
+```json
+{"severity":"HIGH","score":"<img src=x onerror=…>","subject":{"pid":"<img …>"}}
+```
+
+`<span class="badge">${d.score}</span>` put that straight into `innerHTML`,
+running script in the authenticated session of whoever opened the panel — a path
+from one compromised monitored host to the operator who is investigating it, and
+from there to every other host's data.
+
+Every numeric field an incident carries is now coerced with `Number()` rather
+than escaped, which is stronger: a number cannot carry markup at all. A test
+scans the shipped page for any incident field reaching `innerHTML` without
+escaping or coercion, so the next field nobody thinks of as text fails the build
+instead of shipping.
+
+Severity also now maps through a whitelist before it reaches a CSS variable, so
+a hostile value cannot walk the prototype chain into a style attribute.
+
 ### Request bodies are bounded
 
 Every body the server read was unbounded. `read_to_string` on the request reader
