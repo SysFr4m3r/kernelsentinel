@@ -3,6 +3,20 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
+## v0.3.3 — unreleased
+
+### Release drift is a test failure
+
+Twice a release was tagged, work continued, and the new entries were written
+under the tagged heading — describing a version that does not contain them. The
+second time the tag was already published. A test now refuses that state: if the
+version in `Cargo.toml` is already tagged, `HEAD` must *be* that tag, and the
+newest changelog section must name the version being built.
+
+The practical effect is that the first commit after a release bumps the version
+and opens a section. That is stricter than most projects, and deliberately so —
+the alternative kept producing a changelog that described releases inaccurately.
+
 ## v0.3.2 — two paths from a monitored host to the server
 
 **Upgrade if you run the fleet server.** Both fixes below are reachable from
