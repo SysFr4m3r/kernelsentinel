@@ -232,6 +232,36 @@ where
             "kernelsentinel:   detections relying on those sensors will not fire on this kernel"
         );
     }
+    // Enforcement is implemented by the file_open program returning -EPERM. If
+    // that program is not live, nothing can be denied and no amount of policy
+    // in the map changes it.
+    //
+    // Saying "will be denied" here regardless is the worst assurance this tool
+    // could give: an operator who armed `--enforce on` believes container
+    // escapes are blocked, stops worrying about them, and is not protected. The
+    // sensor-count bug was a monitoring gap; this one would be a security
+    // control that exists only in the log line announcing it.
+    //
+    // Unlike an unknown host namespace this does not bail. That case risks
+    // denying on the host, which is an actively harmful wrong action; this one
+    // risks not denying, which is a gap -- and refusing to start would also
+    // throw away the five sensors that do work. So enforcement is disarmed, the
+    // map is rewritten to OFF so nothing downstream reads a policy that cannot
+    // be applied, and the operator is told plainly.
+    let mut enforce = enforce;
+    if enforce != Enforce::Off && !attached.contains(&"file_open") {
+        eprintln!(
+            "kernelsentinel: enforcement REQUESTED BUT NOT ARMED -- it is the file_open sensor \
+             that denies, and that sensor is not active on this kernel. Nothing will be blocked. \
+             Enable BPF-LSM (see docs/COMPATIBILITY.md) and restart to arm it."
+        );
+        enforce = Enforce::Off;
+        let cfg = [enforce.mode().to_ne_bytes(), host_mnt_ns.to_ne_bytes()].concat();
+        skel.maps
+            .enforce
+            .update(&0u32.to_ne_bytes(), &cfg, libbpf_rs::MapFlags::ANY)
+            .context("disarming the enforcement config")?;
+    }
     match enforce {
         Enforce::Off => {}
         Enforce::Audit => eprintln!(

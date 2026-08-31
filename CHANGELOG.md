@@ -30,6 +30,24 @@ true. If you run on a distribution where BPF-LSM is compiled in but inactive,
 `doctor` also stopped claiming those sensors "fall back to kprobes". There is no
 kprobe fallback and there never was.
 
+### `--enforce on` no longer claims a control it cannot apply
+
+Denial is implemented by the `file_open` program returning `-EPERM`. On a kernel
+where that program is inert, nothing can be blocked — and the agent printed
+"kernel escape-hatch writes from outside the host mount namespace will be
+denied" regardless.
+
+That is the worst assurance this tool could give. The sensor count was a
+monitoring gap; this was a security control that existed only in the line
+announcing it, with an operator who armed it and stopped worrying. Enforcement
+now disarms itself when `file_open` is not active, rewrites the policy map to
+off so nothing downstream reads a policy that cannot be applied, and says so.
+
+It does not refuse to start, unlike the unknown-host-namespace case, because the
+failure modes differ in kind: an unknown namespace risks denying *on the host*,
+which is actively harmful, while an inert sensor risks not denying, which is a
+gap — and refusing to start would also discard the five sensors that do work.
+
 ### Suppression by file identity, not by process name
 
 `credential_read` suppressed the programs whose job is authentication by
