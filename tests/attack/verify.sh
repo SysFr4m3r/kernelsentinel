@@ -63,6 +63,98 @@ header() { sed -n "s/^# *$2: *//p" "$1" | head -1; }
 pass=0 fail=0 skip=0
 declare -a FAILED=()
 
+# Learn a baseline from one run of a scenario, then assert the same scenario is
+# quiet with it applied.
+#
+# Two separate claims are checked, and both matter. Without the baseline the
+# activity must actually alert -- otherwise the scenario is not exercising the
+# false positive it was written for, and a pass would mean nothing. With the
+# baseline it must go quiet, which is the documented remedy actually working.
+run_baselined() {
+	local script="$1" name="$2" where="$3" caps="$4"
+	local cap="$WORK/$name.capture.ndjson" base="$WORK/$name.baseline"
+	local log="$WORK/$name.log" out="$WORK/$name.ndjson" slog="$WORK/$name.scenario"
+
+	# Pass 1: record raw events while the scenario runs, and learn from them.
+	"$BIN" record --out "$cap" >/dev/null 2>"$log" &
+	local agent=$!
+	local waited=0
+	until grep -q "ready, streaming events" "$log" 2>/dev/null; do
+		sleep 0.2; waited=$((waited + 1))
+		if ! kill -0 $agent 2>/dev/null || [[ $waited -gt 100 ]]; then
+			printf '  %-32s ERROR (agent did not attach for the learning pass)\n' "$name"
+			sed 's/^/      /' "$log" | tail -5
+			fail=$((fail + 1)); FAILED+=("$name"); return
+		fi
+	done
+	run_scenario "$script" "$name" "$where" "$caps" "$slog" || {
+		printf '  %-32s ERROR (scenario failed during the learning pass)\n' "$name"
+		sed 's/^/      /' "$slog" | tail -4
+		kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
+		fail=$((fail + 1)); FAILED+=("$name"); return
+	}
+	sleep 1
+	kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
+
+	if ! "$BIN" baseline --capture "$cap" --out "$base" >/dev/null 2>&1; then
+		printf '  %-32s ERROR (could not learn a baseline from the capture)\n' "$name"
+		fail=$((fail + 1)); FAILED+=("$name"); return
+	fi
+
+	# Does the activity alert at all without the baseline? If not, this
+	# scenario is not exercising a false positive and its pass means nothing.
+	#
+	# `budget` counts incidents per severity floor over the capture, which is
+	# exactly this question, and asking the tool rather than reimplementing the
+	# count keeps the two answers from drifting apart.
+	local unbaselined
+	unbaselined="$("$BIN" budget --capture "$cap" 2>/dev/null \
+		| awk '$1=="MEDIUM"{print $2}' | head -1)"
+	unbaselined="${unbaselined:-0}"
+
+	# Pass 2: the same scenario, with what was just learned.
+	"$BIN" run --json --min-severity medium --baseline "$base" >"$out" 2>"$log" &
+	agent=$!
+	waited=0
+	until grep -q "ready, streaming events" "$log" 2>/dev/null; do
+		sleep 0.2; waited=$((waited + 1))
+		if ! kill -0 $agent 2>/dev/null || [[ $waited -gt 100 ]]; then
+			printf '  %-32s ERROR (agent did not attach for the verify pass)\n' "$name"
+			fail=$((fail + 1)); FAILED+=("$name"); return
+		fi
+	done
+	run_scenario "$script" "$name" "$where" "$caps" "$slog" || true
+	sleep 1
+	kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
+
+	local fired
+	fired="$(grep -o '"id":"[a-z_]*"' "$out" | sort -u | sed 's/"id"://g;s/"//g' | tr '\n' ' ')"
+	if [[ -n "$fired" ]]; then
+		printf '  %-32s FALSE POSITIVE (baseline did not suppress) %s\n' "$name" "$fired"
+		fail=$((fail + 1)); FAILED+=("$name")
+	elif [[ "$unbaselined" -eq 0 ]]; then
+		# Quiet both ways proves nothing about the baseline.
+		printf '  %-32s ERROR (nothing alerted without the baseline either)\n' "$name"
+		fail=$((fail + 1)); FAILED+=("$name")
+	else
+		printf '  %-32s PASS  baseline suppressed %s alert(s)\n' "$name" "$unbaselined"
+		grep -hE 'DOES exercise|NOT exercised' "$slog" 2>/dev/null \
+			| sed 's/^\[noise\] /        note: /' || true
+		pass=$((pass + 1))
+	fi
+}
+
+# Run one scenario body, on the host or in the lab. Shared so the two-pass
+# baseline mode drives exactly the same thing run_one does.
+run_scenario() {
+	local script="$1" name="$2" where="$3" caps="$4" slog="$5"
+	if [[ "$where" == "lab" ]]; then
+		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" >"$slog" 2>&1
+	else
+		KS_COLD="${KS_COLD:-}" bash "$script" >"$slog" 2>&1
+	fi
+}
+
 run_one() {
 	local script="$1" name expect where caps
 	name="$(basename "$script" .sh)"
@@ -75,8 +167,21 @@ run_one() {
 	# A third question, alongside "was it detected" and "did anything fire".
 	# `ks-forbid` names one signal that must NOT appear, and runs at info so
 	# the absence is real rather than an artefact of the alerting floor.
-	local forbid
+	local forbid baselined
 	forbid="$(header "$script" ks-forbid)"
+	# `ks-baseline: yes` runs the scenario twice: once recorded, to learn a
+	# baseline from, and once with that baseline applied. The assertion is on
+	# the second run.
+	#
+	# It exists because docs/DETECTIONS.md answers a known false positive with
+	# "baseline them" in seven places, and nothing tested that. The baseline was
+	# verified against fixtures built by hand; no test had learned from real
+	# activity and checked the same activity then stayed quiet.
+	baselined="$(header "$script" ks-baseline)"
+	if [[ "$baselined" == "yes" ]]; then
+		run_baselined "$script" "$name" "$where" "$caps"
+		return
+	fi
 	if [[ -z "$expect" ]]; then
 		printf '  %-32s SKIP  (no ks-expect header)\n' "$name"
 		skip=$((skip + 1)); return
@@ -125,12 +230,7 @@ run_one() {
 	done
 
 	local scenario_rc=0
-	if [[ "$where" == "lab" ]]; then
-		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" \
-			>"$slog" 2>&1 || scenario_rc=$?
-	else
-		KS_COLD="${KS_COLD:-}" bash "$script" >"$slog" 2>&1 || scenario_rc=$?
-	fi
+	run_scenario "$script" "$name" "$where" "$caps" "$slog" || scenario_rc=$?
 
 	sleep 1              # let the last events drain through the ring buffer
 	kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null

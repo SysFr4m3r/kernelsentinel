@@ -142,11 +142,13 @@ hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 **real kernel captures** committed as fixtures. Twenty [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
-against the actual attack. And five noise scenarios asserting ordinary work stays
+against the actual attack. And six noise scenarios asserting ordinary work stays
 silent, because a tool that catches everything and fires on `docker run` gets muted in week one. One
 of those asserts the *absence* of a specific signal rather than general quiet — the only assertion
 shape that can catch a suppression having stopped working, which no amount of attack scenarios
-can, since a suppression that fails open makes the attack tests pass harder.
+can, since a suppression that fails open makes the attack tests pass harder. Another runs twice, to
+check that the answer this project's documentation gives to a known false positive — *baseline it* —
+actually works: the activity must alert without a baseline learned from it, and go quiet with one.
 
 And the sensors are loaded into a real kernel on every push, which is newer than the rest of this
 list and found more than it should have: a verifier rejection that only one compiler produced, and
