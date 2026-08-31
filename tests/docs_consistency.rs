@@ -381,3 +381,72 @@ fn recorded_results_cover_the_current_sensor_count() {
         );
     }
 }
+
+/// You cannot add to the changelog of a version that has already shipped.
+///
+/// This happened twice. Both times a release was tagged, work continued, and
+/// its entries were written under the tagged heading -- so the working copy
+/// described a version containing fixes that version does not have. The first
+/// time it was caught before publishing. The second time the tag was already on
+/// GitHub, the entries had to be lifted into a new release, and the only reason
+/// nothing false reached anyone is that the *tagged tree's* changelog was
+/// consistent with itself.
+///
+/// The rule that makes it structural: if the version in Cargo.toml is already
+/// tagged, HEAD must *be* that tag. Anything else means commits exist beyond the
+/// release while the version still names it, which is the state in which the top
+/// changelog section starts collecting things that will never be in it.
+///
+/// Skipped outside a git checkout, since a source tarball has no tags to compare
+/// against and cannot answer the question either way.
+#[test]
+fn a_shipped_version_is_not_still_being_edited() {
+    let version = read("Cargo.toml")
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("version = \"")?
+                .strip_suffix('"')
+                .map(str::to_string)
+        })
+        .expect("Cargo.toml has a version");
+
+    if !std::path::Path::new(".git").exists() {
+        return;
+    }
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    let tag = format!("v{version}");
+    let Some(tagged) = git(&["rev-parse", &format!("{tag}^{{commit}}")]) else {
+        // Not released yet: the normal state during development.
+        return;
+    };
+    let Some(head) = git(&["rev-parse", "HEAD"]) else {
+        return;
+    };
+
+    assert_eq!(
+        head, tagged,
+        "Cargo.toml still says {version}, but {tag} is already tagged at {tagged} and HEAD is \
+         {head}. Commits exist beyond that release while the version still names it, so anything \
+         written into the {tag} section of CHANGELOG.md describes a release that does not contain \
+         it. Bump the version and open a new section."
+    );
+
+    // And the changelog's newest section must be the version being built.
+    let newest = read("CHANGELOG.md")
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("## v")
+                .map(|r| r.split_whitespace().next().unwrap_or("").to_string())
+        })
+        .expect("CHANGELOG.md has a versioned section");
+    assert_eq!(
+        newest, version,
+        "CHANGELOG.md's newest section is v{newest} but Cargo.toml says {version}"
+    );
+}
