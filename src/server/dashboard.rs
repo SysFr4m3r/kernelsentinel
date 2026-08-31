@@ -154,6 +154,8 @@ body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",syste
 .atag.stale{color:#c47f17;background:#c47f1718;border-color:#c47f1733}
 .atag.silent{color:#c0392b;background:#c0392b18;border-color:#c0392b44}
 .atag.unknown{color:var(--faint);border-color:var(--line)}
+/* Amber, matching "stale": a gap the operator should act on, not a failure. */
+.atag.partial{color:#c47f17;background:#c47f1718;border-color:#c47f1733}
 .host.dark{opacity:.72}
 .host.dark .name{color:var(--muted)}
 .hostwarn{margin:10px 0 16px;padding:10px 13px;border-radius:7px;font-size:12.5px;line-height:1.5;
@@ -441,10 +443,26 @@ function renderFleet(){
 function agentTag(h){
   const st=h.status||'unknown';
   if(st==='blind')return `<span class="atag silent" title="The agent is reporting, but its sensors did not observe its own exec — they may have been detached. ${h.attestation_misses||0} missed check(s).">reporting but blind</span>`;
-  if(st==='live')return '<span class="atag live">live</span>';
+  if(st==='live')return '<span class="atag live">live</span>'+coverTag(h);
   if(st==='stale')return `<span class="atag stale">no report ${tsago(h.last_heartbeat)}</span>`;
   if(st==='silent')return `<span class="atag silent">not reporting since ${tsago(h.last_heartbeat)}</span>`;
   return '<span class="atag unknown" title="This agent ships incidents but no heartbeat — likely an older build. Liveness is unknown, not bad.">no heartbeat</span>';
+}
+// Attestation says whether an agent can see anything; this says how much.
+//
+// A host on a distribution that ships BPF-LSM compiled in but not enabled runs
+// with six of its eleven sensors attached to hooks the kernel never calls. It
+// passes attestation -- the canary only speaks for exec -- and rendered as an
+// unqualified green while most of the detection surface was missing. An
+// operator scanning the fleet had no way to see it.
+//
+// Silent when a host is fully covered, so the badge means something when it
+// appears, and silent for an agent too old to report the counts rather than
+// claiming 0 of 0.
+function coverTag(h){
+  const total=h.sensors_total||0, active=h.sensors_active||0;
+  if(total===0||active>=total)return '';
+  return ` <span class="atag partial" title="${esc(String(active))} of ${esc(String(total))} sensors can observe an event. The rest are attached to hooks this kernel never invokes — usually BPF-LSM compiled in but not enabled. Detections relying on them cannot fire here.">${esc(String(active))}/${esc(String(total))} sensors</span>`;
 }
 function dur(sec){
   if(sec<60)return sec+'s';
@@ -503,6 +521,11 @@ async function openHost(h,selectId){
   if(h.drops>0){warn.className='hostwarn';warn.innerHTML=`<b>${h.drops.toLocaleString()} events dropped</b> on this host since the agent started — the ring buffer overflowed, so some activity was never seen. Detections from this window are incomplete.`;}
   else if(h.status==='blind'){warn.className='hostwarn';warn.innerHTML=`<b>Agent reporting but blind</b> — it execs a child every heartbeat and its own sensors did not observe it (${h.attestation_misses||0} missed check${(h.attestation_misses||0)===1?'':'s'}). The eBPF programs may have been detached. Nothing below can be trusted as current, and an absence of findings means nothing at all.`;}
   else if(h.status==='silent'||h.status==='stale'){warn.className='hostwarn';warn.innerHTML=`<b>Agent not reporting</b> — last heartbeat ${tsago(h.last_heartbeat)}. Findings below may be stale, and an agent that stops is itself worth investigating.`;}
+  // Ranked below the states above because it is a narrower gap: the agent is
+  // reporting and can see, just not everything. It still belongs on the banner
+  // rather than only in a pill, because "no findings on this host" means
+  // materially less when six of eleven sensors cannot fire.
+  else if((h.sensors_total||0)>0&&(h.sensors_active||0)<h.sensors_total){warn.className='hostwarn';warn.innerHTML=`<b>${esc(String(h.sensors_active))} of ${esc(String(h.sensors_total))} sensors active</b> — the rest are attached to hooks this kernel never invokes, usually BPF-LSM compiled in but not enabled. File, credential-theft, fileless-exec and container-socket detections cannot fire here, so an absence of them is not evidence of absence.`;}
   else{warn.className='hostwarn hidden';warn.innerHTML='';}
   const feed=document.getElementById('feed');const det=document.getElementById('detail');
   document.getElementById('hicount').textContent=incs.length?`${incs.length} on this host`:'';

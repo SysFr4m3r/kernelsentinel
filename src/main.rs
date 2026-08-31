@@ -964,9 +964,13 @@ fn run(
                 emit(
                     &heartbeat::HeartbeatRecord::new(
                         started.elapsed().as_secs(),
-                        s.emitted,
-                        s.drops,
-                        s.decode_panics,
+                        heartbeat::Counters {
+                            events: s.emitted,
+                            drops: s.drops,
+                            decode_panics: s.decode_panics,
+                            sensors_active: s.sensors_active,
+                            sensors_total: s.sensors_total,
+                        },
                         verified,
                         canary.misses(),
                     )

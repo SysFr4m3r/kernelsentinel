@@ -58,6 +58,15 @@ pub struct HostState {
     /// is alive and reporting but blind, which is worse than silent: the panel
     /// would otherwise show a healthy host that sees nothing.
     pub sensors_verified: Option<bool>,
+    /// Sensors that can observe an event, out of how many exist.
+    ///
+    /// Separate from `sensors_verified`, which is the canary and speaks only
+    /// for `exec`. A host passes attestation with six of eleven sensors inert,
+    /// which is the ordinary state wherever BPF-LSM is compiled in but not
+    /// enabled, and without this the fleet view cannot tell it from a host
+    /// seeing everything. Zero means an agent too old to report it.
+    pub sensors_active: u32,
+    pub sensors_total: u32,
 }
 
 /// How long after its last heartbeat an agent stops counting as live. Three
@@ -103,7 +112,7 @@ const MAX_PER_HOST: usize = 500;
 /// database written by a *newer* build is refused rather than attempted: a
 /// downgrade that half-understands the schema would corrupt an audit trail
 /// people are meant to be able to trust.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Hard ceiling on rows kept on disk, independent of retention.
 ///
@@ -153,6 +162,11 @@ pub struct HostSummary {
     /// Ring-buffer drops. Non-zero means this host lost events, i.e. missed
     /// detections -- the panel must not present it as fully covered.
     pub drops: u64,
+    /// Sensors that can observe an event, out of how many exist. Attestation
+    /// answers whether the agent can see *anything*; this answers how much.
+    /// Zero total means an agent too old to report it.
+    pub sensors_active: u32,
+    pub sensors_total: u32,
 }
 
 #[derive(Serialize)]
@@ -269,7 +283,9 @@ impl Store {
                  events INTEGER DEFAULT 0, drops INTEGER DEFAULT 0,
                  decode_panics INTEGER DEFAULT 0,
                  sensors_verified INTEGER,
-                 attestation_misses INTEGER DEFAULT 0
+                 attestation_misses INTEGER DEFAULT 0,
+                 sensors_active INTEGER DEFAULT 0,
+                 sensors_total INTEGER DEFAULT 0
              );",
         )?;
 
@@ -326,7 +342,8 @@ impl Store {
             let mut stmt = conn.prepare(
                 "SELECT host, first_seen, last_seen, last_heartbeat, kernel, ip,
                         agent_version, uptime_secs, events, drops, decode_panics,
-                        sensors_verified, attestation_misses FROM hosts",
+                        sensors_verified, attestation_misses,
+                        sensors_active, sensors_total FROM hosts",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
@@ -343,11 +360,13 @@ impl Store {
                     r.get::<_, i64>(10)? as u64,
                     r.get::<_, Option<i64>>(11)?.map(|v| v != 0),
                     r.get::<_, Option<i64>>(12)?.unwrap_or(0) as u64,
+                    r.get::<_, Option<i64>>(13)?.unwrap_or(0) as u32,
+                    r.get::<_, Option<i64>>(14)?.unwrap_or(0) as u32,
                 ))
             })?;
             let mut hosts = store.hosts.lock().unwrap();
             for row in rows.flatten() {
-                let (host, first, last, hb, kernel, ip, ver, up, ev, dr, dp, sv, am) = row;
+                let (host, first, last, hb, kernel, ip, ver, up, ev, dr, dp, sv, am, sa, st) = row;
                 let state = hosts.entry(host).or_default();
                 state.first_seen = first;
                 state.last_seen = state.last_seen.max(last);
@@ -365,6 +384,8 @@ impl Store {
                 state.decode_panics = dp;
                 state.sensors_verified = sv;
                 state.attestation_misses = am;
+                state.sensors_active = sa;
+                state.sensors_total = st;
             }
         }
 
@@ -393,6 +414,14 @@ impl Store {
         state.decode_panics = hb.decode_panics;
         state.sensors_verified = hb.sensors_verified;
         state.attestation_misses = hb.attestation_misses;
+        // An agent too old to report coverage sends zeros. Overwriting a real
+        // count with those would make an upgrade look like a regression and a
+        // downgrade look like a fix, so a zero total is treated as "not
+        // reported" rather than as a measurement.
+        if hb.sensors_total > 0 {
+            state.sensors_active = hb.sensors_active;
+            state.sensors_total = hb.sensors_total;
+        }
         if !kernel.is_empty() {
             state.kernel = kernel.to_string();
         }
@@ -400,6 +429,9 @@ impl Store {
             state.ip = ip.to_string();
         }
         let (first_seen, kernel, ip) = (state.first_seen, state.kernel.clone(), state.ip.clone());
+        // Persist the reconciled values, not the heartbeat's: an old agent's
+        // zeros must not overwrite a count a newer one already reported.
+        let (state_active, state_total) = (state.sensors_active, state.sensors_total);
         drop(hosts);
 
         if let Some(db) = &self.db {
@@ -407,8 +439,9 @@ impl Store {
             let _ = conn.execute(
                 "INSERT INTO hosts (host, first_seen, last_seen, last_heartbeat, kernel, ip,
                                     agent_version, uptime_secs, events, drops, decode_panics,
-                                    sensors_verified, attestation_misses)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                                    sensors_verified, attestation_misses,
+                                    sensors_active, sensors_total)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(host) DO UPDATE SET
                    last_seen=excluded.last_seen, last_heartbeat=excluded.last_heartbeat,
                    kernel=excluded.kernel, ip=excluded.ip,
@@ -416,7 +449,9 @@ impl Store {
                    events=excluded.events, drops=excluded.drops,
                    decode_panics=excluded.decode_panics,
                    sensors_verified=excluded.sensors_verified,
-                   attestation_misses=excluded.attestation_misses",
+                   attestation_misses=excluded.attestation_misses,
+                   sensors_active=excluded.sensors_active,
+                   sensors_total=excluded.sensors_total",
                 rusqlite::params![
                     host,
                     first_seen as i64,
@@ -431,6 +466,8 @@ impl Store {
                     hb.decode_panics as i64,
                     hb.sensors_verified.map(|v| v as i64),
                     hb.attestation_misses as i64,
+                    state_active as i64,
+                    state_total as i64,
                 ],
             );
         }
@@ -772,6 +809,8 @@ impl Store {
                     uptime_secs: state.uptime_secs,
                     events: state.events,
                     drops: state.drops,
+                    sensors_active: state.sensors_active,
+                    sensors_total: state.sensors_total,
                 }
             })
             .collect();
@@ -891,6 +930,17 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             let _ = conn.execute(col, []);
         }
     }
+    // v2 -> v3: sensor coverage. Attestation answers "can this agent see
+    // anything"; it never answered "how much". A host with six inert sensors
+    // passed every check the panel made and rendered as an unqualified green.
+    if (1..3).contains(&found) {
+        for col in [
+            "ALTER TABLE hosts ADD COLUMN sensors_active INTEGER DEFAULT 0",
+            "ALTER TABLE hosts ADD COLUMN sensors_total INTEGER DEFAULT 0",
+        ] {
+            let _ = conn.execute(col, []);
+        }
+    }
     // Future steps append here, each guarded by `if found < N`, and run in order.
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     Ok(())
@@ -974,6 +1024,7 @@ fn epoch() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::heartbeat::Counters;
 
     /// An agent that has never sent a heartbeat is *unknown*, never *silent*.
     /// Reporting an older agent as dead would be a false alarm in exactly the
@@ -1143,13 +1194,35 @@ mod tests {
             "aaa-healthy",
             "",
             "",
-            &HeartbeatRecord::new(60, 10, 0, 0, Some(true), 0),
+            &HeartbeatRecord::new(
+                60,
+                Counters {
+                    events: 10,
+                    drops: 0,
+                    decode_panics: 0,
+                    sensors_active: 11,
+                    sensors_total: 11,
+                },
+                Some(true),
+                0,
+            ),
         );
         store.heartbeat(
             "zzz-silent",
             "",
             "",
-            &HeartbeatRecord::new(60, 10, 0, 0, Some(true), 0),
+            &HeartbeatRecord::new(
+                60,
+                Counters {
+                    events: 10,
+                    drops: 0,
+                    decode_panics: 0,
+                    sensors_active: 11,
+                    sensors_total: 11,
+                },
+                Some(true),
+                0,
+            ),
         );
         // Age zzz-silent past the silence threshold.
         {
@@ -1194,7 +1267,18 @@ mod tests {
     #[test]
     fn clean_host_is_visible_from_heartbeat_alone() {
         let store = Store::new();
-        let hb = HeartbeatRecord::new(120, 5_000, 0, 0, Some(true), 0);
+        let hb = HeartbeatRecord::new(
+            120,
+            Counters {
+                events: 5_000,
+                drops: 0,
+                decode_panics: 0,
+                sensors_active: 11,
+                sensors_total: 11,
+            },
+            Some(true),
+            0,
+        );
         store.heartbeat("clean-01", "6.19", "10.0.0.9", &hb);
 
         let fleet = store.fleet();
@@ -1217,7 +1301,18 @@ mod tests {
             "busy-01",
             "",
             "",
-            &HeartbeatRecord::new(60, 900_000, 1_743, 2, Some(true), 0),
+            &HeartbeatRecord::new(
+                60,
+                Counters {
+                    events: 900_000,
+                    drops: 1_743,
+                    decode_panics: 2,
+                    sensors_active: 11,
+                    sensors_total: 11,
+                },
+                Some(true),
+                0,
+            ),
         );
         let h = &store.fleet()[0];
         assert_eq!(h.drops, 1_743);
@@ -1334,5 +1429,103 @@ mod tests {
         assert_eq!(band(40), "LOW");
         assert_eq!(band(50), "MEDIUM");
         assert_eq!(band(100), "CRITICAL");
+    }
+    /// An agent too old to report coverage sends zeros. Letting those overwrite
+    /// a real count would make a downgrade look like a fix and an upgrade look
+    /// like a regression, and would erase the one field that says a host is
+    /// half blind.
+    #[test]
+    fn an_old_agents_zeros_do_not_erase_a_known_coverage() {
+        let store = Store::new();
+        store.heartbeat(
+            "host-a",
+            "6.1.0",
+            "10.0.0.1",
+            &HeartbeatRecord::new(
+                60,
+                Counters {
+                    events: 10,
+                    drops: 0,
+                    decode_panics: 0,
+                    sensors_active: 5,
+                    sensors_total: 11,
+                },
+                Some(true),
+                0,
+            ),
+        );
+        let seen = |s: &Store| {
+            let h = s.hosts.lock().unwrap();
+            let st = h.get("host-a").unwrap();
+            (st.sensors_active, st.sensors_total)
+        };
+        assert_eq!(seen(&store), (5, 11));
+
+        // Same host, an agent that predates the field.
+        store.heartbeat(
+            "host-a",
+            "6.1.0",
+            "10.0.0.1",
+            &HeartbeatRecord::new(
+                120,
+                Counters {
+                    events: 20,
+                    drops: 0,
+                    decode_panics: 0,
+                    sensors_active: 0,
+                    sensors_total: 0,
+                },
+                Some(true),
+                0,
+            ),
+        );
+        assert_eq!(
+            seen(&store),
+            (5, 11),
+            "zeros from an agent that cannot report coverage must not overwrite it"
+        );
+
+        // A real change is still recorded.
+        store.heartbeat(
+            "host-a",
+            "6.1.0",
+            "10.0.0.1",
+            &HeartbeatRecord::new(
+                180,
+                Counters {
+                    events: 30,
+                    drops: 0,
+                    decode_panics: 0,
+                    sensors_active: 11,
+                    sensors_total: 11,
+                },
+                Some(true),
+                0,
+            ),
+        );
+        assert_eq!(seen(&store), (11, 11));
+    }
+
+    /// Coverage and attestation answer different questions, and conflating them
+    /// is how a half-blind host renders as an unqualified green. A host with six
+    /// inert sensors is not "blind" -- the canary still sees its own exec -- so
+    /// the status must stay live while the counts carry the gap.
+    #[test]
+    fn partial_coverage_is_not_the_same_as_blind() {
+        let mut state = HostState {
+            last_heartbeat: 1_000,
+            sensors_verified: Some(true),
+            sensors_active: 5,
+            sensors_total: 11,
+            ..Default::default()
+        };
+        assert_eq!(agent_status(&state, 1_000), "live");
+
+        state.sensors_verified = Some(false);
+        assert_eq!(
+            agent_status(&state, 1_000),
+            "blind",
+            "a failed attestation still outranks everything"
+        );
     }
 }

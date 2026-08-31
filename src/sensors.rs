@@ -42,6 +42,15 @@ pub struct Stats {
     pub drops: u64,
     /// Events that panicked while decoding and were recovered (not aborted).
     pub decode_panics: u64,
+    /// Sensors that can actually observe an event, and how many exist.
+    ///
+    /// Carried on every tick so the fleet server learns it without a second
+    /// message type. A host reporting 5 of 11 is not blind -- the canary still
+    /// attests that exec works -- but it cannot see most of what this tool
+    /// detects, and a panel that shows it as an unqualified green is telling
+    /// the operator something false by omission.
+    pub sensors_active: u32,
+    pub sensors_total: u32,
 }
 
 /// Load, attach, and pump events into `on_event` until `stop` is set.
@@ -214,11 +223,9 @@ where
              build on; run `kernelsentinel doctor` to see what this kernel supports"
         );
     }
-    eprintln!(
-        "kernelsentinel: {} of {} sensors active",
-        attached.len(),
-        attached.len() + missing.len()
-    );
+    let sensors_active = attached.len() as u32;
+    let sensors_total = (attached.len() + missing.len()) as u32;
+    eprintln!("kernelsentinel: {sensors_active} of {sensors_total} sensors active");
     if !missing.is_empty() {
         // Named, not counted. "6/11 attached" leaves an operator guessing which
         // detections are silently unavailable on their host.
@@ -322,6 +329,8 @@ where
         if !tick_every.is_zero() && last_tick.elapsed() >= tick_every {
             let mut s = read_stats(&skel.maps.stats);
             s.decode_panics = panics.get();
+            s.sensors_active = sensors_active;
+            s.sensors_total = sensors_total;
             on_tick(s);
             last_tick = std::time::Instant::now();
         }
@@ -361,6 +370,8 @@ fn read_stats(map: &impl MapCore) -> Stats {
         emitted: get(0),
         drops: get(1),
         decode_panics: 0,
+        sensors_active: 0,
+        sensors_total: 0,
     }
 }
 

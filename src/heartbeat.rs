@@ -46,17 +46,52 @@ pub struct HeartbeatRecord {
     /// Attestation rounds where the canary was never observed.
     #[serde(default)]
     pub attestation_misses: u64,
+    /// Sensors that can observe an event, out of how many exist.
+    ///
+    /// Distinct from `sensors_verified`, which is the canary and speaks only for
+    /// `exec`. A host can pass attestation with six of its eleven sensors inert
+    /// -- that is the ordinary state on any distribution shipping BPF-LSM
+    /// compiled in but not enabled -- and without these the fleet view has no
+    /// way to tell it apart from one seeing everything.
+    ///
+    /// Zero means an agent too old to report it, not a host with no sensors:
+    /// such an agent could not have started at all, since exec is mandatory.
+    #[serde(default)]
+    pub sensors_active: u32,
+    #[serde(default)]
+    pub sensors_total: u32,
+}
+
+/// What the sensors have counted, as one value.
+///
+/// Grouped rather than passed as six positional integers: every one of them is
+/// a number, so a transposed pair compiles cleanly and reports the wrong thing
+/// forever. `sensors::Stats` cannot be used here because it lives behind the
+/// `bpf` feature and this type has to exist in a server-only build.
+#[derive(Clone, Copy, Default)]
+pub struct Counters {
+    pub events: u64,
+    pub drops: u64,
+    pub decode_panics: u64,
+    /// Sensors that can observe an event, out of how many exist.
+    pub sensors_active: u32,
+    pub sensors_total: u32,
 }
 
 impl HeartbeatRecord {
     pub fn new(
         uptime_secs: u64,
-        events: u64,
-        drops: u64,
-        decode_panics: u64,
+        counters: Counters,
         sensors_verified: Option<bool>,
         attestation_misses: u64,
     ) -> Self {
+        let Counters {
+            events,
+            drops,
+            decode_panics,
+            sensors_active,
+            sensors_total,
+        } = counters;
         Self {
             schema: SCHEMA.to_string(),
             ts: std::time::SystemTime::now()
@@ -70,6 +105,8 @@ impl HeartbeatRecord {
             decode_panics,
             sensors_verified,
             attestation_misses,
+            sensors_active,
+            sensors_total,
         }
     }
 
