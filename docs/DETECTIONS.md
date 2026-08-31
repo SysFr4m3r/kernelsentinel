@@ -40,7 +40,12 @@ that suppresses nothing is silently useless.
 
 This is verified rather than asserted: `tests/noise/admin_config_change.sh` runs
 config-management writes, learns from them, and fails if the same activity is not
-quiet afterwards.
+quiet afterwards. **Measured:** eight alerts at the operational floor without a
+baseline, zero with one learned from the same activity recurring, from two
+learned patterns both rated strong.
+
+The first version of that test learned from a *single* run and failed — which is
+how this section came to be written.
 
 ---
 

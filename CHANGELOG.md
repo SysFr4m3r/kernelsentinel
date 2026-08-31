@@ -5,6 +5,23 @@ line is in the commit history.
 
 ## v0.3.1 — enforcement stops announcing a control it cannot apply
 
+### "Baseline them" now has a test, and needed a correction
+
+`docs/DETECTIONS.md` answered a known false positive with *baseline them* in
+seven places, and following that literally suppressed nothing. A pair seen once
+keeps ~85% of its score — deliberately, so an attacker resident during a "clean"
+recording cannot whitelist themselves with one action — but the documentation
+never said the activity has to **recur** in the capture. An operator following
+the advice would have concluded baselining was broken.
+
+The docs now lead with what the advice requires. A noise scenario verifies it
+end to end: config-management writes to `/etc/cron.d` and `/etc/sudoers.d` are
+recorded, learned from, and the same activity must then be silent. Eight alerts
+at the operational floor without a baseline, zero with one.
+
+The test also fails if the activity was quiet *without* a baseline, because a
+scenario that is quiet either way is not exercising a false positive at all.
+
 ### Stored XSS from a monitored host to the admin's browser
 
 The panel receives the incident record a host sent, verbatim — the server keeps
