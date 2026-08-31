@@ -16,6 +16,32 @@ events should not cry wolf.
 Every detection here is covered by a test that replays a capture — several from
 **real** kernel captures committed under `tests/fixtures/`.
 
+## What "baseline them" means below
+
+Several entries answer a false positive with *baseline them*. That advice is
+incomplete on its own, and following it literally does not work.
+
+A baseline entry earns suppression in proportion to the evidence behind it: how
+many times the `(signal, executable)` pair was seen, and how much of the learning
+window it spanned. **A pair seen once keeps about 85% of its score.** That is
+deliberate — otherwise an attacker resident while you recorded a "clean" capture
+would whitelist themselves with a single action — but it means recording a single
+run of the noisy activity and learning from that suppresses almost nothing.
+
+So *baseline them* means: record the host while the activity happens **the way it
+normally happens** — repeatedly, across hours — and learn from that. The pair has
+to look like a habit, because that is the only thing that distinguishes routine
+from an intrusion that happened once.
+
+`kernelsentinel baseline` prints what it learned and warns when nothing in the
+capture is well evidenced. `budget --capture X --baseline Y` shows what the
+baseline actually removed. Neither of those is optional reassurance; a baseline
+that suppresses nothing is silently useless.
+
+This is verified rather than asserted: `tests/noise/admin_config_change.sh` runs
+config-management writes, learns from them, and fails if the same activity is not
+quiet afterwards.
+
 ---
 
 ## Process & privilege
@@ -49,7 +75,8 @@ A regular file gains the setuid or setgid bit (`0 → S_ISUID/S_ISGID`), detecte
 - **Trigger:** `cp /bin/sh /tmp/.x && chmod u+s /tmp/.x`
 - **False positives:** package managers (`dpkg`, `rpm`) create SUID binaries on
   install; `sudo chmod u+s` by an admin is structurally identical to the attack.
-  These are the baseline's job — learn them as normal, novel stays flagged. It
+  These are the baseline's job — learn them as normal, novel stays flagged (see
+  *What "baseline them" means* above: the activity has to recur in the capture). It
   takes a learning window long enough to show the package manager doing it more
   than once; one sighting barely suppresses, on purpose.
 - **Evasions:** requires `CONFIG_SECURITY_PATH` (the `path_chmod` hook); on
@@ -137,7 +164,7 @@ are suppressed; theft is reaching *outside* your tree.
 
 - **Trigger:** as an unprivileged user, read `/proc/<root-pid>/environ`.
 - **False positives:** monitoring agents and `ps`-like tools that legitimately read
-  across uids. Baseline them. **Measured:** on a single-user desktop over 2.3
+  across uids. Baseline them, from a capture where they recur. **Measured:** on a single-user desktop over 2.3
   hours this fired 7 times, 6 of them `/usr/bin/pidof` — reading another user's
   `/proc/<pid>/cmdline` goes through `ptrace_may_access`, so the ptrace sensor
   sees it. None reached the alerting floor. See docs/PERFORMANCE.md.
@@ -170,7 +197,7 @@ read was filtered in-kernel and the daemon never saw it.
   `unix_chkpwd`, `sshd`, `sudo`, `su`, `login`, `passwd`, `systemd-logind`, `polkitd`, `sssd` and
   friends — are suppressed, but only when the reader's **executable** is one of those programs,
   matched by `(device, inode)`. Backup agents, config management, and vulnerability scanners will
-  still fire; baseline them.
+  still fire; baseline them from a capture spanning normal operation.
 - **Suppression is by file identity, never by name.** This previously matched `comm`, which the
   process itself sets: `prctl(PR_SET_NAME, "sshd")`, or a copy of `cat` at `/tmp/sudo`, produced no
   signal at all. The stated reason for accepting that was that path matching would not survive the
@@ -211,7 +238,7 @@ systemd units) and **`sensitive_write`** (20, any other watched path — `/etc/p
 
 - **Trigger:** `echo /tmp/evil.so > /etc/ld.so.preload`
 - **False positives:** package upgrades rewrite systemd units and cron; `ssh-copy-id`
-  writes `authorized_keys`; `visudo` writes sudoers. Baseline the writing binary.
+  writes `authorized_keys`; `visudo` writes sudoers. Baseline the writing binary, learning from a capture where it writes more than once.
 - **Evasions:** the watch list is a fixed prefix set — a persistence mechanism not
   on the list (a new systemd path, a shell rc file, a PAM config) is not watched.
   Per-user `authorized_keys` is covered only for existing `/home/*` and `/root` at
@@ -271,7 +298,8 @@ A write to a file whose contents the kernel later executes **as root on the host
   hence the much higher score.
 - **Trigger:** `echo '|/tmp/x' > /proc/sys/kernel/core_pattern` (as root; revert afterwards).
 - **False positives:** crash handlers legitimately set `core_pattern` — systemd-coredump, apport,
-  and container runtimes configuring a host. Baseline the writing binary.
+  and container runtimes configuring a host. Baseline the writing binary, from a
+  capture where it does so repeatedly.
 - **Matched by file identity, not path.** An escape bind-mounts the host's `/proc` elsewhere, and the
   kernel reports the path as seen in the *writer's* mount namespace — so a watched prefix never
   matches. Keying on `(dev, inode)` catches it however it is reached, and correctly distinguishes a

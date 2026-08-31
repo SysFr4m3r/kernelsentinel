@@ -14,8 +14,19 @@
 # real activity and checked the same activity then stayed quiet. Advice repeated
 # seven times in the documentation of a security tool should not rest on that.
 #
-# So this scenario runs twice: once recorded, to learn from, and once with the
-# resulting baseline applied. The assertion is on the second run.
+# So this scenario runs in two passes: a recorded learning pass where the harness
+# repeats it, and one verify pass with the resulting baseline applied. The
+# assertion is on the verify pass.
+#
+# The repetition is not padding. A pair seen once keeps ~85% of its score, by
+# design, so an attacker present during a "clean" recording cannot whitelist
+# themselves with a single action. "Baseline them" claims that *routine*
+# behaviour stops alerting, and routine means recurring -- so a learning pass
+# that runs the activity once tests something the documentation never claimed.
+#
+# The first version of this test did exactly that and failed, which is how the
+# gap in docs/DETECTIONS.md was found: the advice was given in seven places
+# without ever saying the activity has to recur in the capture.
 #
 # It writes only into files it creates and removes, both named for this suite.
 set -euo pipefail

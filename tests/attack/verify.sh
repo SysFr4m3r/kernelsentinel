@@ -87,16 +87,34 @@ run_baselined() {
 			fail=$((fail + 1)); FAILED+=("$name"); return
 		fi
 	done
-	run_scenario "$script" "$name" "$where" "$caps" "$slog" || {
-		printf '  %-32s ERROR (scenario failed during the learning pass)\n' "$name"
-		sed 's/^/      /' "$slog" | tail -4
-		kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
-		fail=$((fail + 1)); FAILED+=("$name"); return
-	}
+	# Run it repeatedly, spread across the recording.
+	#
+	# One occurrence is not routine, and the baseline is built to say so: a pair
+	# seen once keeps ~85% of its score, precisely so an attacker present during
+	# a "clean" capture cannot whitelist themselves with a single action. So a
+	# learning pass that runs the activity once is not testing the documented
+	# advice, it is testing that a single sighting does not suppress -- which is
+	# already a unit test.
+	#
+	# "Baseline them" claims that behaviour which is *routine* stops alerting,
+	# and routine means recurring. Presenting it that way is the faithful
+	# reproduction, not a thumb on the scale.
+	local rounds="${KS_BASELINE_ROUNDS:-8}" r
+	for ((r = 0; r < rounds; r++)); do
+		run_scenario "$script" "$name" "$where" "$caps" "$slog" || {
+			printf '  %-32s ERROR (scenario failed during the learning pass)\n' "$name"
+			sed 's/^/      /' "$slog" | tail -4
+			kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
+			fail=$((fail + 1)); FAILED+=("$name"); return
+		}
+		sleep 0.4
+	done
 	sleep 1
 	kill -INT $agent 2>/dev/null; wait $agent 2>/dev/null
 
-	if ! "$BIN" baseline --capture "$cap" --out "$base" >/dev/null 2>&1; then
+	local learned
+	learned="$("$BIN" baseline --capture "$cap" --out "$base" 2>&1 | grep -o '[0-9]* patterns ([0-9]* strong)' | head -1)"
+	if [[ ! -s "$base" ]]; then
 		printf '  %-32s ERROR (could not learn a baseline from the capture)\n' "$name"
 		fail=$((fail + 1)); FAILED+=("$name"); return
 	fi
@@ -137,7 +155,8 @@ run_baselined() {
 		printf '  %-32s ERROR (nothing alerted without the baseline either)\n' "$name"
 		fail=$((fail + 1)); FAILED+=("$name")
 	else
-		printf '  %-32s PASS  baseline suppressed %s alert(s)\n' "$name" "$unbaselined"
+		printf '  %-32s PASS  baseline suppressed %s alert(s) [%s]\n' \
+			"$name" "$unbaselined" "${learned:-?}"
 		grep -hE 'DOES exercise|NOT exercised' "$slog" 2>/dev/null \
 			| sed 's/^\[noise\] /        note: /' || true
 		pass=$((pass + 1))
