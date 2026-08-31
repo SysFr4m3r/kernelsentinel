@@ -282,6 +282,52 @@ fn alert_from(host: &str, v: &serde_json::Value) -> notify::Alert {
     }
 }
 
+/// Largest body accepted on `/api/ingest`.
+///
+/// Agents batch NDJSON, so this has to hold a realistic burst -- incidents run
+/// around 2KB each -- while still being a ceiling. A host with more than this
+/// to say is either broken or hostile, and either way the server should not
+/// find out by allocating it.
+const MAX_INGEST_BODY: usize = 8 * 1024 * 1024;
+
+/// Largest body accepted on the form endpoints: login, user admin, resolve.
+/// These carry a handful of fields; 64KiB is already absurdly generous.
+const MAX_FORM_BODY: usize = 64 * 1024;
+
+/// Read a request body with a hard ceiling, rejecting anything larger.
+///
+/// Every body read in this server is reachable from outside its trust boundary:
+/// `/api/ingest` by any monitored host holding an agent key, and `/api/login` by
+/// anyone who can reach the panel at all -- before a credential is checked, and
+/// before the login limiter has any failure to count. `read_to_string` on an
+/// unbounded reader turns "can open a socket" into "can exhaust the server's
+/// memory", and SECURITY.md puts a compromised monitored host affecting the
+/// server explicitly in scope.
+fn read_capped<R: Read>(reader: R, declared: Option<usize>, limit: usize) -> Option<String> {
+    // Content-Length is caller-supplied and absent entirely on a chunked body,
+    // so this is an early exit, never the bound.
+    if declared.is_some_and(|n| n > limit) {
+        return None;
+    }
+    let mut body = String::new();
+    // Read one byte past the limit: a body that fills it exactly is fine, and
+    // anything longer is detectable without having read all of it.
+    reader
+        .take(limit as u64 + 1)
+        .read_to_string(&mut body)
+        .ok()?;
+    if body.len() > limit {
+        return None;
+    }
+    Some(body)
+}
+
+/// `read_capped` against a live request.
+fn read_body(req: &mut Request, limit: usize) -> Option<String> {
+    let declared = req.body_length();
+    read_capped(req.as_reader(), declared, limit)
+}
+
 fn handle(
     mut req: Request,
     cfg: &Config,
@@ -317,8 +363,10 @@ fn handle(
             };
             let kernel = header(&req, "X-Sentinel-Kernel").unwrap_or_default();
             let ip = header(&req, "X-Sentinel-Ip").unwrap_or_default();
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body).ok();
+            let Some(body) = read_body(&mut req, MAX_INGEST_BODY) else {
+                let _ = req.respond(text(413, "ingest body too large"));
+                return;
+            };
             // One stream carries two record kinds; the schema tag tells them
             // apart. Heartbeats are far more frequent than incidents, so they
             // must not be stored as findings or the panel would drown in them.
@@ -374,8 +422,10 @@ fn handle(
                     return;
                 }
             }
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body).ok();
+            let Some(body) = read_body(&mut req, MAX_FORM_BODY) else {
+                let _ = req.respond(text(413, "request body too large"));
+                return;
+            };
             let username = form_field(&body, "username").unwrap_or_default();
             let password = form_field(&body, "password").unwrap_or_default();
             // Back-compat: no accounts DB -> single admin from KS_ADMIN_PASSWORD.
@@ -473,8 +523,10 @@ fn handle(
         (Method::Post, "/api/resolve") => match session(&req, secret) {
             None => text(401, "auth required"),
             Some((username, _)) => {
-                let mut body = String::new();
-                req.as_reader().read_to_string(&mut body).ok();
+                // Authenticated, but a session is not a licence to allocate:
+                // a stolen cookie or a non-admin account would otherwise get
+                // the same unbounded read the login path just lost.
+                let body = read_body(&mut req, MAX_FORM_BODY).unwrap_or_default();
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let host = v.get("host").and_then(|x| x.as_str()).unwrap_or("");
                 let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
@@ -501,8 +553,10 @@ fn handle(
         },
         (Method::Post, "/api/users") => match session(&req, secret) {
             Some((_, role)) if role == "admin" => {
-                let mut body = String::new();
-                req.as_reader().read_to_string(&mut body).ok();
+                // Authenticated, but a session is not a licence to allocate:
+                // a stolen cookie or a non-admin account would otherwise get
+                // the same unbounded read the login path just lost.
+                let body = read_body(&mut req, MAX_FORM_BODY).unwrap_or_default();
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let u = v.get("username").and_then(|x| x.as_str()).unwrap_or("");
                 let p = v.get("password").and_then(|x| x.as_str()).unwrap_or("");
@@ -516,8 +570,10 @@ fn handle(
         },
         (Method::Post, "/api/users/delete") => match session(&req, secret) {
             Some((_, role)) if role == "admin" => {
-                let mut body = String::new();
-                req.as_reader().read_to_string(&mut body).ok();
+                // Authenticated, but a session is not a licence to allocate:
+                // a stolen cookie or a non-admin account would otherwise get
+                // the same unbounded read the login path just lost.
+                let body = read_body(&mut req, MAX_FORM_BODY).unwrap_or_default();
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let u = v.get("username").and_then(|x| x.as_str()).unwrap_or("");
                 match store.delete_user(u) {
@@ -696,6 +752,35 @@ mod tests {
     }
 
     use super::*;
+
+    /// The bound has to be the read itself, not the Content-Length header.
+    /// A caller who can lie about the length, or send a chunked body with no
+    /// length at all, is exactly the caller this limit exists for.
+    #[test]
+    fn a_body_is_capped_by_what_arrives_not_by_what_is_declared() {
+        let big = "x".repeat(1000);
+
+        // Honest and within the limit.
+        assert_eq!(
+            read_capped(big.as_bytes(), Some(1000), 1000).as_deref(),
+            Some(big.as_str())
+        );
+
+        // Honest and over: rejected without reading it.
+        assert_eq!(read_capped(big.as_bytes(), Some(1000), 999), None);
+
+        // Lying about the length, or omitting it entirely, must not get past
+        // the limit -- this is the case Content-Length alone would let through.
+        assert_eq!(read_capped(big.as_bytes(), Some(1), 500), None);
+        assert_eq!(read_capped(big.as_bytes(), None, 500), None);
+
+        // Exactly at the limit is allowed; one byte more is not.
+        assert!(read_capped(big.as_bytes(), None, 1000).is_some());
+        assert!(read_capped(big.as_bytes(), None, 999).is_none());
+
+        // An empty body is a body.
+        assert_eq!(read_capped(&b""[..], Some(0), 64).as_deref(), Some(""));
+    }
 
     #[test]
     fn constant_time_eq() {

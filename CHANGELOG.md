@@ -5,6 +5,23 @@ line is in the commit history.
 
 ## v0.3.1 — enforcement stops announcing a control it cannot apply
 
+### Request bodies are bounded
+
+Every body the server read was unbounded. `read_to_string` on the request reader
+allocates whatever arrives, and two of those five endpoints sit outside the
+server's trust boundary: `/api/ingest`, reachable by any monitored host holding
+an agent key, and `/api/login`, reachable by anyone who can reach the panel at
+all — before a credential is checked, and before the login limiter has a failure
+to count, so the lockout does not help.
+
+SECURITY.md puts "anything that lets a compromised monitored host affect the
+server" explicitly in scope, and this was it. Bodies are now capped at 8MiB on
+ingest and 64KiB on the form endpoints, rejected with 413.
+
+The cap binds on bytes actually read, not on `Content-Length`: that header is
+supplied by the caller and absent entirely on a chunked body, so it is an early
+exit and never the limit.
+
 **Upgrade if you run `--enforce on` anywhere.** In v0.3.0 and earlier it
 reported that escape-hatch writes would be denied whether or not the sensor that
 denies them was alive.
