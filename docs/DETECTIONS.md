@@ -80,8 +80,13 @@ A regular file gains the setuid or setgid bit (`0 → S_ISUID/S_ISGID`), detecte
 - **Trigger:** `cp /bin/sh /tmp/.x && chmod u+s /tmp/.x`
 - **False positives:** package managers (`dpkg`, `rpm`) create SUID binaries on
   install; `sudo chmod u+s` by an admin is structurally identical to the attack.
-  These are the baseline's job — learn them as normal, novel stays flagged (see
-  *What "baseline them" means* above: the activity has to recur in the capture).
+  **Measured:** a real `dpkg -i` of a package shipping a mode-4755 file does fire
+  `suid_create`, attributed to `/usr/bin/dpkg` — but at 45 it is LOW, below the
+  medium floor the daemon alerts at, so an ordinary package install does not page
+  anyone unless it chains with something else. `tests/noise/package_install.sh`
+  asserts exactly that. Baselining is only needed if you run below medium.
+  If you do, learn it as normal and novel stays flagged (see *What "baseline
+  them" means* above: the activity has to recur in the capture).
   **Baseline the real installer, not a shell.** The pair learned is `(suid_create,
   exe)`, so learning from `dpkg` quietens package installs while learning from a
   capture where a shell did the `chmod` suppresses `chmod u+s` from *any* shell on

@@ -1,14 +1,23 @@
 #!/bin/bash
 # Noise: a package manager installing a package that ships a SUID binary.
 #   ks-expect: silence
-#   ks-baseline: yes
 #   ks-run: host
 #
 # docs/DETECTIONS.md lists this under suid_create's false positives: "package
 # managers (dpkg, rpm) create SUID binaries on install ... These are the
-# baseline's job." suid_create scores 45, so unlike most low signals it can
-# reach an operator's alerting floor on its own once it chains, which makes it
-# the documented false positive most likely to actually page someone.
+# baseline's job."
+#
+# Measured, both halves of that need qualifying. The signal does fire -- a real
+# dpkg -i produces suid_create attributed to /usr/bin/dpkg, so the false
+# positive is real. But it scores 45, which is LOW, and the daemon alerts at
+# medium: an ordinary package install does not page anyone unless it chains with
+# something else. There is nothing for a baseline to suppress at the operational
+# floor, so this asserts the thing that actually matters -- that installing a
+# package stays quiet -- rather than that a baseline quietens it.
+#
+# The first version of this scenario asked for the baseline treatment and
+# reported ERROR (nothing alerted without the baseline either), which is what
+# sent someone to measure it.
 #
 # It uses a real dpkg install rather than a shell writing the file, and that
 # distinction is the whole point. Baselining by executable means the pair
