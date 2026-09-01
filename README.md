@@ -138,7 +138,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 168 unit and integration tests, including detections replayed from
+**Tested** on four levels. 171 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. Twenty [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -377,6 +377,13 @@ ever write its own host's data:
 web-prod-01   4f8c1e…   # generate each with: openssl rand -hex 32
 db-app-03     9a2b7d…
 ```
+
+**`chmod 600` it.** The file is the fleet's ingest credentials in plaintext, and a key is all it
+takes to write incidents as that host. The server refuses to start if the file is world-readable
+rather than warning, because there is nothing downstream that can tell an incident written with a
+stolen key from a real one. It also refuses two hosts sharing a key — the second would file its
+incidents under the first's name with nothing to indicate it. One host holding several keys is
+allowed, which is how a rotation happens without a gap.
 
 Admins open `https://central:8088` and sign in as **admin** with that password (seeded from
 `KS_ADMIN_PASSWORD` on first start). From the **Users** view an admin can add more accounts (admin or

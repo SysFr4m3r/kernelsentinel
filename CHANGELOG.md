@@ -5,6 +5,24 @@ line is in the commit history.
 
 ## v0.3.3 — unreleased
 
+### The agent-keys file is checked before it is trusted
+
+`agents.keys` holds the fleet's ingest credentials in plaintext, and a key is all
+it takes to write incidents as that host. Its permissions were never checked, so
+a world-readable file handed every local account the ability to forge any host's
+telemetry — and nothing downstream can tell a forged incident from a real one
+afterwards.
+
+The server now refuses to start on a world-readable keys file, and warns on a
+group-readable one. Refused rather than warned on the same test used for
+enforcement: continuing does active harm rather than leaving a gap, and the fix
+is one `chmod`, named in the message.
+
+Two hosts sharing a key is also refused now, with the line number. The map kept
+one host, and every incident from the other was filed under that name with
+nothing to indicate it. One host holding several keys is still allowed — that is
+how a key rotation happens without a window where the agent cannot ship.
+
 ### Privilege escalation through a username
 
 A session token's payload is `username|role|expiry`, signed and then split on
