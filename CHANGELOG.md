@@ -3,25 +3,17 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.3.3 — unreleased
+## v0.3.3 — a username could become an admin
 
-### The agent-keys file is checked before it is trusted
+**Upgrade if you run the fleet server with more than one account.** A session
+token's payload is `username|role|expiry`, and usernames were not validated
+against the delimiter — so an account named `mallory|admin|99999999999` validated
+as `admin`, past any expiry, on a signature the server itself produced.
 
-`agents.keys` holds the fleet's ingest credentials in plaintext, and a key is all
-it takes to write incidents as that host. Its permissions were never checked, so
-a world-readable file handed every local account the ability to forge any host's
-telemetry — and nothing downstream can tell a forged incident from a real one
-afterwards.
-
-The server now refuses to start on a world-readable keys file, and warns on a
-group-readable one. Refused rather than warned on the same test used for
-enforcement: continuing does active harm rather than leaving a gap, and the fix
-is one `chmod`, named in the message.
-
-Two hosts sharing a key is also refused now, with the line number. The map kept
-one host, and every incident from the other was filed under that name with
-nothing to indicate it. One host holding several keys is still allowed — that is
-how a key rotation happens without a window where the agent cannot ship.
+**Check your user list for a username containing `|` before upgrading**, since
+the fix that restricts usernames cannot rename one that already exists. The
+token parser refuses such payloads regardless, which is what protects an existing
+database.
 
 ### Privilege escalation through a username
 
@@ -47,6 +39,24 @@ to letters, digits and `. _ - @ +`, up to 64 characters.
 
 **If you run the fleet server with multiple accounts, check your user list for a
 username containing `|`.**
+
+### The agent-keys file is checked before it is trusted
+
+`agents.keys` holds the fleet's ingest credentials in plaintext, and a key is all
+it takes to write incidents as that host. Its permissions were never checked, so
+a world-readable file handed every local account the ability to forge any host's
+telemetry — and nothing downstream can tell a forged incident from a real one
+afterwards.
+
+The server now refuses to start on a world-readable keys file, and warns on a
+group-readable one. Refused rather than warned on the same test used for
+enforcement: continuing does active harm rather than leaving a gap, and the fix
+is one `chmod`, named in the message.
+
+Two hosts sharing a key is also refused now, with the line number. The map kept
+one host, and every incident from the other was filed under that name with
+nothing to indicate it. One host holding several keys is still allowed — that is
+how a key rotation happens without a window where the agent cannot ship.
 
 ### Release drift is a test failure
 
