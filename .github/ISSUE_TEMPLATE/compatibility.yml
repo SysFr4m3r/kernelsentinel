@@ -22,7 +22,7 @@ body:
     attributes:
       label: First lines of `sudo kernelsentinel run`
       description: >
-        The "N of 11 sensors active" line, and any sensors it named as
+        The "N of M sensors active" line, and any sensors it named as
         unavailable. Ctrl-C once the event stream starts.
       render: text
     validations:

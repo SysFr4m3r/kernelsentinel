@@ -52,6 +52,29 @@ copy_with_libs() {
 	done
 }
 
+# open(O_CREAT, 04755) in one syscall. Nothing in busybox can do this --
+# redirection cannot set the setuid bits and every other route chmods, which is
+# the path already covered. Static so the initramfs needs no extra libraries.
+if command -v clang >/dev/null || command -v cc >/dev/null; then
+	cc_bin="$(command -v clang || command -v cc)"
+	cat > "$WORK/suidmk.c" <<'CSRC'
+#include <fcntl.h>
+#include <unistd.h>
+int main(int argc, char **argv)
+{
+	if (argc < 2)
+		return 2;
+	int fd = open(argv[1], O_CREAT | O_WRONLY | O_EXCL, 04755);
+	if (fd < 0)
+		return 1;
+	close(fd);
+	return 0;
+}
+CSRC
+	"$cc_bin" -static -O0 -o "$ROOT/bin/suidmk" "$WORK/suidmk.c" 2>/dev/null \
+		|| echo "vm: could not build the suid helper; that check will be skipped"
+fi
+
 copy_with_libs "$(command -v busybox)" bin/busybox
 copy_with_libs "$BIN" bin/kernelsentinel
 # The loader itself is not listed by ldd as a path on every distro.
@@ -121,6 +144,10 @@ cp /bin/busybox /tmp/ks-probe
 /tmp/ks-probe true 2>/dev/null       # tracepoint exec  -> exec_from_tmp
 chmod u+s /tmp/ks-probe              # lsm/path_chmod   -> suid_create
 cat /etc/shadow > /dev/null          # lsm/file_open    -> credential_store_read
+# lsm/path_mknod -> suid_create, on a file that is never chmod'd. The chmod
+# above would mask this, so it writes its own file and the check below looks for
+# that filename specifically.
+[ -x /bin/suidmk ] && /bin/suidmk /tmp/ks-mknod-suid
 
 sleep 2
 kill -INT $agent 2>/dev/null
@@ -134,9 +161,18 @@ for pair in "exec:exec_from_tmp" "path_chmod:suid_create" "file_open:credential_
 	fi
 done
 
+# Did the creation-time path produce its own signal? Keyed on the filename so
+# the chmod provocation above cannot be mistaken for it.
+mknod_seen=no
+if [ -x /bin/suidmk ]; then
+	grep -q 'ks-mknod-suid' /tmp/out.ndjson 2>/dev/null && mknod_seen=yes
+else
+	mknod_seen=skipped
+fi
+
 active="$(grep -o '[0-9]* of [0-9]* sensors active' /tmp/err.log | head -1)"
 echo
-echo "ks-vm-result: lsm=$(cat /sys/kernel/security/lsm 2>/dev/null) active=${active:-unknown} live=${live:-none}"
+echo "ks-vm-result: lsm=$(cat /sys/kernel/security/lsm 2>/dev/null) active=${active:-unknown} live=${live:-none} suid_at_create=${mknod_seen}"
 poweroff -f
 INNER
 chmod +x "$ROOT/init"

@@ -139,7 +139,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
 **Tested** on four levels. 171 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. Twenty [attack scenarios](#testing) that run the
+**real kernel captures** committed as fixtures. 22 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And seven noise scenarios asserting ordinary work stays
@@ -691,7 +691,8 @@ or not `bpf` is in `/sys/kernel/security/lsm`; only the hook being *invoked* dep
 attach count everyone reaches for is a claim about a syscall's return value, and on stock Ubuntu it
 read `11 of 11` while six sensors sat bound to hooks the kernel never called. Measured, not guessed:
 a real `chmod u+s` and a real read of `/etc/shadow` on that host produced nothing at all. The agent
-now reports `5 of 11 sensors active` there and names the six, because a monitoring tool that
+now reports `5 of 11 sensors active` there and names the six — the count was 11 when that was
+measured, and a twelfth sensor has since been added — because a monitoring tool that
 overstates its own coverage is worse than one that admits a gap.
 
 **Names may accuse, never exonerate.** `comm` is whatever a process last passed to

@@ -33,6 +33,6 @@ body:
     attributes:
       label: The agent's startup lines
       description: >
-        The "N of 11 sensors active" line matters — if the relevant sensor
+        The "N of M sensors active" line matters — if the relevant sensor
         could not attach on your kernel, that is the answer.
       render: text

@@ -95,10 +95,21 @@ A regular file gains the setuid or setgid bit (`0 → S_ISUID/S_ISGID`), detecte
   exactly this reason. It
   takes a learning window long enough to show the package manager doing it more
   than once; one sighting barely suppresses, on purpose.
-- **Evasions:** requires `CONFIG_SECURITY_PATH` (the `path_chmod` hook); on
-  kernels without it the `inode_setattr` fallback is still TODO. Creating a file
-  that is *already* SUID (e.g. `cp` preserving mode, or `open(O_CREAT, 04755)`) is
-  not yet caught — only the `chmod` transition is.
+- **Two hooks, because one route never chmods.** `path_chmod` catches the
+  transition `0 → S_ISUID`, and `path_mknod` catches a file created already-SUID.
+  Both were measured rather than reasoned about: `cp -p` fires the first (it
+  `fchmod`s internally, reaching the same hook, so the old note calling it an
+  evasion was wrong), while `open("/tmp/.x", O_CREAT, 04755)` produced **no event
+  at all** until `path_mknod` was added. Scenarios `suid_create_preserved.sh` and
+  `suid_create_direct.sh` hold both routes down.
+- **`path_mknod` reports the file name, not its path.** `bpf_d_path` is refused
+  on that hook — the kernel allows it only on LSM hooks it treats as sleepable,
+  which `path_chmod` is and `path_mknod` is not — so the event carries the leaf
+  name with the degraded-path flag set.
+- **Evasions:** requires `CONFIG_SECURITY_PATH` (both hooks); on kernels without
+  it the `inode_setattr` fallback is still TODO. A file that is moved into place
+  already SUID (`rename` from elsewhere on the same filesystem) passes through
+  neither hook.
 
 ### `setcap` — base 40 · T1548
 A file gains capabilities via the `security.capability` xattr — a SUID-equivalent
