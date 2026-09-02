@@ -24,6 +24,7 @@ use crate::watchlist::{self, Watch};
 const LSM_SENSORS: &[&str] = &[
     "file_open",
     "path_chmod",
+    "path_mknod",
     "inode_setxattr",
     "ptrace",
     "bprm_check",
@@ -184,6 +185,7 @@ where
     attach!(handle_commit_creds, "commit_creds");
     attach!(handle_file_open, "file_open");
     attach!(handle_path_chmod, "path_chmod");
+    attach!(handle_path_mknod, "path_mknod");
     attach!(handle_setxattr, "inode_setxattr");
     attach!(handle_ptrace, "ptrace");
     attach!(handle_bprm, "bprm_check");

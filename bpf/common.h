@@ -17,6 +17,7 @@
 #define S_IFMT  0xF000
 #define S_IFREG 0x8000
 
+
 #define TMPFS_MAGIC          0x01021994
 #define ANON_INODE_FS_MAGIC  0x09041934
 #define PTRACE_MODE_ATTACH   0x02   /* the write-capable ptrace modes */

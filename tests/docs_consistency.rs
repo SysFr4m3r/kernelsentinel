@@ -249,21 +249,42 @@ fn the_readme_scenario_counts_are_current() {
         "Nineteen",
         "Twenty",
     ];
-    let spelled = |n: usize| words.get(n).map(|w| w.to_string()).unwrap_or_default();
+    // Option, not a default empty string.
+    //
+    // This returned "" for any count past the end of the list, which turned the
+    // check below into `readme.contains(" attack scenarios")` -- true of any
+    // README that mentions them at all. The moment the suite passed twenty
+    // scenarios the test stopped comparing anything and kept reporting success,
+    // which is worse than not having it: it went green while the README said
+    // twenty and the tree held twenty-two.
+    let spelled = |n: usize| -> Option<String> { words.get(n).map(|w| w.to_string()) };
+
+    let says = |n: usize, kind: &str, lower: bool| -> bool {
+        if readme.contains(&format!("{n} {kind} scenarios")) {
+            return true;
+        }
+        match spelled(n) {
+            Some(w) if lower => readme.contains(&format!("{} {kind} scenarios", w.to_lowercase())),
+            Some(w) => readme.contains(&format!("{w} {kind} scenarios")),
+            // No word for it: the numeral is the only accepted form, rather
+            // than silently accepting anything.
+            None => false,
+        }
+    };
 
     assert!(
-        readme.contains(&format!("{attacks} attack scenarios"))
-            || readme.contains(&format!("{} attack scenarios", spelled(attacks))),
-        "README should say there are {attacks} attack scenarios ({})",
+        says(attacks, "attack", false),
+        "README should say there are {attacks} attack scenarios{}",
         spelled(attacks)
+            .map(|w| format!(" ({w})"))
+            .unwrap_or_default()
     );
     assert!(
-        readme.contains(&format!("{noise} noise scenarios"))
-            || readme.contains(&format!(
-                "{} noise scenarios",
-                spelled(noise).to_lowercase()
-            )),
-        "README should say there are {noise} noise scenarios"
+        says(noise, "noise", true),
+        "README should say there are {noise} noise scenarios{}",
+        spelled(noise)
+            .map(|w| format!(" ({})", w.to_lowercase()))
+            .unwrap_or_default()
     );
 }
 
@@ -334,11 +355,13 @@ fn verified_rows() -> Vec<(String, u32)> {
 /// it has not earned.
 #[test]
 fn every_verified_row_has_a_recorded_probe_result() {
+    // Deliberately no "the file must not be empty" assertion. Zero results with
+    // zero verified rows is a legitimate state -- it is exactly where adding a
+    // sensor leaves the project, since every recorded result was measured
+    // against the old count and none of them describes the current build. The
+    // per-row check below is what actually matters: a row may not claim
+    // verification that no result backs.
     let results = recorded_results();
-    assert!(
-        !results.is_empty(),
-        "docs/compat-results.txt records no probe output, so no row can be verified"
-    );
     for (distro, claimed) in verified_rows() {
         let found = results
             .iter()

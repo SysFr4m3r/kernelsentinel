@@ -218,6 +218,76 @@ int BPF_PROG(handle_setxattr, struct mnt_idmap *idmap, struct dentry *dentry,
 	return 0;
 }
 
+/* lsm/path_mknod catches a SUID binary that is created already-SUID.
+ *
+ * handle_path_chmod above sees the *transition* 0 -> S_ISUID, which covers
+ * `chmod u+s` and, as it turns out, `cp -p` too -- cp fchmod()s internally and
+ * fchmod reaches the same hook. It cannot see a file that arrives with the bit
+ * already set, because no transition ever happens:
+ *
+ *     open("/tmp/.x", O_CREAT|O_WRONLY, 04755)
+ *
+ * leaves a setuid-root binary on the host and produced no event at all. That
+ * was documented as a known evasion and measured here: the `cp -p` scenario
+ * fires, the open(2) one produced nothing.
+ *
+ * security_path_mknod is called from lookup_open() before vfs_create(), with
+ * the mode the file is about to be created with -- which is exactly the missing
+ * half. Filtering on the setuid bits in-kernel keeps this off the hot path:
+ * ordinary file creation fails the test in two instructions.
+ *
+ * Reported as EV_FILE_MODE with an old mode of zero, so userspace sees a gain
+ * from nothing and the existing suid_create detector needs no change: there was
+ * no file before, which is precisely what makes this worth reporting.
+ */
+SEC("lsm/path_mknod")
+int BPF_PROG(handle_path_mknod, const struct path *dir, struct dentry *dentry,
+	     umode_t mode, unsigned int dev)
+{
+	struct event *e;
+
+	/* Regular files only. mknod of a device or fifo carrying these bits is
+	 * not the privilege-escalation artifact this exists for. vfs_create
+	 * passes S_IFREG; the mknod syscall may pass 0 for a regular file. */
+	__u32 fmt = mode & S_IFMT;
+	if (fmt != S_IFREG && fmt != 0)
+		return 0;
+	if (!(mode & (S_ISUID | S_ISGID)))
+		return 0;
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+
+	fill_hdr(e, EV_FILE_MODE);
+	/* Nothing existed, so every set bit is a gained bit. */
+	e->old_file_mode = 0;
+	e->file_mode = mode;
+
+	/* The leaf name only, like the setcap sensor.
+	 *
+	 * The hook does hand over the parent directory as a struct path, and
+	 * joining it to the dentry would give a full path -- but bpf_d_path is
+	 * refused here. For an LSM program the kernel allows that helper only on
+	 * hooks it considers sleepable, and path_mknod is not one, so the
+	 * verifier rejects the call outright with "helper call is not allowed in
+	 * probe". Being usable at path_chmod says nothing about path_mknod;
+	 * sleepability is the property, not taking a struct path.
+	 *
+	 * The name is enough to act on -- a SUID binary appearing is the finding,
+	 * and the flag tells the reader the path is partial rather than letting
+	 * a bare basename look like a full one. */
+	bpf_probe_read_kernel_str(e->filename, sizeof(e->filename),
+				  BPF_CORE_READ(dentry, d_name.name));
+	e->flags |= EV_F_DEGRADED_PATH;
+
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
 /* ptrace_access_check fires when one task attaches to or reads another. It is
  * how debuggers, injectors, and /proc/<pid>/mem readers reach another process.
  * current is the tracer; `child` is the target. T1055.008.
