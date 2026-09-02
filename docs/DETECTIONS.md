@@ -191,7 +191,7 @@ are suppressed; theft is reaching *outside* your tree.
 
 - **Trigger:** as an unprivileged user, read `/proc/<root-pid>/environ`.
 - **False positives:** monitoring agents and `ps`-like tools that legitimately read
-  across uids. Baseline them, from a capture where they recur. **Measured:** on a single-user desktop over 2.3
+  across uids. Baseline them, from a capture where they recur. **Measured:** on one desktop over 2.3
   hours this fired 7 times, 6 of them `/usr/bin/pidof` — reading another user's
   `/proc/<pid>/cmdline` goes through `ptrace_may_access`, so the ptrace sensor
   sees it. None reached the alerting floor. See docs/PERFORMANCE.md.

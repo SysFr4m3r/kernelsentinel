@@ -270,7 +270,7 @@ mod tests {
     fn label_matches_on_substring() {
         assert_eq!(label_for("/etc/cron.d/evil"), "cron");
         assert_eq!(
-            label_for("/home/kali/.ssh/authorized_keys"),
+            label_for("/home/alice/.ssh/authorized_keys"),
             "authorized_keys"
         );
         assert_eq!(

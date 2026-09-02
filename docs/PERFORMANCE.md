@@ -54,7 +54,8 @@ The jump from 4 to 8 spawners is not a throughput limit being reached. Events
 only rose 41% (8,262 to 11,667) while CPU rose 375% (10% to 47.5%) and 43.6% of
 events were lost.
 
-The machine has 8 cores. At 8 spawners the workload occupies all of them, and
+The machine's core count equals the spawner count at that point: the workload
+occupies every core, and
 the agent — single-threaded — has to compete for the core it needs to drain the
 ring buffer. It does not get scheduled often enough, the buffer fills, and the
 kernel discards.
@@ -138,8 +139,13 @@ extrapolate a daily rate from under an hour of recording.
 
 ## First measurement
 
-Kali 7.0.12, 8 cores, 8 GB, single-user desktop. **2.3 hours** of ordinary
+A rolling-release desktop on kernel 7.0, x86_64. **2.3 hours** of ordinary
 interactive work: shell, `apt`, `ssh`, editing, building.
+
+The machine's exact specification is deliberately not recorded. It would make
+the numbers no more reproducible — a reader has to measure their own host
+anyway, which is why the command is here — and a performance note is a poor
+reason to publish a fingerprint of somebody's workstation.
 
 | floor | incidents | per day |
 |---|---:|---:|

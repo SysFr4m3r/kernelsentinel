@@ -139,7 +139,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
 **Tested** on four levels. 171 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 23 [attack scenarios](#testing) that run the
+**real kernel captures** committed as fixtures. 25 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And seven noise scenarios asserting ordinary work stays
