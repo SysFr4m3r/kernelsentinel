@@ -3,7 +3,28 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.3.3 — a username could become an admin
+## v0.4.0 — unreleased
+
+### A SUID binary created already-SUID is now caught
+
+`suid_create` watched `path_chmod` for the transition `0 → S_ISUID`, so a file
+that arrives with the bit already set never fired it. That was documented as a
+known evasion; measured, the note was wrong in both directions.
+
+`cp -p` **is** caught — `cp` calls `fchmod` internally and reaches the same
+hook, so listing it as an evasion overstated the gap. `open("/tmp/.x", O_CREAT,
+04755)` was **not** caught, and produced no event of any kind: a setuid-root
+binary landing on a host with nothing to show for it.
+
+A twelfth sensor, `lsm/path_mknod`, closes that. It sees the mode a file is
+about to be created with, filters on the setuid bits in-kernel, and reports the
+creation as a gain from nothing — so the existing detector needed no change. It
+reports the file name rather than the full path, because `bpf_d_path` is refused
+on that hook.
+
+Two scenarios hold both routes down, and a third covers `rename` into place.
+
+## v0.3.3 — unreleased
 
 **Upgrade if you run the fleet server with more than one account.** A session
 token's payload is `username|role|expiry`, and usernames were not validated

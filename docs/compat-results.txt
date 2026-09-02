@@ -17,5 +17,10 @@
 # added. Kept because a compatibility claim should show its history rather than
 # be quietly replaced -- but not read as current, and not counted by the tests.
 # Re-run scripts/compat-probe.sh on each to restore them.
+#
+# A result line names a distribution and a kernel, which is the point of the
+# table -- but it is also a fact about somebody's machine. Send one only if you
+# are content for it to be public, and note the probe reports nothing else: no
+# hostname, no username, no addresses, no file contents.
 # ks-compat: distro=kali-2026.2 kernel=7.0.12+kali-amd64 arch=x86_64 bpflsm=active sensors=11/11 missing=none live=exec,path_chmod,file_open
 # ks-compat: distro=ubuntu-24.04 kernel=6.17.0-1022-azure arch=x86_64 bpflsm=inactive sensors=5/11 missing=file_open,path_chmod,inode_setxattr,ptrace,bprm_check,socket_connect live=exec

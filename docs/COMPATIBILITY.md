@@ -135,7 +135,7 @@ sudo ./scripts/compat-probe.sh
 ```
 
 ```
-ks-compat: distro=kali-2026.2 kernel=7.0.12+kali-amd64 arch=x86_64 bpflsm=active sensors=11/11 missing=none live=exec,path_chmod,file_open
+ks-compat: distro=debian-12 kernel=6.1.0-21-amd64 arch=x86_64 bpflsm=active sensors=12/12 missing=none live=exec,path_chmod,file_open
 ```
 
 That line is what turns an inferred row into a verified one, and it is the most
@@ -158,7 +158,7 @@ sudo kernelsentinel doctor
 ```
 
 ```
-kernel      [ ok ] 7.0.12+kali-amd64 (5.11+, all BPF features present)
+kernel      [ ok ] 6.1.0-21-amd64 (5.11+, all BPF features present)
 btf         [ ok ] /sys/kernel/btf/vmlinux present (CO-RE enabled)
 privileges  [ ok ] running as root
 bpf lsm     [ ok ] bpf LSM active (lockdown,capability,landlock,yama,apparmor,bpf,...)
