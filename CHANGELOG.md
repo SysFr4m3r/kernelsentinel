@@ -3,7 +3,12 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.4.0 — unreleased
+## v0.4.0 — three ways to reach a watched file without being seen
+
+Three documented evasions were run for the first time. Two were real, and each
+let an attacker reach the exact artifact the detection exists for. The third was
+not an evasion at all — this project had claimed it was, from reasoning rather
+than measurement.
 
 ### A watched file reached by another name is now caught
 
