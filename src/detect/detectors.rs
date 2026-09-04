@@ -223,6 +223,32 @@ fn is_kernel_escape_hatch(path: &str) -> bool {
     HATCHES.iter().any(|h| path.contains(h))
 }
 
+/// Files the system reads and acts on when someone logs in or opens a shell.
+///
+/// The same property that makes cron and systemd units worth watching: the
+/// content runs later, as whoever authenticates, without anyone asking for it.
+/// Scored alongside them rather than at the catch-all 20, which sits below the
+/// alerting floor -- a PAM or profile.d drop-in that only ever appears in
+/// `investigate` is not a detection.
+///
+/// `/etc/ld.so.conf.d` is here and not with `ld.so.preload`: it reaches the same
+/// linker hijack, but needs a library planted and `ldconfig` run, so it is one
+/// step less direct and does not deserve preload's score.
+///
+/// Per-user rc files (`~/.bashrc`) are deliberately absent. They are edited by
+/// their owners constantly, and every editor rewrites them, so watching them
+/// would trade this detection for a stream of false positives.
+fn runs_at_login(path: &str) -> bool {
+    const AT_LOGIN: &[&str] = &[
+        "/etc/ld.so.conf",
+        "/etc/profile", // /etc/profile and profile.d/
+        "/etc/bash.bashrc",
+        "/etc/environment", // /etc/environment and environment.d/
+        "/etc/update-motd.d/",
+    ];
+    AT_LOGIN.iter().any(|p| path.starts_with(p))
+}
+
 fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
     // A kernel escape hatch outranks everything else here, and outranks it by
     // more when the writer is containerised: the same write that is persistence
@@ -275,9 +301,15 @@ fn sensitive_write(ev: &Event, key: ProcKey) -> Vec<Signal> {
         (40, "ldso_preload_write")
     } else if ev.filename.contains("authorized_keys") {
         (35, "authorized_keys_write")
-    } else if ev.filename.contains("/etc/cron") || ev.filename.contains("systemd") {
+    } else if ev.filename.contains("/etc/cron")
+        || ev.filename.contains("systemd")
+        || runs_at_login(&ev.filename)
+    {
         (30, "persistence_write")
-    } else if ev.filename.contains("sudoers") || ev.filename.contains("/etc/shadow") {
+    } else if ev.filename.contains("sudoers")
+        || ev.filename.contains("/etc/shadow")
+        || ev.filename.contains("/etc/pam.")
+    {
         (35, "cred_config_write")
     } else {
         (20, "sensitive_write")
