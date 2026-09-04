@@ -7,33 +7,49 @@
 #ifndef __KS_SENSOR_NET_H__
 #define __KS_SENSOR_NET_H__
 
-/* Fixed-length, fixed-position prefix compare with no branching in the loop --
- * the verifier sees a straight line of `n` comparisons (cheap), unlike a
- * scanning loop over every offset (state explosion). n is a compile-time
- * constant; all indices are < the 108-byte buffer. */
-SEC("lsm/socket_connect")
-int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
+/* Match on the name the socket was *bound* as, not the name the caller typed.
+ *
+ * This sensor used to sit at lsm/socket_connect and prefix-compare the
+ * sun_path out of the userspace sockaddr. That is the one part of the
+ * operation an attacker chooses, and it was measured: a symlink at
+ * /tmp/ks-runtime-alias.sock pointing at /run/docker.sock reached the daemon
+ * and produced no event of any kind. Same shape as the hard link to
+ * /etc/shadow, same answer -- match on what the kernel knows rather than on
+ * what the caller supplied.
+ *
+ * lsm/unix_stream_connect hands over `other`, the listening socket. A bound
+ * AF_UNIX socket carries the struct path it was bound at, so the leaf name
+ * here is the one dockerd chose at startup. A symlink, a bind mount or a hard
+ * link to the socket all arrive at the same dentry.
+ *
+ * Two things fall out of that. The daemon may be restarted -- the socket is
+ * recreated with a new inode and this still matches, where a map of inodes
+ * populated at startup would have gone stale and silently stopped working. And
+ * a runtime socket anywhere else on disk is now covered: rootless docker under
+ * /run/user/<uid>, podman, k3s nesting containerd under /run/k3s, none of
+ * which the old fixed prefixes named.
+ */
+SEC("lsm/unix_stream_connect")
+int BPF_PROG(handle_unix_connect, struct sock *sock, struct sock *other, struct sock *newsk)
 {
 	struct event *e;
-	char path[108] = {};
+	char name[32] = {};
 
-	if (BPF_CORE_READ(address, sa_family) != AF_UNIX)
+	struct dentry *d = BPF_CORE_READ((struct unix_sock *)other, path.dentry);
+	/* An abstract socket has no filesystem path and no dentry. The runtime
+	 * sockets are not abstract, so there is nothing to match. */
+	if (!d)
 		return 0;
-	if (addrlen <= 2)
-		return 0;
+	bpf_probe_read_kernel_str(name, sizeof(name), BPF_CORE_READ(d, d_name.name));
 
-	struct sockaddr_un *un = (struct sockaddr_un *)address;
-	bpf_probe_read_kernel_str(path, sizeof(path), un->sun_path);
-
-	/* Match the runtime control sockets by fixed path prefixes. A scanning
-	 * loop over every position blows up the verifier (state explosion ->
-	 * "BPF program too large"); fixed-position prefix comparisons are a
-	 * straight line it accepts cheaply. These cover the standard socket
-	 * locations for docker and containerd. */
-	int matched = prefix_eq(path, "/run/docker.sock", 16) ||
-		      prefix_eq(path, "/var/run/docker.sock", 20) ||
-		      prefix_eq(path, "/run/containerd/", 16) ||
-		      prefix_eq(path, "/run/crio/", 10);
+	/* Compares include the terminator, so these are exact rather than
+	 * prefix matches: a stray "docker.sock.bak" is not the runtime. Lengths
+	 * are compile-time constants and every index is inside the buffer, so
+	 * the verifier sees a straight line. */
+	int matched = prefix_eq(name, "docker.sock", 12) ||
+		      prefix_eq(name, "containerd.sock", 16) ||
+		      prefix_eq(name, "podman.sock", 12) ||
+		      prefix_eq(name, "crio.sock", 10);
 	if (!matched)
 		return 0;
 
@@ -43,7 +59,13 @@ int BPF_PROG(handle_socket_connect, struct socket *sock, struct sockaddr *addres
 		return 0;
 	}
 	fill_hdr(e, EV_SOCK_CONNECT);
-	bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), un->sun_path);
+	/* The bound leaf name, like the setcap and path_mknod sensors. The full
+	 * path would need bpf_d_path, which an LSM program may only call on
+	 * hooks the kernel treats as sleepable, and this is not one. The flag
+	 * keeps a bare basename from reading as a full path. */
+	bpf_probe_read_kernel_str(e->filename, sizeof(e->filename),
+				  BPF_CORE_READ(d, d_name.name));
+	e->flags |= EV_F_DEGRADED_PATH;
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);
 	return 0;
