@@ -257,21 +257,34 @@ sees the firehose of unrelated opens. Scored by target:
 | `/etc/ld.so.preload` | 40 | dynamic-linker hijack (T1574.006) |
 | `~/.ssh/authorized_keys` | 35 | SSH key persistence (T1098.004) |
 | `/etc/sudoers*`, `/etc/shadow` | 35 | credential/authz tampering |
+| `/etc/pam.*` | 35 | authentication tampering (T1556) |
 | `/etc/cron*`, systemd units | 30 | scheduled/service persistence |
+| login-time files | 30 | `/etc/profile*`, `/etc/bash.bashrc`, `/etc/environment*`, `/etc/update-motd.d/`, `/etc/ld.so.conf*` |
 | other watched path | 20 | |
 
 The signal id in an incident names the variant, not the family, so an alert reads
 `ldso_preload_write` rather than `sensitive_write`. The ids are
 **`ldso_preload_write`** (40), **`authorized_keys_write`** (35),
-**`cred_config_write`** (35, sudoers and shadow), **`persistence_write`** (30, cron and
-systemd units) and **`sensitive_write`** (20, any other watched path — `/etc/passwd`,
-`/root/.ssh/`). Searching the docs for the id in front of you should find it.
+**`cred_config_write`** (35, sudoers, shadow and PAM), **`persistence_write`** (30, cron,
+systemd units and the login-time files) and **`sensitive_write`** (20, any other watched
+path — `/etc/passwd`, `/root/.ssh/`). Searching the docs for the id in front of you
+should find it.
 
 - **Trigger:** `echo /tmp/evil.so > /etc/ld.so.preload`
-- **False positives:** package upgrades rewrite systemd units and cron; `ssh-copy-id`
-  writes `authorized_keys`; `visudo` writes sudoers. Baseline the writing binary, learning from a capture where it writes more than once.
-- **Evasions:** the watch list is a fixed prefix set — a persistence mechanism not
-  on the list (a new systemd path, a shell rc file, a PAM config) is not watched.
+- **False positives:** package upgrades rewrite systemd units and cron, and are the
+  main writer of `/etc/pam.d`, `/etc/profile.d` and `/etc/ld.so.conf.d` too — every
+  package that ships one rewrites it on upgrade. `ssh-copy-id` writes
+  `authorized_keys`; `visudo` writes sudoers. Baseline the writing binary, learning
+  from a capture where it writes more than once.
+- **Login-time persistence is watched, measured.** `/etc/pam.d`, `/etc/profile.d` and
+  `/etc/ld.so.conf.d` each produced **no event at all** before this — the paths were
+  not in the trie, so nothing reached userspace to classify. Now watched, and scored
+  at 30–35 rather than the catch-all 20, which sits below the alerting floor.
+- **Evasions:** the watch list is still a fixed prefix set, and two gaps in it are
+  deliberate. Per-user rc files (`~/.bashrc`, `~/.profile`) are **not** watched: their
+  owners edit them constantly and every editor rewrites them, so the detection would
+  drown. A persistence mechanism on a path nobody listed — a systemd generator
+  directory, an application's own plugin directory — is likewise unwatched.
 - **A home directory created while the daemon runs is covered within ~15s, not
   immediately.** `authorized_keys` lives at a per-user path no single prefix
   covers, so each home is listed individually and one created afterwards starts

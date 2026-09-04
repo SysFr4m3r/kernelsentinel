@@ -1067,6 +1067,69 @@ fn kernel_escape_hatch_writes_outrank_ordinary_persistence() {
     assert_eq!(other[0].id, "persistence_write");
 }
 
+/// Login-time persistence has to be watched *and* scored, and the two halves
+/// fail independently: an unwatched path produces no event, and a watched one
+/// that lands at the catch-all 20 sits below the alerting floor. Measured
+/// before this existed -- writing /etc/pam.d, /etc/profile.d and
+/// /etc/ld.so.conf.d each produced no event at all.
+#[test]
+fn login_time_persistence_is_watched_and_scored_above_the_catch_all() {
+    fn write_to(pid: u32, path: &str) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 3_000u64 + pid as u64, "type": 5, "tgid": pid, "ppid": 1,
+            "start_boottime": 700u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "sh", "filename": path, "file_mode": 2, "watch_id": 1,
+            "container": ""
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    let sigs = |ev: &Event| {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.apply(ev);
+        kernelsentinel::detect::signals_for_event(ev, &g)
+    };
+
+    let cases: &[(&str, &str)] = &[
+        // Authentication itself: a line here accepts any password.
+        ("/etc/pam.d/sshd", "cred_config_write"),
+        ("/etc/pam.conf", "cred_config_write"),
+        // Runs for whoever opens a shell.
+        ("/etc/profile.d/evil.sh", "persistence_write"),
+        ("/etc/profile", "persistence_write"),
+        ("/etc/bash.bashrc", "persistence_write"),
+        ("/etc/environment", "persistence_write"),
+        ("/etc/update-motd.d/00-evil", "persistence_write"),
+        // A linker hijack one step less direct than ld.so.preload.
+        ("/etc/ld.so.conf.d/evil.conf", "persistence_write"),
+        ("/etc/ld.so.conf", "persistence_write"),
+    ];
+
+    for (path, want) in cases {
+        let s = sigs(&write_to(8100, path));
+        assert_eq!(s[0].id, *want, "for {path}");
+        assert!(
+            s[0].score >= 30,
+            "{path} scored {}, at or below the catch-all",
+            s[0].score
+        );
+        // Every path above must also be reachable: an unwatched prefix means
+        // the kernel never sends the event this classification would see.
+        assert!(
+            kernelsentinel::watchlist::default_watches()
+                .iter()
+                .any(|w| path.starts_with(&w.prefix)),
+            "{path} is classified but not watched"
+        );
+    }
+
+    // ld.so.preload keeps its own, higher score -- conf.d must not swallow it.
+    let preload = sigs(&write_to(8101, "/etc/ld.so.preload"));
+    let confd = sigs(&write_to(8102, "/etc/ld.so.conf.d/evil.conf"));
+    assert_eq!(preload[0].id, "ldso_preload_write");
+    assert!(preload[0].score > confd[0].score);
+}
+
 /// Enforcement outcome has to lead the detail. An operation the kernel blocked
 /// reads very differently from one that succeeded, and a responder who misses
 /// that wastes time on an attack that never landed.
