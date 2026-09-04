@@ -54,7 +54,7 @@ is the claim the table below rests on.
 | inode_setxattr | `lsm/` | 5.11 + BPF-LSM | ✗ |
 | ptrace_access_check | `lsm/` | 5.11 + BPF-LSM | ✗ |
 | bprm_check_security | `lsm/` | 5.11 + BPF-LSM | ✗ |
-| socket_connect | `lsm/` | 5.11 + BPF-LSM | ✗ |
+| unix_stream_connect | `lsm/` | 5.11 + BPF-LSM | ✗ |
 
 Without BPF-LSM you keep process lineage, every credential transition, and
 kernel module loading. You lose the file, credential-theft, fileless-exec and

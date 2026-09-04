@@ -61,7 +61,7 @@ flowchart TD
         direction LR
         A1["tracepoints<br/><small>exec · fork · exit</small>"]
         A2["fentry / fexit<br/><small>commit_creds · do_init_module</small>"]
-        A3["LSM hooks<br/><small>file_open · path_chmod · inode_setxattr<br/>ptrace · bprm_check · socket_connect</small>"]
+        A3["LSM hooks<br/><small>file_open · path_chmod · inode_setxattr<br/>ptrace · bprm_check · unix_stream_connect</small>"]
     end
 
     K -->|"ring buffer, 8&nbsp;MB, drop-counted"| G
@@ -116,7 +116,7 @@ single events should not cry wolf.
 | writes to watched paths | `lsm/file_open` + `bpf_d_path` | `ld.so.preload`, `authorized_keys`, cron, systemd, sudoers, shadow — filtered in-kernel by an LPM trie |
 | credential-file reads | `lsm/file_open` | `/etc/shadow` and SSH **private** keys — theft, as opposed to the tampering a write means |
 | ptrace / cross-uid `/proc` | `lsm/ptrace_access_check` | credential theft from another user's process |
-| runtime socket access | `lsm/socket_connect` | Docker/containerd sockets — the container-escape primitive |
+| runtime socket access | `lsm/unix_stream_connect` | Docker/containerd/podman sockets, matched by the name they were *bound* as — the container-escape primitive |
 | fileless execution | `lsm/bprm_check_security` | memfd / anonymous / deleted-file exec |
 | kernel module load | `fexit/do_init_module` | rootkit loading, by real module name |
 | kernel escape hatches | `lsm/file_open` | writes to `core_pattern`, `modprobe`, `uevent_helper` — a root program the kernel runs on the *host* |
@@ -139,7 +139,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
 **Tested** on four levels. 172 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 28 [attack scenarios](#testing) that run the
+**real kernel captures** committed as fixtures. 29 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And seven noise scenarios asserting ordinary work stays

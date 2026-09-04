@@ -32,6 +32,61 @@ edit them constantly and every editor rewrites them; the detection would drown.
 Package upgrades are the main legitimate writer of the new paths, so baseline the
 package manager as you would for cron and systemd units.
 
+### The runtime socket is matched by the name it was bound as
+
+`runtime_socket_access` compared the `sun_path` handed to `connect()` — the one
+part of the operation an attacker chooses. Measured:
+
+```
+ln -s /run/docker.sock /tmp/x.sock  &&  connect("/tmp/x.sock")
+    →  reached the daemon, no event of any kind
+```
+
+The same shape as the hard link to `/etc/shadow`, and the same answer: match on
+what the kernel knows rather than on what the caller supplied. The sensor moved
+from `lsm/socket_connect` to `lsm/unix_stream_connect`, which hands over the
+listening socket; a bound AF_UNIX socket carries the `struct path` it was bound
+at, so a symlink, a bind mount and a hard link all arrive at the same dentry.
+
+Two things follow. The daemon can be restarted — the socket is recreated with a
+new inode and this still matches, where a map of inodes populated at startup
+would have gone stale and silently stopped working. And a runtime socket
+anywhere on disk is now covered: rootless docker under `/run/user/<uid>`,
+podman, and k3s nesting containerd under `/run/k3s` were all outside the four
+fixed prefixes the sensor used to carry.
+
+The path prefixes were replaced rather than kept alongside the new match. Both
+hooks fire for the same connection, so keeping both would have emitted two
+events for every `docker ps`.
+
+One narrowing came with it, and it turned out to matter more than expected. The
+old `/run/containerd/` prefix matched every socket under that directory,
+including the per-container shim sockets in `/run/containerd/s/`. The shim is an
+ancestor of every containerised process, so its own connection to containerd
+landed in the lineage of anything running in a container — as a second signal
+kind, which is what earns a chain bonus.
+
+**Scores for containerised detections drop, and the lower number is the correct
+one.** A `memfd` exec inside a container scored 100 (CRITICAL) and now scores 50
+(medium):
+
+```
+before:  fileless_exec 50 + runtime_socket_access 25   base 75
+         distinct 2, max 50 -> chain bonus 25          = 100
+after:   fileless_exec 50, distinct 1, no bonus        =  50
+```
+
+The 25 was container infrastructure talking to itself. Nothing about the attack
+changed; the severity had been inflated by a signal the attacker did not
+produce. `ptrace_attach` and `namespace_escape` moved for the same reason.
+
+The shim sockets are genuinely runtime surface, so this is also less coverage
+than before — but not in a way that was ever contributing detection.
+
+Still not matched, and now documented as such: a daemon told to bind some other
+name (`dockerd -H unix:///run/x.sock`), a runtime reached over TCP, and abstract
+sockets, which have no filesystem path to name.
+
 ## v0.4.0 — three ways to reach a watched file without being seen
 
 Three documented evasions were run for the first time. Two were real, and each

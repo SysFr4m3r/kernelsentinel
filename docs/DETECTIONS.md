@@ -326,10 +326,14 @@ read after parsing — not an attacker-supplied filename).
 ## Container
 
 ### `runtime_socket_access` — base 25 (host) / 60 (container) · T1611
-A process connects to the Docker or containerd control socket
-(`/var/run/docker.sock`, `/run/containerd/*.sock`), at `socket_connect`. A process
-that can talk to the runtime socket can create a privileged container and escape
-to the host.
+A process connects to a container runtime control socket — docker, containerd,
+podman or CRI-O — at `unix_stream_connect`. A process that can talk to the
+runtime socket can create a privileged container and escape to the host.
+
+The match is on the name the socket was **bound** as, read from the listening
+socket, not the path the connecting process supplied. The socket is reported by
+that bound leaf name (`docker.sock`) with the degraded-path flag set, since
+`bpf_d_path` is refused on this hook.
 
 - **Context is the signal:** the host `docker` CLI connects here routinely (score
   25, baseline territory), but a **containerized** process reaching the host
@@ -338,9 +342,27 @@ to the host.
   `-v /var/run/docker.sock:/var/run/docker.sock` running a `docker` client.
 - **False positives:** host container tooling (docker CLI, compose, portainer).
   Baseline or expect these on any host that runs containers.
-- **Evasions:** the in-kernel name match targets `docker.sock` / `containerd.sock`;
-  a differently-named runtime socket, or talking to the runtime over a TCP
-  endpoint instead of the unix socket, is not matched.
+- **The socket reached under another name is matched.** This used to compare the
+  `sun_path` the caller passed to `connect()`, which is the one part of the
+  operation an attacker chooses. Measured: a symlink at `/tmp/x.sock` pointing at
+  `/run/docker.sock` reached the daemon and produced **no event at all** — the
+  same shape as the hard link to `/etc/shadow`. Matching the bound name instead
+  means a symlink, a bind mount or a hard link all arrive at the same dentry.
+- **A runtime socket anywhere on disk is covered.** The old fixed prefixes named
+  `/run/docker.sock`, `/var/run/docker.sock`, `/run/containerd/` and `/run/crio/`
+  only. Rootless docker under `/run/user/<uid>/`, podman, and k3s nesting
+  containerd under `/run/k3s/` were all unwatched, and are no longer.
+- **Evasions:** the bound *name* is still a fixed set (`docker.sock`,
+  `containerd.sock`, `podman.sock`, `crio.sock`), so a daemon told to bind some
+  other name — `dockerd -H unix:///run/x.sock` — is not matched. Talking to the
+  runtime over a TCP endpoint (`dockerd -H tcp://…`) never touches a unix socket
+  and is not matched either. An **abstract** socket has no filesystem path and no
+  dentry, so it cannot be matched by name at all.
+  The per-container containerd shim sockets in `/run/containerd/s/` were matched
+  by the old directory prefix and are not matched by name. They are runtime
+  surface, not the control socket — and matching them inflated every
+  containerised incident, since the shim is an ancestor of every containerised
+  process and its own connection to containerd chained into the score.
 
 ### `kernel_escape_hatch_write` — base 45 (host) / 75 (container) · T1611, T1543
 

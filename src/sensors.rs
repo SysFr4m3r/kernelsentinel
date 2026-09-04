@@ -35,7 +35,7 @@ const LSM_SENSORS: &[&str] = &[
     "inode_setxattr",
     "ptrace",
     "bprm_check",
-    "socket_connect",
+    "unix_connect",
 ];
 
 mod skel {
@@ -222,7 +222,7 @@ where
     attach!(handle_ptrace, "ptrace");
     attach!(handle_bprm, "bprm_check");
     attach!(handle_module, "module_load");
-    attach!(handle_socket_connect, "socket_connect");
+    attach!(handle_unix_connect, "unix_connect");
 
     // A successful attach is not a working sensor. If the bpf LSM is not in the
     // kernel's active list, every lsm/ program is attached to a hook the kernel
