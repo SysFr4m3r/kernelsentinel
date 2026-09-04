@@ -72,6 +72,21 @@ int BPF_PROG(handle_file_open, struct file *file)
 	key.prefixlen = (__u32)(len - 1) * 8;
 
 	__u32 *w = bpf_map_lookup_elem(&watched_paths, &key);
+	if (!w) {
+		/* No path matched. The file may still be one we watch, reached by
+		 * another name -- a hard link or a bind mount is the same inode,
+		 * and matching on identity is what the escape hatches already do
+		 * for exactly this reason.
+		 *
+		 * Second, not first, because the trie covers directory prefixes
+		 * that have no single inode, and because bpf_d_path above already
+		 * dominates the cost of this hook: one hash lookup on the miss
+		 * path is small beside resolving a path. */
+		struct file_id wid = {};
+		wid.ino = BPF_CORE_READ(file, f_inode, i_ino);
+		wid.dev = BPF_CORE_READ(file, f_inode, i_sb, s_dev);
+		w = bpf_map_lookup_elem(&watched_ids, &wid);
+	}
 	if (w) {
 		/* Read the flags out once; every decision below is on the scalar. */
 		__u32 flags = *w;

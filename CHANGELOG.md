@@ -5,6 +5,32 @@ line is in the commit history.
 
 ## v0.4.0 — unreleased
 
+### A watched file reached by another name is now caught
+
+The read watch is a path prefix compared against the path a file was opened by
+— which is the one thing an attacker chooses. Measured:
+
+```
+ln /etc/shadow /root/.x && cat /root/.x     →  no event of any kind
+```
+
+Every hash on the host, read through a name no prefix lists. Watched entries
+that name one concrete file are now also keyed by `(device, inode)`, the same
+mechanism the kernel escape hatches already use, so a hard link or a bind mount
+to one is recognised. Directory prefixes have no single inode and stay path-only.
+
+### A home directory created after startup is covered within ~15s
+
+`authorized_keys` lives at a per-user path no single prefix covers, so each home
+is enumerated individually — at startup. A user created afterwards had a home
+nobody watched, for as long as the daemon ran. Measured: `useradd` then writing
+`authorized_keys` produced no signal at all.
+
+The daemon now re-enumerates `/home` every 15 seconds and adds what is new. That
+bounds the window rather than removing it, and the documentation says so: an
+attacker who creates an account and backdoors it inside those seconds is still
+not caught.
+
 ### A SUID binary created already-SUID is now caught
 
 `suid_create` watched `path_chmod` for the transition `0 → S_ISUID`, so a file

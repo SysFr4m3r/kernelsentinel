@@ -21,6 +21,13 @@ use crate::watchlist::{self, Watch};
 /// they are attached and permanently silent, which is why they are not counted
 /// as available. Kept in step with the BPF source by the test at the bottom of
 /// this file.
+/// How often `/home` is re-enumerated for accounts created after startup.
+///
+/// Short because the gap it closes is a persistence vector -- an account created
+/// now has an `authorized_keys` that nothing watches until this runs -- and the
+/// work is a single readdir.
+const WATCH_REFRESH: Duration = Duration::from_secs(15);
+
 const LSM_SENSORS: &[&str] = &[
     "file_open",
     "path_chmod",
@@ -111,6 +118,10 @@ where
     // a partially-filled one.
     let watches = watchlist::default_watches();
     let loaded = populate_watches(&skel.maps.watched_paths, &watches)?;
+    // Remembered so the periodic refresh below can tell a new home directory
+    // from one already covered, and report only what it added.
+    let mut watched_prefixes: std::collections::HashSet<String> =
+        watches.iter().map(|w| w.prefix.clone()).collect();
 
     // Written before attach, so no hook can ever observe a half-configured
     // policy. Denial also requires a known host namespace: without a reference
@@ -139,6 +150,27 @@ where
     eprintln!(
         "kernelsentinel: tracking {} kernel escape hatch(es) by file identity",
         hatches.len()
+    );
+
+    // The same files the trie watches, also keyed by identity, so a second name
+    // for one is still recognised. `ln /etc/shadow /root/.x && cat /root/.x`
+    // read every hash on the host and produced no event at all until this
+    // existed -- the trie can only compare the name the opener chose.
+    let watched_ids = watchlist::watched_file_ids();
+    for (id, flags) in &watched_ids {
+        skel.maps
+            .watched_ids
+            .update(
+                &id.to_map_key(),
+                &flags.to_ne_bytes(),
+                libbpf_rs::MapFlags::ANY,
+            )
+            .context("populating the watched-identity map")?;
+    }
+    eprintln!(
+        "kernelsentinel: {} watched file(s) also matched by identity, so a hard link \
+         or bind mount to one is still seen",
+        watched_ids.len()
     );
 
     let cfg = [enforce.mode().to_ne_bytes(), host_mnt_ns.to_ne_bytes()].concat();
@@ -320,6 +352,7 @@ where
     eprintln!("kernelsentinel: ready, streaming events (ctrl-c to stop)");
 
     let mut last_tick = std::time::Instant::now();
+    let mut last_watch_refresh = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         match rb.poll(Duration::from_millis(200)) {
             Ok(()) => {}
@@ -328,6 +361,36 @@ where
         }
         // Driven by the poll loop, which wakes at least every 200ms whether or
         // not events arrive -- so an idle host still reports in.
+        // A home directory created after startup has an authorized_keys nobody
+        // is watching, and the daemon runs for weeks. Measured before this:
+        // useradd followed by writing authorized_keys produced no
+        // authorized_keys_write at all.
+        //
+        // On its own cadence rather than the heartbeat's, because the heartbeat
+        // is a minute and that is a long time to leave a fresh account
+        // unwatched. The work is one readdir of /home, so four a minute costs
+        // nothing worth measuring.
+        if last_watch_refresh.elapsed() >= WATCH_REFRESH {
+            last_watch_refresh = std::time::Instant::now();
+            let fresh: Vec<Watch> = watchlist::home_watches()
+                .into_iter()
+                .filter(|w| !watched_prefixes.contains(&w.prefix))
+                .collect();
+            if !fresh.is_empty() {
+                match populate_watches(&skel.maps.watched_paths, &fresh) {
+                    Ok(n) => {
+                        for w in &fresh {
+                            watched_prefixes.insert(w.prefix.clone());
+                        }
+                        eprintln!("kernelsentinel: now also watching {n} new path(s) under /home");
+                    }
+                    // A full trie is worth saying out loud once rather than on
+                    // every tick, but it must not stop the event loop.
+                    Err(e) => eprintln!("kernelsentinel: could not add new home watches: {e}"),
+                }
+            }
+        }
+
         if !tick_every.is_zero() && last_tick.elapsed() >= tick_every {
             let mut s = read_stats(&skel.maps.stats);
             s.decode_panics = panics.get();

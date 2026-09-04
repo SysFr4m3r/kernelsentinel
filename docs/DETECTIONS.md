@@ -107,9 +107,13 @@ A regular file gains the setuid or setgid bit (`0 → S_ISUID/S_ISGID`), detecte
   which `path_chmod` is and `path_mknod` is not — so the event carries the leaf
   name with the degraded-path flag set.
 - **Evasions:** requires `CONFIG_SECURITY_PATH` (both hooks); on kernels without
-  it the `inode_setattr` fallback is still TODO. A file that is moved into place
-  already SUID (`rename` from elsewhere on the same filesystem) passes through
-  neither hook.
+  it the `inode_setattr` fallback is still TODO.
+- **`rename` into place is *not* an evasion**, though this document claimed it was
+  until someone ran it. The move itself is neither a create nor a chmod, so
+  nothing fires on it — but the file had to exist somewhere first, and creating
+  it there goes through one of the two hooks. `suid_create_renamed.sh` scores 45,
+  attributed to the staging step. The claim was written from reasoning about
+  `rename(2)` in isolation and survived only as long as nobody tested it.
 
 ### `setcap` — base 40 · T1548
 A file gains capabilities via the `security.capability` xattr — a SUID-equivalent
@@ -268,8 +272,19 @@ systemd units) and **`sensitive_write`** (20, any other watched path — `/etc/p
   writes `authorized_keys`; `visudo` writes sudoers. Baseline the writing binary, learning from a capture where it writes more than once.
 - **Evasions:** the watch list is a fixed prefix set — a persistence mechanism not
   on the list (a new systemd path, a shell rc file, a PAM config) is not watched.
-  Per-user `authorized_keys` is covered only for existing `/home/*` and `/root` at
-  startup.
+- **A home directory created while the daemon runs is covered within ~15s, not
+  immediately.** `authorized_keys` lives at a per-user path no single prefix
+  covers, so each home is listed individually and one created afterwards starts
+  unwatched. Measured: `useradd` then writing `authorized_keys` produced no
+  signal at all. The daemon now re-enumerates `/home` every 15 seconds and adds
+  what is new, which bounds the window rather than removing it — an attacker who
+  creates an account and backdoors it inside that window is still not caught.
+- **A watched file reached by another name is matched by identity.** The prefix
+  trie compares the path the opener chose, which is the one thing an attacker
+  controls: `ln /etc/shadow /root/.x && cat /root/.x` read every hash on the host
+  and produced no event. Watched files that name one concrete file are now also
+  keyed by `(device, inode)`, so a hard link or a bind mount to one is still
+  seen. Directory prefixes have no single inode and remain path-only.
 
 ### `module_load` — base 50 · T1547.006
 A kernel module is loaded, detected at `do_init_module` (the real module name,

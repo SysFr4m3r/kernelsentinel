@@ -144,6 +144,8 @@ cp /bin/busybox /tmp/ks-probe
 /tmp/ks-probe true 2>/dev/null       # tracepoint exec  -> exec_from_tmp
 chmod u+s /tmp/ks-probe              # lsm/path_chmod   -> suid_create
 cat /etc/shadow > /dev/null          # lsm/file_open    -> credential_store_read
+# The same file under a name no watch lists. Only an identity match can see it.
+ln /etc/shadow /ks-shadow-link 2>/dev/null && cat /ks-shadow-link > /dev/null
 # lsm/path_mknod -> suid_create, on a file that is never chmod'd. The chmod
 # above would mask this, so it writes its own file and the check below looks for
 # that filename specifically.
@@ -163,6 +165,9 @@ done
 
 # Did the creation-time path produce its own signal? Keyed on the filename so
 # the chmod provocation above cannot be mistaken for it.
+hardlink_seen=no
+grep -q 'ks-shadow-link' /tmp/out.ndjson 2>/dev/null && hardlink_seen=yes
+
 mknod_seen=no
 if [ -x /bin/suidmk ]; then
 	grep -q 'ks-mknod-suid' /tmp/out.ndjson 2>/dev/null && mknod_seen=yes
@@ -172,7 +177,7 @@ fi
 
 active="$(grep -o '[0-9]* of [0-9]* sensors active' /tmp/err.log | head -1)"
 echo
-echo "ks-vm-result: lsm=$(cat /sys/kernel/security/lsm 2>/dev/null) active=${active:-unknown} live=${live:-none} suid_at_create=${mknod_seen}"
+echo "ks-vm-result: lsm=$(cat /sys/kernel/security/lsm 2>/dev/null) active=${active:-unknown} live=${live:-none} suid_at_create=${mknod_seen} hardlink=${hardlink_seen}"
 poweroff -f
 INNER
 chmod +x "$ROOT/init"

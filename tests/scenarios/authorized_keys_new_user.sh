@@ -15,6 +15,12 @@
 # creating one is a normal administrative action that happens to arrive with a
 # home directory nothing is watching.
 #
+# The daemon re-enumerates /home on a short cadence and adds what is new, so the
+# window is bounded rather than permanent. This waits for one of those passes
+# before writing the key -- which is also the honest reproduction: an attacker
+# creating an account and immediately backdooring it inside that window is
+# genuinely not caught, and the fix bounds the exposure rather than removing it.
+#
 # The account is created and removed inside this script, and the name is checked
 # first so a real account can never be the one deleted.
 set -euo pipefail
@@ -33,6 +39,9 @@ trap cleanup EXIT
 useradd -m "$u" >/dev/null
 home="$(getent passwd "$u" | cut -d: -f6)"
 [[ -d "$home" ]] || { echo "setup failed: no home for $u" >&2; exit 1; }
+
+# One refresh interval plus slack. See WATCH_REFRESH in src/sensors.rs.
+sleep 17
 
 mkdir -p "$home/.ssh"
 echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI+kernelsentinel-noise attacker@example.invalid' \

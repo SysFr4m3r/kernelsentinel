@@ -142,8 +142,25 @@ pub fn default_watches() -> Vec<Watch> {
         Watch::write_deniable("/proc/sys/fs/binfmt_misc/register"),
     ];
 
-    // Per-user SSH directories. A missing /home is fine (containers, minimal
-    // hosts); this is best-effort enrichment, not a hard dependency.
+    w.extend(home_watches());
+    w
+}
+
+/// Per-user SSH directories, enumerated from `/home`.
+///
+/// Separate from the static set because it is the only part of the watch list
+/// that goes stale while the daemon runs: `authorized_keys` lives at a path no
+/// single prefix covers, so each user's directory is listed individually, and a
+/// user created afterwards has a home nobody is watching. An attacker with root
+/// does not have to find an account to backdoor when creating one is an ordinary
+/// administrative action -- measured, `useradd` followed by writing
+/// `authorized_keys` produced no `authorized_keys_write` at all.
+///
+/// The daemon re-runs this periodically and adds what is new. A missing `/home`
+/// is fine (containers, minimal hosts); this is best-effort enrichment, not a
+/// hard dependency.
+pub fn home_watches() -> Vec<Watch> {
+    let mut w = Vec::new();
     if let Ok(entries) = fs::read_dir("/home") {
         for home in entries.flatten() {
             let ssh = home.path().join(".ssh/");
@@ -160,6 +177,30 @@ pub fn default_watches() -> Vec<Watch> {
         }
     }
     w
+}
+
+/// The watches that name one concrete file, resolved to `(identity, flags)`.
+///
+/// A prefix like `/etc/cron.d/` covers a directory and has no single inode, so
+/// it stays with the path trie. A file like `/etc/shadow` has exactly one, and
+/// keying on it is what makes a hard link or a bind mount to the same file
+/// still match: the trie compares the name the opener chose, which is the one
+/// thing an attacker controls.
+///
+/// Paths that do not exist are skipped rather than guessed at, the same as
+/// `escape_hatch_ids`.
+pub fn watched_file_ids() -> Vec<(crate::fileid::FileId, u32)> {
+    default_watches()
+        .into_iter()
+        .filter(|w| !w.prefix.ends_with('/'))
+        .filter_map(|w| {
+            let md = std::fs::metadata(&w.prefix).ok()?;
+            if !md.is_file() {
+                return None;
+            }
+            crate::fileid::FileId::of(&w.prefix).map(|id| (id, w.flags))
+        })
+        .collect()
 }
 
 /// Encode a watch as the raw `struct path_key` bytes the BPF map expects:
