@@ -139,6 +139,33 @@ on that hook.
 
 Two scenarios hold both routes down, and a third covers `rename` into place.
 
+### Login-time persistence is now watched
+
+`sensitive_write` documented its own gap: the watch list is a fixed prefix set,
+and "a shell rc file, a PAM config" was not on it. Measured, three at a time:
+
+```
+/etc/pam.d/…          →  no event of any kind
+/etc/profile.d/…      →  no event of any kind
+/etc/ld.so.conf.d/…   →  no event of any kind
+```
+
+Each names a file the system reads and acts on when someone authenticates or
+opens a shell — the same "runs later, as root, without anyone asking" property
+that makes cron and systemd units worth watching. `/etc/ld.so.conf.d` reaches the
+same linker hijack as `/etc/ld.so.preload`, which was watched, one step less
+directly.
+
+Six prefixes added — `/etc/pam.`, `/etc/ld.so.conf`, `/etc/profile`,
+`/etc/bash.bashrc`, `/etc/environment`, `/etc/update-motd.d/` — and classified
+rather than left at the catch-all 20, which sits below the alerting floor: PAM
+scores 35 as `cred_config_write`, the rest 30 as `persistence_write`.
+
+Per-user rc files (`~/.bashrc`) are deliberately still unwatched. Their owners
+edit them constantly and every editor rewrites them; the detection would drown.
+Package upgrades are the main legitimate writer of the new paths, so baseline the
+package manager as you would for cron and systemd units.
+
 ## v0.3.3 — unreleased
 
 **Upgrade if you run the fleet server with more than one account.** A session
