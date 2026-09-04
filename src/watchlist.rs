@@ -71,6 +71,12 @@ pub fn label_for(path: &str) -> &'static str {
         ("/etc/sudoers", "sudoers"),
         ("/etc/shadow", "shadow"),
         ("/etc/passwd", "passwd"),
+        ("/etc/pam.", "PAM (authentication)"),
+        ("/etc/ld.so.conf", "ld.so.conf (library search path)"),
+        ("/etc/profile", "login shell script"),
+        ("/etc/bash.bashrc", "login shell script"),
+        ("/etc/environment", "login environment"),
+        ("/etc/update-motd.d/", "login script (motd)"),
     ];
     RULES
         .iter()
@@ -126,6 +132,22 @@ pub fn default_watches() -> Vec<Watch> {
         Watch::read_write("/etc/gshadow"),
         Watch::write("/etc/passwd"),
         Watch::write("/root/.ssh/"),
+        // Login-time execution. Everything below names a file the system reads
+        // and acts on when someone authenticates or opens a shell -- the same
+        // "runs later, as root, without asking" property that makes cron and
+        // systemd units worth watching. Measured before adding: writing
+        // /etc/pam.d, /etc/profile.d and /etc/ld.so.conf.d produced no event at
+        // all, because nothing here was watched.
+        //
+        // Bare prefixes on purpose, matching the /etc/cron convention above:
+        // "/etc/pam." covers pam.conf and pam.d/, "/etc/profile" covers profile
+        // and profile.d/, "/etc/ld.so.conf" covers the file and conf.d/.
+        Watch::write("/etc/pam."),
+        Watch::write("/etc/ld.so.conf"),
+        Watch::write("/etc/profile"),
+        Watch::write("/etc/bash.bashrc"),
+        Watch::write("/etc/environment"),
+        Watch::write("/etc/update-motd.d/"),
         // SSH *private* keys. Reads are rare and meaningful -- sshd loads the
         // host keys once at startup -- unlike authorized_keys, which is read on
         // every single login and is therefore write-watched only.
