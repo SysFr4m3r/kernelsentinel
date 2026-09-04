@@ -473,3 +473,59 @@ fn a_shipped_version_is_not_still_being_edited() {
         "CHANGELOG.md's newest section is v{newest} but Cargo.toml says {version}"
     );
 }
+
+/// No changelog section may appear twice, heading *and* body.
+///
+/// This exists because of a merge, not a typo. A commit was amended after it
+/// had been pushed -- to move an entry out of an already-tagged release, the
+/// drift `a_shipped_version_is_not_still_being_edited` catches -- so two
+/// commits with the same message and different changelog placement reached the
+/// remote. Merging both left the same section filed under two releases, one of
+/// them shipped. Nothing failed: every other check passed, and the duplicate
+/// would have gone out describing work the tagged release does not contain.
+///
+/// Headings alone are not the test. Generic ones like "Detection" recur across
+/// releases with entirely different content, which is ordinary. A repeated
+/// heading carrying a byte-identical body is the copy.
+#[test]
+fn no_changelog_section_appears_twice() {
+    use std::collections::HashMap;
+    let text = read("CHANGELOG.md");
+
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in text.lines() {
+        if let Some(h) = line.strip_prefix("### ") {
+            if let Some(done) = current.take() {
+                sections.push(done);
+            }
+            current = Some((h.trim().to_string(), String::new()));
+        } else if let Some((_, body)) = current.as_mut() {
+            // A new release heading ends the section it follows.
+            if line.starts_with("## ") {
+                sections.push(current.take().unwrap());
+            } else {
+                body.push_str(line.trim());
+                body.push('\n');
+            }
+        }
+    }
+    if let Some(done) = current {
+        sections.push(done);
+    }
+
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    for s in sections {
+        *seen.entry(s).or_insert(0) += 1;
+    }
+    let dupes: Vec<&str> = seen
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|((h, _), _)| h.as_str())
+        .collect();
+    assert!(
+        dupes.is_empty(),
+        "these changelog sections appear verbatim more than once, so at least one \
+         of them is filed under a release that does not contain the work: {dupes:?}"
+    );
+}
