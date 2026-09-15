@@ -139,10 +139,10 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
 **Tested** on four levels. 173 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 29 [attack scenarios](#testing) that run the
+**real kernel captures** committed as fixtures. 30 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
-against the actual attack. And seven noise scenarios asserting ordinary work stays
+against the actual attack. And eight noise scenarios asserting ordinary work stays
 silent, because a tool that catches everything and fires on `docker run` gets muted in week one. One
 of those asserts the *absence* of a specific signal rather than general quiet — the only assertion
 shape that can catch a suppression having stopped working, which no amount of attack scenarios

@@ -201,9 +201,14 @@ are suppressed; theft is reaching *outside* your tree.
   sees it. None reached the alerting floor. See docs/PERFORMANCE.md.
 - **Evasions:** same-uid reads are filtered in-kernel to kill the systemd/runc
   introspection flood — so a root attacker reading another *root* process's
-  `environ`/`maps` is not flagged (a `/proc/pid/mem` read still is, as it uses
-  ATTACH-mode credentials). Documented trade: missing a same-priv read is
-  preferable to the alert flood that filtering removes.
+  `environ`/`maps` is not flagged. **Both halves of that trade are measured.**
+  Reading another same-uid process's `environ`, `cmdline` and `maps` produces no
+  `cross_uid_proc_read` at the info floor, which is the flood being filtered; and
+  reading the same process's memory through `/proc/<pid>/mem` still fires
+  `ptrace_attach`, because opening it takes `PTRACE_MODE_ATTACH` credentials
+  rather than read credentials. So the gap is real for `environ` and `maps`, and
+  closed for the memory read that credential dumping actually needs. Missing a
+  same-priv `environ` read is preferable to the flood that filtering removes.
 
 ### `credential_store_read` — base 30 · T1003.008
 ### `ssh_private_key_read` — base 35 · T1552.004
