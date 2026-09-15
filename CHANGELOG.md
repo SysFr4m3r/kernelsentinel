@@ -32,6 +32,24 @@ edit them constantly and every editor rewrites them; the detection would drown.
 Package upgrades are the main legitimate writer of the new paths, so baseline the
 package manager as you would for cron and systemd units.
 
+### The same-uid `/proc` trade is measured on both sides
+
+The ptrace sensor drops same-uid, read-only access in-kernel — the filter that
+stops `ps`, `top`, `pidof` and systemd from flooding the daemon.
+`docs/DETECTIONS.md` recorded the cost of that filter and then claimed a
+mitigation: `/proc/<pid>/mem` is still caught, because opening it takes
+`PTRACE_MODE_ATTACH` credentials. The claim had never been run.
+
+It is correct. Reading another root process's memory fires `ptrace_attach`;
+reading the same process's `environ`, `cmdline` and `maps` produces nothing.
+The gap is real for `environ`, and closed for the memory read that credential
+dumping actually needs.
+
+Both halves are now scenarios rather than a paragraph: `proc_mem_read_same_uid`
+asserts the signal, and `same_uid_proc_read` asserts the silence at the info
+floor. If the filter is ever narrowed, the flood comes back and the suite says
+so.
+
 ### The runtime socket is matched by the name it was bound as
 
 `runtime_socket_access` compared the `sun_path` handed to `connect()` — the one
