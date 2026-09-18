@@ -3,7 +3,31 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.5.0 — unreleased
+## v0.5.0 — every documented evasion, measured
+
+`docs/DETECTIONS.md` has always listed the known evasions for each detection.
+None of them had ever been run. This release runs all nine.
+
+**Five were real, and every one produced no event at all** — not a weak signal,
+not a low score: nothing. Two were not evasions; the documentation was simply
+wrong, and those claims are deleted. One was a trade-off that held up under
+measurement. One can be narrowed but not closed, and now says so.
+
+**Scores change in this release, and some incidents will score lower.** The
+chain bonus counted distinct signal *ids*; it now counts distinct *behaviours*.
+Two writes to different login-configuration files were being treated as two
+independent reasons to worry, which scored an ordinary `apt upgrade` at **82,
+HIGH**. If you have tuned thresholds against the old numbers, re-check them.
+
+Two new detections — reverse shells identified by their descriptors, and
+interpreters spawned by network daemons — and enforcement is now tested with
+enforcement actually armed, in both directions.
+
+**Not re-measured for this release:** the alert budget in `docs/PERFORMANCE.md`
+predates every change above, and its throughput figures were taken through a
+startup race that has since been fixed. Both are annotated in place. Read them
+as the shape of the result, not as current counts.
+
 
 ### Login-time persistence is now watched
 
