@@ -158,6 +158,13 @@ reason to publish a fingerprint of somebody's workstation.
 219,066 events at 27 events/sec. **Zero alerts at the default `medium` floor**,
 with no baseline applied.
 
+> **This measurement predates v0.5.0 and has not been repeated.** Since it was
+> taken the tool gained six watched paths under `/etc`, two sensors, one
+> detection, and a scoring change that groups signal ids by behaviour. Every one
+> of those moves the number in the table — most of them downward, the watched
+> paths upward. Read it as the shape of the result, not as the current count,
+> until a fresh capture is replayed through `budget`.
+
 That is the number the design is built around: the low-severity signals fired 13
 times and none of them reached the alerting floor on their own, which is exactly
 what scoring `privilege_escalation` and `credential_store_read` below the floor

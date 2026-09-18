@@ -28,7 +28,21 @@
 # gap in docs/DETECTIONS.md was found: the advice was given in seven places
 # without ever saying the activity has to recur in the capture.
 #
-# It writes only into files it creates and removes, both named for this suite.
+# The shadow read is not padding either, and it is newer than the rest. Until
+# v0.5.0 the two writes alerted on their own: cron.d and sudoers.d emit
+# persistence_write and cred_config_write, two ids, and the chain bonus turned
+# them into an 82. Scoring now groups ids by behaviour, so two writes are one
+# behaviour seen twice and this activity correctly stays below the floor -- at
+# which point this scenario had nothing left to baseline and the harness said so
+# ("nothing alerted without the baseline either").
+#
+# Reading the shadow file is a second *behaviour*, not a second write, so the
+# activity alerts again and the baseline has something real to suppress. That is
+# what this scenario exists to test, and it now tests it across two families
+# rather than one, which is strictly the harder case.
+#
+# It writes only into files it creates and removes, both named for this suite,
+# and reads /etc/shadow without copying, printing or storing any of it.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "must run as root to write /etc" >&2; exit 90; }
 
@@ -48,5 +62,10 @@ printf 'ks-noise ALL=(ALL) NOPASSWD: /bin/true\n' > "$sudoers"
 chmod 440 "$sudoers"
 command -v visudo >/dev/null && visudo -c -f "$sudoers" >/dev/null 2>&1 || true
 
-echo "[noise] admin_config_change: wrote cron.d and sudoers.d as root"
-echo "[noise] DOES exercise persistence_write and cred_config_write"
+# An administrator inspecting password aging. Reads the shadow file and keeps
+# nothing: a second behaviour, so the activity above is scored as more than one
+# kind of evidence.
+cat /etc/shadow > /dev/null
+
+echo "[noise] admin_config_change: wrote cron.d and sudoers.d, read shadow, as root"
+echo "[noise] DOES exercise persistence_write, cred_config_write and credential_store_read"

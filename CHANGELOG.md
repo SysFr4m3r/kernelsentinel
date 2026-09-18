@@ -32,6 +32,56 @@ edit them constantly and every editor rewrites them; the detection would drown.
 Package upgrades are the main legitimate writer of the new paths, so baseline the
 package manager as you would for cron and systemd units.
 
+### The chain bonus counts behaviours, not signal ids
+
+**`apt upgrade` produced a HIGH incident.** Found by writing the noise scenario
+for the paths added earlier in this release, and predicted from the arithmetic
+before it ran:
+
+```
+cred_config_write 35 + persistence_write 30      base 65
+distinct 2, max 35 -> chain bonus 17           =  82   HIGH
+```
+
+Writing `/etc/pam.d` and `/etc/profile.d` is two signal ids and **one
+behaviour**: rewriting login configuration. Scoring already held the principle —
+"the same kind firing on several processes in one lineage is one reason to worry,
+not N" — and applied it to ids, which are finer-grained than behaviours.
+
+Base and chain bonus now group ids into families: watched writes, credential
+reads, process access. The upgrade scores 35 and stays below the floor. An id in
+no family is its own, so a new detection counts on its own rather than being
+folded into something else.
+
+This is older than the paths that exposed it. Two writes have counted as two
+independent reasons to worry for as long as the chain bonus has existed; adding
+common `/etc` paths is only what made it reachable on an ordinary host.
+
+All 174 tests passed unchanged across the change — no fixture had two same-family
+signals — and four new ones pin it, including that diverse evidence still chains
+to CRITICAL.
+
+### Two scenarios the scoring change corrected
+
+`admin_config_change` stopped alerting, and the harness said so rather than
+passing: *"nothing alerted without the baseline either."* It is the only test
+that the advice `DETECTIONS.md` gives in seven places — "baseline them" —
+actually works, and its subject had just been scored below the floor. It now also
+reads the shadow file, an administrator checking password aging: a second
+*behaviour* rather than a second write, so the activity alerts again and the
+baseline is tested across two families instead of one.
+
+`web_app_subprocess` alerted at 63, from its own staging. The fake `gunicorn` sat
+in `/tmp`, which adds `exec_from_tmp` — a second family, chaining exactly as
+designed. A real gunicorn lives on the system path; the fake one moved there.
+
+### Noise scenarios can run in the lab
+
+`tests/lab/run.sh` mounted `tests/scenarios` and not `tests/noise`, so
+`ks-run: lab` in a noise scenario failed with "No such file or directory" — an
+ERROR that reads like a broken scenario rather than a harness that cannot run it.
+Both are mounted, and the dispatch follows the source directory.
+
 ### Kali is a verified compatibility row again, and the probe stops lying
 
 `scripts/compat-probe.sh` runs `target/debug/kernelsentinel`. A build with

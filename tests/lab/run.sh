@@ -47,6 +47,7 @@ run_container() {
 		--tmpfs /tmp:exec \
 		--tmpfs /dev/shm:exec \
 		--volume "$REPO_ROOT/tests/scenarios:/scenarios:ro" \
+		--volume "$REPO_ROOT/tests/noise:/noise:ro" \
 		"$IMAGE" "$@"
 }
 

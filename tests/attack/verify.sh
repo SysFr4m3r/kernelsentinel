@@ -168,7 +168,13 @@ run_baselined() {
 run_scenario() {
 	local script="$1" name="$2" where="$3" caps="$4" slog="$5"
 	if [[ "$where" == "lab" ]]; then
-		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash /scenarios/$name.sh" >"$slog" 2>&1
+		# Mount point follows the source directory. A noise scenario may be
+		# contained too, and assuming /scenarios made `ks-run: lab` in
+		# tests/noise fail with "No such file or directory" -- an ERROR that
+		# reads like a broken scenario rather than a harness that cannot run it.
+		local mount=/scenarios
+		[[ "$script" == "$NOISE/"* ]] && mount=/noise
+		KS_CAPS="$caps" "$REPO/tests/lab/run.sh" run "bash $mount/$name.sh" >"$slog" 2>&1
 	else
 		KS_COLD="${KS_COLD:-}" bash "$script" >"$slog" 2>&1
 	fi
