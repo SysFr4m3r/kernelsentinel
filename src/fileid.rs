@@ -365,6 +365,57 @@ impl TrustedBinaries {
         Self { by_id, unresolved }
     }
 
+    /// Re-resolve one path whose identity the table no longer recognises.
+    ///
+    /// The table is built once, by `stat`, at startup. A package upgrade
+    /// replaces binaries in place: the path is the same and the inode is not,
+    /// so every entry the upgrade touched silently stops matching. The failure
+    /// direction is the bad one -- suppression turns *off* and the program
+    /// starts alerting -- and it is permanent until the daemon restarts.
+    ///
+    /// Measured, not theorised. In a 1.4-hour capture containing one
+    /// `apt upgrade`:
+    ///
+    /// ```text
+    /// unix_chkpwd  ino=4850166  trusted="unix_chkpwd"   18 execs   0-24 min
+    /// unix_chkpwd  ino=4853411  trusted=""              19 execs  30-80 min
+    /// ```
+    ///
+    /// Nineteen false `credential_store_read` signals, each feeding a CRITICAL
+    /// incident, from PAM's own password checker doing its job.
+    ///
+    /// Re-resolving the whole table on a timer would work and would also stat
+    /// thirty-odd paths forever, on every host, to catch an event that happens
+    /// on upgrade day. This is called only when an exec's path is one the table
+    /// knows and its identity did not match -- precisely the replaced-binary
+    /// case -- so the steady-state cost is one hash lookup that already had to
+    /// happen.
+    ///
+    /// Returns the name and role now at that path, if it is one this table
+    /// tracks and it currently exists.
+    pub fn rebind(&mut self, path: &str) -> Option<(&'static str, Role)> {
+        let entry = CREDENTIAL_READERS
+            .iter()
+            .chain(NETWORK_DAEMONS)
+            .find(|e| e.paths.contains(&path))?;
+        let id = FileId::of(path)?;
+        // Drop any stale identity still claiming this program, so the table
+        // does not grow an entry per upgrade for the lifetime of the daemon.
+        self.by_id.retain(|_, (name, _)| *name != entry.name);
+        self.by_id.insert(id, (entry.name, entry.role));
+        self.unresolved.retain(|n| *n != entry.name);
+        Some((entry.name, entry.role))
+    }
+
+    /// Does the table track this path at all? Cheap enough to ask per exec, and
+    /// the gate that keeps `rebind` off the hot path.
+    pub fn tracks_path(path: &str) -> bool {
+        CREDENTIAL_READERS
+            .iter()
+            .chain(NETWORK_DAEMONS)
+            .any(|e| e.paths.contains(&path))
+    }
+
     /// The canonical name and role of the program with this identity.
     pub fn lookup(&self, id: FileId) -> Option<(&'static str, Role)> {
         if id.is_unknown() {
@@ -519,5 +570,93 @@ mod tests {
         if let Some(su) = su {
             assert_eq!(t.lookup(su).map(|(n, _)| n), Some("su"));
         }
+    }
+}
+
+#[cfg(test)]
+mod rebind_tests {
+    use super::*;
+
+    /// A package upgrade replaces a binary in place: same path, new inode. The
+    /// table was built once by `stat`, so the entry stops matching and the
+    /// program silently loses its trusted identity -- which turns *off* the
+    /// suppression that keeps PAM's own password checker from alerting.
+    ///
+    /// Measured in a 1.4-hour capture containing one `apt upgrade`:
+    /// `/usr/sbin/unix_chkpwd` went from ino=4850166 (trusted, 18 execs) to
+    /// ino=4853411 (untrusted, 19 execs), and each of those 19 reads of
+    /// /etc/shadow fed a CRITICAL incident.
+    #[test]
+    fn a_replaced_binary_is_rebound_rather_than_silently_untrusted() {
+        // Resolve against a real tracked path, whichever this host has.
+        let mut t = TrustedBinaries::resolve_host();
+        let Some(path) = CREDENTIAL_READERS
+            .iter()
+            .flat_map(|e| e.paths.iter())
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+        else {
+            // No tracked credential reader installed; nothing to rebind.
+            return;
+        };
+
+        let real = FileId::of(path).expect("path exists");
+        assert!(t.lookup(real).is_some(), "{path} must resolve at startup");
+
+        // The upgrade: forget the identity the table learned, exactly as a
+        // replaced inode does.
+        let (name, role) = t.lookup(real).unwrap();
+        t.by_id.remove(&real);
+        assert!(
+            t.lookup(real).is_none(),
+            "precondition: the stale table must not match"
+        );
+
+        // What the daemon now does on the next exec of that path.
+        assert!(
+            TrustedBinaries::tracks_path(path),
+            "{path} must be recognised as tracked"
+        );
+        let (again, role_again) = t.rebind(path).expect("rebind must resolve it");
+        assert_eq!(again, name);
+        assert_eq!(role_again, role);
+        assert!(
+            t.lookup(real).is_some(),
+            "after rebinding, the identity must match again"
+        );
+    }
+
+    /// Rebinding must not leave the previous identity behind. A daemon running
+    /// across several upgrades would otherwise accumulate one dead entry per
+    /// upgrade, each still claiming to be the trusted program.
+    #[test]
+    fn rebinding_drops_the_identity_it_replaces() {
+        let mut t = TrustedBinaries::resolve_host();
+        let Some(path) = CREDENTIAL_READERS
+            .iter()
+            .flat_map(|e| e.paths.iter())
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+        else {
+            return;
+        };
+        let (name, _) = t.rebind(path).expect("resolves");
+        let before = t.by_id.values().filter(|(n, _)| *n == name).count();
+        t.rebind(path);
+        let after = t.by_id.values().filter(|(n, _)| *n == name).count();
+        assert_eq!(before, 1, "one identity per program");
+        assert_eq!(after, 1, "rebinding must not add a second");
+    }
+
+    /// An untracked path is never stat'd. This is what keeps the check off the
+    /// hot path: every exec asks, and only the handful of tracked paths cost
+    /// anything.
+    #[test]
+    fn an_untracked_path_is_not_rebound() {
+        let mut t = TrustedBinaries::resolve_host();
+        assert!(!TrustedBinaries::tracks_path("/usr/bin/ls"));
+        assert!(t.rebind("/usr/bin/ls").is_none());
+        assert!(!TrustedBinaries::tracks_path("/tmp/sudo"));
+        assert!(t.rebind("/tmp/sudo").is_none());
     }
 }

@@ -317,7 +317,7 @@ mod tests {
                 r#"{"ts_ns":1002000000,"type":6,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","filename":"/tmp/.x","file_mode":2541,"old_file_mode":33261}"#,
             ),
             ev(
-                r#"{"ts_ns":1003000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#,
+                r#"{"ts_ns":1003000000,"type":4,"uid":1000,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#,
             ),
         ]
     }
@@ -347,7 +347,7 @@ mod tests {
         // other suspicious signal. This must NOT reach the Medium alert band, or
         // the tool cries wolf every time someone types their password.
         let sudo = vec![ev(
-            r#"{"ts_ns":1000000000,"type":4,"tgid":300,"ppid":50,"start_boottime":900000000,"comm":"sudo","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#,
+            r#"{"ts_ns":1000000000,"type":4,"uid":1000,"tgid":300,"ppid":50,"start_boottime":900000000,"comm":"sudo","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#,
         )];
         let incidents = run(&sudo, Severity::Medium);
         assert!(
@@ -419,7 +419,7 @@ mod tests {
         // spam identical alerts.
         let mut events = suid_chain();
         // A second, redundant cred change in the same lineage.
-        events.push(ev(r#"{"ts_ns":1005000000,"type":4,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#));
+        events.push(ev(r#"{"ts_ns":1005000000,"type":4,"uid":1000,"tgid":200,"ppid":100,"start_boottime":1000000000,"comm":"chmod","euid":0,"old_euid":1000,"cap_effective":2199023255551}"#));
         let incidents = run(&events, Severity::Low);
         let criticals = incidents
             .iter()

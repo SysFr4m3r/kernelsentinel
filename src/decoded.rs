@@ -166,9 +166,21 @@ impl Event {
     /// Name this event's executable against the host's trusted-binary table.
     /// Called once on the way out of the ring buffer, so the answer travels
     /// with the event into a capture.
-    pub fn resolve_trust(&mut self, trusted: &crate::fileid::TrustedBinaries) {
+    pub fn resolve_trust(&mut self, trusted: &mut crate::fileid::TrustedBinaries) {
         if let Some((name, _)) = trusted.lookup(self.exe_id()) {
             self.exe_trusted = name.to_string();
+            return;
+        }
+        // The identity did not match, but the path might still be one the table
+        // tracks -- which is what a package upgrade leaves behind: same path,
+        // new inode, no match, suppression silently off until restart. Only an
+        // exec carries the path, and only a tracked path gets as far as a stat.
+        if self.event_type() == EventType::Exec
+            && crate::fileid::TrustedBinaries::tracks_path(&self.filename)
+        {
+            if let Some((name, _)) = trusted.rebind(&self.filename) {
+                self.exe_trusted = name.to_string();
+            }
         }
     }
 

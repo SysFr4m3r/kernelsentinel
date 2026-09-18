@@ -301,7 +301,7 @@ fn record(out: &str) -> Result<()> {
         "kernelsentinel: recording to {out} (ctrl-c to stop)"
     ));
 
-    let trusted = kernelsentinel::fileid::TrustedBinaries::resolve_host();
+    let mut trusted = kernelsentinel::fileid::TrustedBinaries::resolve_host();
     status(&format!("kernelsentinel: {}", trusted.summary()));
 
     let mut count = 0u64;
@@ -319,7 +319,7 @@ fn record(out: &str) -> Result<()> {
             // Resolved on the recording host and written into the capture: a
             // replay elsewhere must reproduce what this host decided, not
             // re-derive it from the replaying machine's own /usr/bin.
-            ev.resolve_trust(&trusted);
+            ev.resolve_trust(&mut trusted);
             // A serialize/write failure to the capture file is worth stopping for,
             // unlike a broken stdout pipe; surface it and shut down.
             match serde_json::to_string(&ev) {
@@ -855,10 +855,16 @@ fn run(
         None => None,
     };
     // Resolve the trusted system binaries before the scan, so processes that
-    // predate the agent are recognised too. Like the host mount namespace, this
-    // is host state read once at startup: consulting the filesystem per event
-    // would let a mid-flight package upgrade change a detection's answer.
-    let trusted = kernelsentinel::fileid::TrustedBinaries::resolve_host();
+    // predate the agent are recognised too.
+    //
+    // Read at startup, and re-bound per program when an upgrade replaces one.
+    // This used to be read once and never again, on the reasoning that
+    // consulting the filesystem per event would let a mid-flight package
+    // upgrade change a detection's answer. Measurement inverted that: NOT
+    // re-reading is what an upgrade changes, because the path stays and the
+    // inode does not, so the entry stops matching and its suppression silently
+    // turns off until the daemon restarts. See TrustedBinaries::rebind.
+    let mut trusted = kernelsentinel::fileid::TrustedBinaries::resolve_host();
     status(&format!("kernelsentinel: {}", trusted.summary()));
     if !trusted.unresolved().is_empty() {
         status(&format!(
@@ -911,7 +917,7 @@ fn run(
             // counted as observed even though it is our own child.
             canary.observe(raw.tgid);
             let mut ev = Event::from(&raw);
-            ev.resolve_trust(&trusted);
+            ev.resolve_trust(&mut trusted);
             graph.apply(&ev);
 
             // Detection runs after the graph update so lineage queries see this

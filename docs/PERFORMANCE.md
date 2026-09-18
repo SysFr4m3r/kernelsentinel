@@ -158,6 +158,14 @@ reason to publish a fingerprint of somebody's workstation.
 219,066 events at 27 events/sec. **Zero alerts at the default `medium` floor**,
 with no baseline applied.
 
+> **Superseded. This is an idle desktop, and it is why the number is zero.**
+> A 1.4-hour capture of real administrative work — browsing, credential reads,
+> one `apt upgrade` — produced **125 CRITICAL incidents** against the same
+> build. Three defects came out of that measurement and are fixed in v0.5.2,
+> bringing it to 10; see the changelog. The table below is kept because it is
+> what was measured, and because "zero alerts" turning out to mean "nobody
+> did anything" is the more useful lesson.
+>
 > **This measurement predates v0.5.0 and has not been repeated.** Since it was
 > taken the tool gained six watched paths under `/etc`, two sensors, one
 > detection, and a scoring change that groups signal ids by behaviour. Every one

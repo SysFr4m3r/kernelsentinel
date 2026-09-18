@@ -46,6 +46,14 @@ pub struct Score {
     pub severity: Severity,
 }
 
+/// How far apart two signals may be and still be read as one operation.
+///
+/// Ten minutes. Long enough to cover an attacker working at a keyboard --
+/// escalate, look around, take the hashes -- and far short of the 75-minute
+/// median gap that was turning one `sudo apt upgrade` into 93 critical
+/// incidents.
+const CHAIN_WINDOW_NS: u64 = 600 * 1_000_000_000;
+
 /// The behaviour a signal id belongs to.
 ///
 /// Scoring has always treated the same id firing twice as one reason to worry
@@ -100,6 +108,32 @@ pub fn score(signals: &[Signal], ctx: Context) -> Score {
             severity: Severity::Info,
         };
     }
+
+    // Only signals near each other in time are scored together.
+    //
+    // A chain bonus is a claim about causation: these things happened as one
+    // operation. Shared lineage alone does not establish that. A `sudo` at the
+    // start of an admin session stays in the ancestry of everything that
+    // session later does, so without a window every routine action beneath it
+    // inherits an escalation as "a second kind of evidence".
+    //
+    // Measured, in a 1.4-hour capture containing one `apt upgrade`: 93 critical
+    // incidents paired `privilege_escalation` with `credential_store_read`, and
+    // the median gap between the two was **4,494 seconds**. One of the 93 was
+    // within fifteen minutes. The tool was reporting a `sudo` from 75 minutes
+    // earlier as corroboration for `debconf` reading /etc/shadow now.
+    //
+    // Older signals stay in the incident and stay visible to an analyst; they
+    // simply stop contributing to the number. The evasion is stated in
+    // docs/DETECTIONS.md: an attacker who waits out the window splits one
+    // operation into separately-unremarkable halves. That is a real cost, and
+    // smaller than alerting on every package upgrade.
+    let newest = signals.iter().map(|s| s.ts_ns).max().unwrap_or(0);
+    let recent: Vec<&Signal> = signals
+        .iter()
+        .filter(|s| newest.saturating_sub(s.ts_ns) <= CHAIN_WINDOW_NS)
+        .collect();
+    let signals: &[&Signal] = &recent;
 
     // Base is the sum of the highest score per *family*, not per signal. The
     // same behaviour firing more than once in one lineage -- two sudos each
@@ -225,6 +259,65 @@ mod tests {
         assert_eq!(s.base, 125);
         assert_eq!(s.chain_bonus, 50, "(3 - 1) * 50 / 2");
         assert_eq!(s.severity, Severity::Critical);
+    }
+
+    fn at(id: &'static str, score: u32, ts_ns: u64) -> Signal {
+        Signal::new(
+            id,
+            score,
+            &["T1543"],
+            ProcKey {
+                pid: 1,
+                start_boottime: 1,
+            },
+            ts_ns,
+            "",
+        )
+    }
+
+    /// A chain bonus claims these things happened as one operation. Shared
+    /// lineage does not establish that: a `sudo` at the start of an admin
+    /// session stays in the ancestry of everything that session later does.
+    ///
+    /// Measured in a 1.4-hour capture containing one `apt upgrade`: 93 critical
+    /// incidents paired an escalation with a credential read, and the median
+    /// gap between the two signals was 4,494 seconds.
+    #[test]
+    fn signals_an_hour_apart_are_not_one_operation() {
+        let minute = 60 * 1_000_000_000u64;
+
+        // Together: an escalation and a credential read seconds apart.
+        let together = score(
+            &[
+                at("privilege_escalation", 40, 0),
+                at("credential_store_read", 30, 2 * 1_000_000_000),
+            ],
+            PLAIN,
+        );
+        assert_eq!(together.severity, Severity::Critical);
+
+        // The same two signals, 75 minutes apart -- the measured median. Only
+        // the recent one counts, so this cannot alert on its own.
+        let apart = score(
+            &[
+                at("privilege_escalation", 40, 0),
+                at("credential_store_read", 30, 75 * minute),
+            ],
+            PLAIN,
+        );
+        assert_eq!(apart.base, 30, "only the recent signal is scored");
+        assert_eq!(apart.chain_bonus, 0);
+        assert!(apart.total < 50, "scored {}", apart.total);
+
+        // The boundary is ten minutes, and it is inclusive on the near side.
+        let inside = score(
+            &[
+                at("privilege_escalation", 40, 0),
+                at("credential_store_read", 30, 9 * minute),
+            ],
+            PLAIN,
+        );
+        assert!(inside.chain_bonus > 0, "nine minutes is still one operation");
     }
 
     /// The pre-existing rule, kept: the same id twice is one reason to worry.
