@@ -3,6 +3,74 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
+## v0.5.2 — unreleased
+
+**The first capture of real administrative work.** Every previous alert-budget
+figure came from an idle desktop, which is why the published number was *zero
+alerts at medium*. A 1.4-hour capture containing web browsing, credential
+reads and one `apt upgrade` produced **125 CRITICAL incidents**. Three
+independent defects, each found by looking at that data:
+
+```
+                          before    after
+  MEDIUM                     151       34
+  HIGH                       137       15
+  CRITICAL                   125       10
+```
+
+### A chain bonus now requires the signals to be close in time
+
+The chain bonus claims that signals happened as one operation. Shared lineage
+does not establish that: a `sudo` at the start of an admin session stays in the
+ancestry of everything that session later does, so every routine action beneath
+it inherited an escalation as "a second kind of evidence".
+
+Measured: 93 of the 125 critical incidents paired `privilege_escalation` with
+`credential_store_read`, and the **median gap between the two signals was 4,494
+seconds**. One of the 93 was within fifteen minutes. The tool was offering a
+`sudo` from 75 minutes earlier as corroboration for `debconf` reading
+`/etc/shadow` now.
+
+Signals more than ten minutes from the newest one still appear in the incident
+and are still visible to an analyst; they no longer contribute to the score.
+
+**Evasion, stated plainly:** an attacker who waits out the window splits one
+operation into two separately-unremarkable halves. That is a real cost, and it
+is smaller than alerting on every package upgrade.
+
+### A process that is already root is not escalating
+
+`privilege_escalation` fired on any transition to euid 0. A privileged daemon
+dropping to a service account and taking root back is how unprivileged work is
+done safely, and regaining a capability you could always regain is bookkeeping.
+
+Of the thirty transitions to euid 0 in the capture, **twenty-one came from
+processes whose real uid was already 0** — `apt` returning from euid 42,
+`polkitd`, `colord`, `pcscd`, and `sudo`'s own internal transitions after it had
+already become root. The signal now requires that the real uid is not 0, which
+halved its appearances (261 → 131).
+
+### A replaced binary is rebound instead of silently untrusted
+
+The trusted-binary table is built once at startup by `stat`. A package upgrade
+replaces binaries in place — same path, new inode — so the entry stops matching
+and the program silently loses its trusted identity, turning *off* its
+suppression permanently until restart:
+
+```
+unix_chkpwd  ino=4850166  trusted="unix_chkpwd"   18 execs   0-24 min
+unix_chkpwd  ino=4853411  trusted=""              19 execs  30-80 min
+```
+
+Nineteen false `credential_store_read` signals from PAM's own password checker.
+`rebind` re-resolves a single program when an exec's path is one the table
+tracks and its identity did not match, so the steady-state cost is a hash lookup
+that already had to happen.
+
+Worth stating: on its own this one removed 10 false signals but only **one**
+critical incident. The false signals were landing inside incidents that were
+already critical for other reasons.
+
 ## v0.5.1 — reverse shells, and a title that would not stay fixed
 
 v0.5.0 was tagged one commit early. The work below was written for it, reviewed

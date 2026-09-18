@@ -10,6 +10,17 @@ from correlation: signals in one process lineage combine, with a chain bonus for
 distinct **behaviours** and context multipliers (×1.3 rooted at a network daemon,
 ×1.1 inside a container).
 
+Signals are combined only when they are **within ten minutes of each other**. A
+chain bonus claims the signals were one operation, and shared lineage does not
+establish that: a `sudo` at the start of an admin session stays in the ancestry
+of everything that session later does. Measured on a real capture, 93 critical
+incidents paired an escalation with a credential read at a **median gap of 4,494
+seconds** — a `sudo` from 75 minutes earlier offered as corroboration for a
+package script reading `/etc/shadow` now. Older signals remain in the incident
+and remain visible; they do not contribute to the score. **Evasion:** an
+attacker who waits out the window splits one operation into two
+separately-unremarkable halves.
+
 Behaviours, not signal ids. Writing `/etc/pam.d` and `/etc/profile.d` emits
 `cred_config_write` and `persistence_write` — two ids, one behaviour: rewriting
 login configuration. Counting them separately scored an ordinary `apt upgrade`
