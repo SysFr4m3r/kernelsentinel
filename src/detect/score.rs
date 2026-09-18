@@ -317,7 +317,10 @@ mod tests {
             ],
             PLAIN,
         );
-        assert!(inside.chain_bonus > 0, "nine minutes is still one operation");
+        assert!(
+            inside.chain_bonus > 0,
+            "nine minutes is still one operation"
+        );
     }
 
     /// The pre-existing rule, kept: the same id twice is one reason to worry.
