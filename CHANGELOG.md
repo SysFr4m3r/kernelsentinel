@@ -3,58 +3,12 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.5.0 — every documented evasion, measured
+## v0.5.1 — reverse shells, and a title that would not stay fixed
 
-`docs/DETECTIONS.md` has always listed the known evasions for each detection.
-None of them had ever been run. This release runs all nine.
-
-**Five were real, and every one produced no event at all** — not a weak signal,
-not a low score: nothing. Two were not evasions; the documentation was simply
-wrong, and those claims are deleted. One was a trade-off that held up under
-measurement. One can be narrowed but not closed, and now says so.
-
-**Scores change in this release, and some incidents will score lower.** The
-chain bonus counted distinct signal *ids*; it now counts distinct *behaviours*.
-Two writes to different login-configuration files were being treated as two
-independent reasons to worry, which scored an ordinary `apt upgrade` at **82,
-HIGH**. If you have tuned thresholds against the old numbers, re-check them.
-
-Two new detections — reverse shells identified by their descriptors, and
-interpreters spawned by network daemons — and enforcement is now tested with
-enforcement actually armed, in both directions.
-
-**Not re-measured for this release:** the alert budget in `docs/PERFORMANCE.md`
-predates every change above, and its throughput figures were taken through a
-startup race that has since been fixed. Both are annotated in place. Read them
-as the shape of the result, not as current counts.
-
-
-### Login-time persistence is now watched
-
-`sensitive_write` documented its own gap: the watch list is a fixed prefix set,
-and "a shell rc file, a PAM config" was not on it. Measured, three at a time:
-
-```
-/etc/pam.d/…          →  no event of any kind
-/etc/profile.d/…      →  no event of any kind
-/etc/ld.so.conf.d/…   →  no event of any kind
-```
-
-Each names a file the system reads and acts on when someone authenticates or
-opens a shell — the same "runs later, as root, without anyone asking" property
-that makes cron and systemd units worth watching. `/etc/ld.so.conf.d` reaches the
-same linker hijack as `/etc/ld.so.preload`, which was watched, one step less
-directly.
-
-Six prefixes added — `/etc/pam.`, `/etc/ld.so.conf`, `/etc/profile`,
-`/etc/bash.bashrc`, `/etc/environment`, `/etc/update-motd.d/` — and classified
-rather than left at the catch-all 20, which sits below the alerting floor: PAM
-scores 35 as `cred_config_write`, the rest 30 as `persistence_write`.
-
-Per-user rc files (`~/.bashrc`) are deliberately still unwatched. Their owners
-edit them constantly and every editor rewrites them; the detection would drown.
-Package upgrades are the main legitimate writer of the new paths, so baseline the
-package manager as you would for cron and systemd units.
+v0.5.0 was tagged one commit early. The work below was written for it, reviewed
+with it, and is not in it — so it ships here rather than being backdated into a
+release that does not contain it. The v0.5.0 section above has been corrected to
+describe what that tag actually holds.
 
 ### Reverse shells are detected by their descriptors
 
@@ -92,6 +46,71 @@ is inherent to checking at exec time.
 
 Old captures decode unchanged — the field defaults to absent, which is the
 honest answer for a recording that could not have carried it.
+
+### The v0.3.3 heading is restored, and guarded
+
+`release/v0.3.3` retitled that section and the fix was merged. It was then
+silently undone: merge `51cbd60` resolved a CHANGELOG conflict in favour of the
+side carrying "unreleased", and nothing noticed for two releases. The branch
+survived as the only remaining record that the title had ever been written.
+
+Third artifact of this shape in a week, after a section duplicated under two
+releases and a scenario count that matched neither side of a merge. Merges will
+keep resolving CHANGELOG conflicts wrongly; what changes is whether a test says
+so. `no_tagged_version_is_still_headed_unreleased` walks the tags and fails if
+any released version's section still calls itself unreleased.
+
+## v0.5.0 — every documented evasion, measured
+
+`docs/DETECTIONS.md` has always listed the known evasions for each detection.
+None of them had ever been run. This release runs all nine.
+
+**Five were real, and every one produced no event at all** — not a weak signal,
+not a low score: nothing. Two were not evasions; the documentation was simply
+wrong, and those claims are deleted. One was a trade-off that held up under
+measurement. One can be narrowed but not closed, and now says so.
+
+**Scores change in this release, and some incidents will score lower.** The
+chain bonus counted distinct signal *ids*; it now counts distinct *behaviours*.
+Two writes to different login-configuration files were being treated as two
+independent reasons to worry, which scored an ordinary `apt upgrade` at **82,
+HIGH**. If you have tuned thresholds against the old numbers, re-check them.
+
+One new detection — interpreters spawned by network daemons — and enforcement is
+now tested with enforcement actually armed, in both directions.
+
+**Not re-measured for this release:** the alert budget in `docs/PERFORMANCE.md`
+predates every change above, and its throughput figures were taken through a
+startup race that has since been fixed. Both are annotated in place. Read them
+as the shape of the result, not as current counts.
+
+
+### Login-time persistence is now watched
+
+`sensitive_write` documented its own gap: the watch list is a fixed prefix set,
+and "a shell rc file, a PAM config" was not on it. Measured, three at a time:
+
+```
+/etc/pam.d/…          →  no event of any kind
+/etc/profile.d/…      →  no event of any kind
+/etc/ld.so.conf.d/…   →  no event of any kind
+```
+
+Each names a file the system reads and acts on when someone authenticates or
+opens a shell — the same "runs later, as root, without anyone asking" property
+that makes cron and systemd units worth watching. `/etc/ld.so.conf.d` reaches the
+same linker hijack as `/etc/ld.so.preload`, which was watched, one step less
+directly.
+
+Six prefixes added — `/etc/pam.`, `/etc/ld.so.conf`, `/etc/profile`,
+`/etc/bash.bashrc`, `/etc/environment`, `/etc/update-motd.d/` — and classified
+rather than left at the catch-all 20, which sits below the alerting floor: PAM
+scores 35 as `cred_config_write`, the rest 30 as `persistence_write`.
+
+Per-user rc files (`~/.bashrc`) are deliberately still unwatched. Their owners
+edit them constantly and every editor rewrites them; the detection would drown.
+Package upgrades are the main legitimate writer of the new paths, so baseline the
+package manager as you would for cron and systemd units.
 
 ### The chain bonus counts behaviours, not signal ids
 
@@ -349,7 +368,7 @@ on that hook.
 
 Two scenarios hold both routes down, and a third covers `rename` into place.
 
-## v0.3.3 — unreleased
+## v0.3.3 — a username could become an admin
 
 **Upgrade if you run the fleet server with more than one account.** A session
 token's payload is `username|role|expiry`, and usernames were not validated

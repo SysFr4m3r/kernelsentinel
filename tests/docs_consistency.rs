@@ -529,3 +529,42 @@ fn no_changelog_section_appears_twice() {
          of them is filed under a release that does not contain the work: {dupes:?}"
     );
 }
+
+/// A released version must not still be headed "unreleased".
+///
+/// `release/v0.3.3` fixed exactly this, and the fix was merged. It was then
+/// silently undone: a later merge resolved a CHANGELOG conflict in favour of
+/// the side carrying the stale heading, and nothing noticed for two releases.
+/// The branch survived as the only record that the title had ever been
+/// written, which is a poor place to keep one.
+///
+/// Third artifact of this shape in one week, after a duplicated section and a
+/// scenario count that matched neither side. Merges will keep resolving
+/// CHANGELOG conflicts wrongly; what changes is whether a test says so.
+#[test]
+fn no_tagged_version_is_still_headed_unreleased() {
+    let tags = std::process::Command::new("git")
+        .args(["tag", "--list", "v*"])
+        .output()
+        .expect("git tag");
+    let tags: Vec<String> = String::from_utf8_lossy(&tags.stdout)
+        .lines()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    for line in read("CHANGELOG.md").lines() {
+        let Some(rest) = line.strip_prefix("## v") else {
+            continue;
+        };
+        let version = rest.split_whitespace().next().unwrap_or("");
+        if !tags.iter().any(|t| t == &format!("v{version}")) {
+            continue;
+        }
+        assert!(
+            !line.to_lowercase().contains("unreleased"),
+            "v{version} is tagged but its changelog section still says \
+             unreleased: {line}"
+        );
+    }
+}
