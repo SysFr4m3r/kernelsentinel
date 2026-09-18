@@ -138,11 +138,11 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 174 unit and integration tests, including detections replayed from
+**Tested** on four levels. 178 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. 32 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
-against the actual attack. And eight noise scenarios asserting ordinary work stays
+against the actual attack. And ten noise scenarios asserting ordinary work stays
 silent, because a tool that catches everything and fires on `docker run` gets muted in week one. One
 of those asserts the *absence* of a specific signal rather than general quiet — the only assertion
 shape that can catch a suppression having stopped working, which no amount of attack scenarios
@@ -733,7 +733,9 @@ program. Shipping every `file_open` to userspace would melt the host.
 re-opening the descriptor elsewhere; the superblock magic and `memfd:` dentry name are not.
 
 **Risk scores are explainable.** Fixed per-signal contributions, a chain bonus so causally-linked
-signals beat unrelated ones, and context modifiers. Every alert prints its breakdown.
+signals beat unrelated ones, and context modifiers. Every alert prints its breakdown. The bonus
+counts distinct *behaviours*, not signal ids — two writes are one behaviour seen twice, and counting
+them as two scored an ordinary `apt upgrade` at HIGH until a noise scenario caught it.
 
 <details>
 <summary><b>Why a graph, and not more rules</b> — two measurements</summary>

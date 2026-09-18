@@ -7,8 +7,17 @@ worse than one that has them.
 
 Scores are the *base* contribution of a single signal. The real severity comes
 from correlation: signals in one process lineage combine, with a chain bonus for
-distinct kinds and context multipliers (×1.3 rooted at a network daemon, ×1.1
-inside a container). Severity bands: `<25 info · 25–49 low · 50–74 medium ·
+distinct **behaviours** and context multipliers (×1.3 rooted at a network daemon,
+×1.1 inside a container).
+
+Behaviours, not signal ids. Writing `/etc/pam.d` and `/etc/profile.d` emits
+`cred_config_write` and `persistence_write` — two ids, one behaviour: rewriting
+login configuration. Counting them separately scored an ordinary `apt upgrade`
+at **82, HIGH**, measured by `tests/noise/package_upgrade_login_files.sh`. The
+chain bonus exists to reward *diverse* evidence — a write, then an escalation,
+then a shell — so it groups ids into families: watched writes, credential reads,
+process access. An id in no family is its own, so a new detection counts on its
+own rather than being folded into something else. Severity bands: `<25 info · 25–49 low · 50–74 medium ·
 75–89 high · ≥90 critical`. The daemon alerts at medium and above by default, so
 most single signals below stay quiet until they chain — this is deliberate: single
 events should not cry wolf.
