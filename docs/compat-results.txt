@@ -13,10 +13,13 @@
 #   sudo ./scripts/compat-probe.sh
 # and paste the ks-compat line below.
 
+ks-compat: distro=kali-2026.2 kernel=7.0.12+kali-amd64 arch=x86_64 bpflsm=active sensors=12/12 missing=none live=exec,path_chmod,file_open
+
 # Superseded: measured against an 11-sensor build, before lsm/path_mknod was
 # added. Kept because a compatibility claim should show its history rather than
 # be quietly replaced -- but not read as current, and not counted by the tests.
-# Re-run scripts/compat-probe.sh on each to restore them.
+# The kali row above supersedes the first of these. The ubuntu one is restored
+# by a CI `attach` run, not by a local probe.
 #
 # A result line names a distribution and a kernel, which is the point of the
 # table -- but it is also a fact about somebody's machine. Send one only if you

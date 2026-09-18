@@ -32,6 +32,26 @@ edit them constantly and every editor rewrites them; the detection would drown.
 Package upgrades are the main legitimate writer of the new paths, so baseline the
 package manager as you would for cron and systemd units.
 
+### Kali is a verified compatibility row again, and the probe stops lying
+
+`scripts/compat-probe.sh` runs `target/debug/kernelsentinel`. A build with
+`--no-default-features` is server-only — no sensors, no `run` subcommand — and
+lands on that same path, so a probe run after one reported "the agent never
+became ready". That is indistinguishable from a host whose kernel cannot load
+the sensors, and this script's output is recorded in `compat-results.txt` as
+measured evidence. A server-only build could have been written down as a kernel
+without BPF-LSM. The probe now checks for the `run` subcommand and says what
+actually happened.
+
+With that fixed, Kali is measured again and verified: `kali-2026.2`, kernel
+7.0.12, **12/12 sensors active**, superseding the 11-sensor line kept above it.
+The Ubuntu 24.04 row is still awaiting re-measurement; it comes from a CI
+`attach` run rather than a local probe.
+
+Counts that the new sensors moved are corrected throughout: seven `lsm/` sensors
+rather than six, and a kernel without BPF-LSM active gets `5 of 12`, not
+`5 of 11`.
+
 ### Enforcement is tested with enforcement armed
 
 Enforcement is the only feature that can make a syscall fail, and it was the

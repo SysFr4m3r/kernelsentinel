@@ -33,7 +33,14 @@ cp /bin/sh "$fake"
 [[ -x "$fake" ]] || { echo "setup failed: $fake not executable" >&2; exit 1; }
 
 # nginx($fake) -> python3, and the interpreter execs nothing at all.
-"$fake" -c "exec python3 -c 'open(\"/etc/passwd\").read()'" >/dev/null 2>&1 || true
+#
+# No `exec` in front of python3. With it the shell replaces itself, so the
+# process that runs the interpreter *is* the daemon rather than its child -- and
+# after the exec its comm is python3, leaving no nginx anywhere in the ancestry
+# to match. It is also not what the attack looks like: a daemon that execs an
+# implant over itself has stopped being a daemon. Mirrors the structure of
+# shell_from_network_daemon.sh exactly, which is the version known to work.
+"$fake" -c "python3 -c 'open(\"/etc/passwd\").read()'" >/dev/null 2>&1 || true
 
 rm -f "$fake"
 echo "[scenario] interpreter_from_network_daemon complete"

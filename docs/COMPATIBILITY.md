@@ -8,7 +8,7 @@ program types each sensor actually uses, not from a guess at a floor.
 | | |
 |---|---|
 | **Minimum kernel** | **5.11** — nothing loads below it |
-| **Full sensor set** | 5.11 with `CONFIG_BPF_LSM=y` **and** `bpf` in `/sys/kernel/security/lsm` — both, not either. Compiled-in but inactive gets you five of eleven |
+| **Full sensor set** | 5.11 with `CONFIG_BPF_LSM=y` **and** `bpf` in `/sys/kernel/security/lsm` — both, not either. Compiled-in but inactive gets you five of twelve |
 | **Architectures** | x86_64, aarch64 |
 | **Release binaries** | glibc 2.35+ (built on Ubuntu 22.04) |
 | **Privileges** | root, or `CAP_BPF` + `CAP_PERFMON` |
@@ -31,9 +31,10 @@ all eleven programs attached, and a real `chmod u+s` and a real read of
 `/etc/shadow` produced nothing at all.
 
 So the agent no longer counts them. It reads `/sys/kernel/security/lsm` at
-startup and, when `bpf` is missing, reports the six `lsm/` sensors as
-unavailable with that as the reason — `5 of 11 sensors active`, not `11 of 11`,
-as measured when there were eleven.
+startup and, when `bpf` is missing, reports the seven `lsm/` sensors as
+unavailable with that as the reason — `5 of 12 sensors active`, not `12 of 12`.
+The measurement behind this was taken when there were eleven, and read
+`5 of 11`.
 Nothing is lost that the host ever had; what changes is that the operator is no
 longer told the file, credential-theft, fileless-exec and container-socket
 detections are watching when they are not.
@@ -80,10 +81,10 @@ to start", and let `doctor` settle it.
 
 | Distribution | Kernel | BPF-LSM | |
 |---|---|---|---|
-| **Kali rolling** | 7.0 | ✅ active by default | measured at 11/11 before `lsm/path_mknod` was added; **awaiting re-measurement** against the current 12 |
+| **Kali rolling** | 7.0 | ✅ active by default | **verified** — `kali-2026.2`, kernel 7.0.12, 12/12 sensors active |
 | Debian 12 (bookworm) | 6.1 | compiled in | expect to need `lsm=` on the cmdline |
 | Debian 11 (bullseye) | 5.10 | — | **below the 5.11 floor**, nothing loads |
-| **Ubuntu 24.04 LTS** | 6.17 (azure) | compiled in, **not active** | measured at 5/11 before `lsm/path_mknod` was added; **awaiting re-measurement** against the current 12. The `lsm/` sensors attach and stay inert until `bpf` is added to `lsm=` |
+| **Ubuntu 24.04 LTS** | 6.17 (azure) | compiled in, **not active** | measured at 5/11 before `lsm/path_mknod` and `lsm/unix_stream_connect`; **awaiting re-measurement** against the current 12, which comes from a CI `attach` run. The `lsm/` sensors attach and stay inert until `bpf` is added to `lsm=` |
 | Ubuntu 22.04 LTS | 5.15 | compiled in | expect to need `lsm=` on the cmdline |
 | Fedora 38+ | 6.2+ | compiled in | |
 | Arch | current | compiled in | rolling, well above the floor |
