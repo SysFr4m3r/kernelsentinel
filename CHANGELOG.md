@@ -3,7 +3,7 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.5.2 — unreleased
+## v0.5.2 — a sudo from 75 minutes ago is not a chain
 
 **The first capture of real administrative work.** Every previous alert-budget
 figure came from an idle desktop, which is why the published number was *zero
