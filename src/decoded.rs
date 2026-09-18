@@ -72,6 +72,12 @@ pub struct Event {
     /// than path -- so this is set even when reached through a bind mount.
     #[serde(default, skip_serializing_if = "is_false")]
     pub escape_target: bool,
+    /// EV_EXEC only: the new program's stdin/stdout/stderr include a TCP
+    /// socket. Absent from a replayed capture recorded before v0.5.0, which
+    /// serde fills as false -- the honest default, since an old capture cannot
+    /// say either way.
+    #[serde(default)]
+    pub socket_stdio: bool,
     /// The kernel blocked this operation because enforcement was armed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub denied: bool,
@@ -226,6 +232,7 @@ impl From<&RawEvent> for Event {
             argv: crate::redact::argv(r.argv()),
             truncated: r.truncated(),
             escape_target: r.escape_target(),
+            socket_stdio: r.socket_stdio(),
             denied: r.denied(),
             would_deny: r.would_deny(),
             exit_code: r.exit_code,

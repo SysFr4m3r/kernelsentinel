@@ -16,6 +16,11 @@
 #define S_ISGID 0x400   /* 02000 */
 #define S_IFMT  0xF000
 #define S_IFREG 0x8000
+#define S_IFSOCK 0xC000
+/* Protocol families. Userspace constants, not kernel types, so they are not in
+ * vmlinux.h and have to be spelled out here. */
+#define AF_INET  2
+#define AF_INET6 10
 
 
 #define TMPFS_MAGIC          0x01021994
@@ -108,6 +113,62 @@ static __always_inline __u32 deny_decision(int is_escape_target)
 		return ENFORCE_OFF;
 
 	return cfg->mode;
+}
+
+/* Is one of fd 0, 1, 2 an AF_INET/AF_INET6 socket?
+ *
+ * The reverse shell shape. Every one-liner in the genre ends the same way --
+ * connect, dup2 the socket onto the standard descriptors, exec a shell -- and
+ * what identifies it is not the parent process but the descriptor. An ordinary
+ * exec inherits a tty, a pipe or a regular file.
+ *
+ * AF_UNIX is excluded on purpose. Socketpairs are ordinary IPC between
+ * cooperating processes, and counting them would make this fire constantly for
+ * nothing. The shape worth reporting is commands arriving over a network
+ * connection.
+ *
+ * Reads are bounded by max_fds and every failure returns "no", because this
+ * adds a flag to an event that would be emitted regardless: being unsure must
+ * cost a detection, never invent one.
+ */
+static __always_inline int stdio_is_inet_socket(struct task_struct *task)
+{
+	struct fdtable *fdt = BPF_CORE_READ(task, files, fdt);
+	struct file **fdarr;
+	unsigned int max_fds;
+
+	if (!fdt)
+		return 0;
+	max_fds = BPF_CORE_READ(fdt, max_fds);
+	fdarr = BPF_CORE_READ(fdt, fd);
+	if (!fdarr)
+		return 0;
+
+#pragma unroll
+	for (int i = 0; i < 3; i++) {
+		struct file *f = NULL;
+		struct socket *sock;
+		__u16 family, mode;
+
+		if ((unsigned int)i >= max_fds)
+			break;
+		if (bpf_probe_read_kernel(&f, sizeof(f), &fdarr[i]) || !f)
+			continue;
+
+		mode = BPF_CORE_READ(f, f_inode, i_mode);
+		if ((mode & S_IFMT) != S_IFSOCK)
+			continue;
+
+		/* A socket's struct file carries the struct socket in
+		 * private_data; the protocol family lives on the sock below it. */
+		sock = (struct socket *)BPF_CORE_READ(f, private_data);
+		if (!sock)
+			continue;
+		family = BPF_CORE_READ(sock, sk, __sk_common.skc_family);
+		if (family == AF_INET || family == AF_INET6)
+			return 1;
+	}
+	return 0;
 }
 
 /* Namespace inode numbers for a task.
