@@ -162,9 +162,37 @@ command-injection shape.
   a match only ever raises a signal — a process falsely called `nginx` accuses
   itself. The mirror image, where a name suppresses a signal, is not permitted
   anywhere; see `credential_store_read`.
-- **Evasions:** a payload that is not a recognized shell binary (a custom
-  interpreter, a statically-linked tool) is not matched by name; the daemon table
-  is also not exhaustive.
+- **Evasions:** a payload that is not a recognized shell binary is not matched by
+  name; the daemon table is also not exhaustive. A *known* interpreter is covered
+  separately and much more quietly — see below.
+
+### `interpreter_from_network_daemon` — base 25 · T1059
+The same ancestry, and an **interpreter** instead of a shell: `python`, `perl`,
+`ruby`, `php`, `node`, `lua`, `tclsh`, `awk`. Versioned names (`python3.11`,
+`php8.2`) are matched.
+
+Measured before it existed: a daemon exec'ing `python3` that then execs nothing
+produced no signal at all. A Python reverse shell calling `pty.spawn("/bin/sh")`
+was always caught — the shell is a grandchild and the ancestry walk finds it —
+so the gap is specifically the in-process implant that reads files and talks to
+its socket from inside the interpreter.
+
+- **Why 25 and not the shell's 50.** The false positive is not hypothetical:
+  `gunicorn` and `uwsgi` *are* Python, the name half of the daemon match catches
+  both, and a web application spawning a Python subprocess is routine. At the
+  shell's score this would fire on ordinary operation for exactly the daemons
+  most likely to be running. It sits below the alerting floor: visible in
+  `investigate`, able to chain with whatever the interpreter then does, unable to
+  alert on its own.
+- **Trigger:** a request to a vulnerable app that runs `python3 -c …`.
+- **False positives:** any Python or Node web stack calling out to its own
+  tooling. Expected, and the reason for the score.
+- **Evasions:** this is a **list**, and unlike the other name matches closed in
+  this audit, a list is the only thing available. Those were replaced by
+  something the kernel knows — a file's `(device, inode)`, a socket's bind path.
+  There is no kernel-side answer to "is this an interpreter": `python3` is an
+  ordinary binary that ordinary daemons ordinarily exec. An interpreter not named
+  above, a statically-linked tool, or a compiled payload is not matched.
 
 ### `exec_from_tmp` — base 20 · T1036
 Execution from a world-writable / volatile directory (`/tmp`, `/dev/shm`,

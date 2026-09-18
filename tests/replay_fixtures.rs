@@ -1130,6 +1130,92 @@ fn login_time_persistence_is_watched_and_scored_above_the_catch_all() {
     assert!(preload[0].score > confd[0].score);
 }
 
+/// An interpreter from a network daemon is the same attack one name away from a
+/// shell, and must be scored as its own thing rather than folded into the shell
+/// signal. Measured before this existed: a daemon exec'ing python3 that then
+/// execs nothing produced no signal at all.
+#[test]
+fn an_interpreter_from_a_daemon_is_caught_but_cannot_alert_alone() {
+    fn exec(pid: u32, ppid: u32, comm: &str, path: &str) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 1_000u64 + pid as u64, "type": 1, "tgid": pid, "ppid": ppid,
+            "start_boottime": 1_000u64 + pid as u64,
+            "uid": 33, "gid": 33, "euid": 33, "egid": 33, "cgroup_id": 1,
+            "comm": comm, "filename": path, "argv": [path]
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    fn fork(parent: u32, child: u32) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 900u64 + child as u64, "type": 3, "tgid": parent, "ppid": 1,
+            "start_boottime": 1_000u64 + parent as u64,
+            "child_pid": child, "child_start_boottime": 1_000u64 + child as u64,
+            "uid": 33, "gid": 33, "euid": 33, "egid": 33, "cgroup_id": 1
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+
+    // nginx(6000) -> the child under test.
+    let run = |child_pid: u32, comm: &str, path: &str| {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.apply(&exec(6000, 1, "nginx", "/usr/sbin/nginx"));
+        g.apply(&fork(6000, child_pid));
+        let c = exec(child_pid, 6000, comm, path);
+        g.apply(&c);
+        kernelsentinel::detect::signals_for_event(&c, &g)
+    };
+    let score_of = |sigs: &[kernelsentinel::detect::Signal], id: &str| -> Option<u32> {
+        sigs.iter().find(|s| s.id == id).map(|s| s.score)
+    };
+
+    // Versioned names are the norm, not the exception.
+    for (i, exe) in [
+        "/usr/bin/python3",
+        "/usr/bin/python3.11",
+        "/usr/bin/perl",
+        "/usr/bin/ruby3.1",
+        "/usr/bin/php8.2",
+        "/usr/bin/node",
+        "/usr/bin/awk",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let sigs = run(6100 + i as u32, "x", exe);
+        let score = score_of(&sigs, "interpreter_from_network_daemon")
+            .unwrap_or_else(|| panic!("{exe} produced no interpreter signal"));
+        // Below the medium alerting floor, deliberately: gunicorn and uwsgi are
+        // Python, and a web app spawning a Python subprocess is routine work.
+        assert!(
+            score < 50,
+            "{exe} scored {score}, at or above the alerting floor"
+        );
+    }
+
+    // A shell keeps the strong signal and the strong score. The interpreter
+    // branch must not have swallowed it.
+    let sigs = run(6200, "sh", "/bin/bash");
+    assert_eq!(score_of(&sigs, "shell_from_network_daemon"), Some(50));
+    assert_eq!(score_of(&sigs, "interpreter_from_network_daemon"), None);
+
+    // An ordinary binary is neither.
+    let sigs = run(6201, "ls", "/usr/bin/ls");
+    assert_eq!(score_of(&sigs, "interpreter_from_network_daemon"), None);
+    assert_eq!(score_of(&sigs, "shell_from_network_daemon"), None);
+
+    // No daemon in the ancestry, no signal -- the interpreter alone is nothing.
+    let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+    let lone = exec(6300, 1, "python3", "/usr/bin/python3");
+    g.apply(&lone);
+    assert_eq!(
+        score_of(
+            &kernelsentinel::detect::signals_for_event(&lone, &g),
+            "interpreter_from_network_daemon"
+        ),
+        None
+    );
+}
+
 /// Enforcement outcome has to lead the detail. An operation the kernel blocked
 /// reads very differently from one that succeeded, and a responder who misses
 /// that wastes time on an attack that never landed.

@@ -448,9 +448,23 @@ fn exec_from_suspicious_dir(ev: &Event, key: ProcKey, _graph: &ProcessGraph) -> 
 /// sshd -> bash is an interactive login, not an intrusion. Web and database
 /// daemons have no such reason to fork a shell.
 fn shell_from_network_daemon(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
-    if !is_shell(&ev.filename) {
+    // A shell is the strong shape; an interpreter is the same attack one name
+    // away, and is scored separately rather than folded in. See the comment on
+    // `is_interpreter` for why it cannot carry the shell's score.
+    const SHELL_ATTACK: &[&str] = &["T1059.004"];
+    const INTERPRETER_ATTACK: &[&str] = &["T1059"];
+    let (id, score, what, attack) = if is_shell(&ev.filename) {
+        ("shell_from_network_daemon", 50, "a shell", SHELL_ATTACK)
+    } else if is_interpreter(&ev.filename) {
+        (
+            "interpreter_from_network_daemon",
+            25,
+            "an interpreter",
+            INTERPRETER_ATTACK,
+        )
+    } else {
         return Vec::new();
-    }
+    };
     // Walk the shell's ancestry for a web/db daemon, by verified identity first
     // and by name second.
     //
@@ -478,12 +492,12 @@ fn shell_from_network_daemon(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> 
 
     match daemon {
         Some(d) => vec![Signal::new(
-            "shell_from_network_daemon",
-            50,
-            &["T1059.004"],
+            id,
+            score,
+            attack,
             key,
             ev.ts_ns,
-            format!("{} spawned a shell ({})", d, shell_name(&ev.filename)),
+            format!("{} spawned {} ({})", d, what, shell_name(&ev.filename)),
         )],
         None => Vec::new(),
     }
@@ -498,6 +512,36 @@ fn is_shell(path: &str) -> bool {
         "sh", "bash", "dash", "zsh", "ash", "ksh", "fish", "csh", "tcsh",
     ];
     SHELLS.contains(&shell_name(path))
+}
+
+/// Interpreters that can do everything a shell can, without being one.
+///
+/// This is a list, and unlike the two evasions closed before it, a list is the
+/// only thing available. Those were name matches replaced by something the
+/// kernel knows -- an inode, a socket's bind path. There is no kernel-side
+/// answer to "is this an interpreter": `python3` is an ordinary binary that
+/// ordinary daemons ordinarily exec. Anything not named here is not caught, and
+/// the documentation says so rather than implying the detection is complete.
+///
+/// Scored at 25 rather than the shell's 50, below the alerting floor, because
+/// the false positive is not hypothetical: `gunicorn` and `uwsgi` *are* Python,
+/// `name_looks_like_daemon` matches both, and a web application spawning a
+/// Python subprocess is routine work. At the shell's score this would fire on
+/// ordinary operation for exactly the daemons most likely to be running. It
+/// stays a signal -- visible in `investigate`, able to chain with whatever the
+/// interpreter then does -- and cannot alert alone.
+fn is_interpreter(path: &str) -> bool {
+    let name = shell_name(path);
+    const EXACT: &[&str] = &["node", "nodejs", "lua", "tclsh", "awk", "gawk", "mawk"];
+    if EXACT.contains(&name) {
+        return true;
+    }
+    // Versioned names are the norm, not the exception: python3, python3.11,
+    // php8.2, ruby3.1. Matching the stem alone would miss every one of them.
+    ["python", "perl", "ruby", "php"].iter().any(|stem| {
+        name.strip_prefix(stem)
+            .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    })
 }
 
 /// Connecting to the Docker/containerd control socket. A process that can talk

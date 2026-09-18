@@ -147,18 +147,6 @@ int BPF_PROG(handle_file_open, struct file *file)
  * (T1548.001). The signal is the *transition*: a binary that was already SUID
  * getting re-chmod'd is not interesting; one gaining the bit is.
  */
-
-/* lsm/path_chmod fires before the new mode is applied, so the inode still
- * carries the old mode and the hook argument carries the new one -- exactly the
- * before/after needed to catch a 0 -> SUID transition. Requires
- * CONFIG_SECURITY_PATH; on kernels without it, inode_setattr is the portable
- * fallback (dentry walk instead of bpf_d_path). path_chmod takes a struct path,
- * so bpf_d_path resolves the canonical path with no dentry walk here.
- *
- * A newly-SUID root binary is the classic local-privilege-escalation artifact
- * (T1548.001). The signal is the *transition*: a binary that was already SUID
- * getting re-chmod'd is not interesting; one gaining the bit is.
- */
 SEC("lsm/path_chmod")
 int BPF_PROG(handle_path_chmod, struct path *path, umode_t new_mode)
 {
