@@ -138,8 +138,8 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 173 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 30 [attack scenarios](#testing) that run the
+**Tested** on four levels. 174 unit and integration tests, including detections replayed from
+**real kernel captures** committed as fixtures. 32 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And eight noise scenarios asserting ordinary work stays
@@ -591,6 +591,24 @@ namespace cannot be read, because without a reference there is no way to tell
 A blocked operation is still recorded, and the incident says `BLOCKED:` — an
 operation stopped without a trace is the worst of both worlds. The score is
 unchanged: blocking changes the outcome, not how serious the attempt was.
+
+**Both halves are tested with enforcement armed**, which they were not before —
+the suite ran the escape scenario under `KS_ENFORCE=on` and passed whether the
+write was blocked or not, so it could not distinguish armed enforcement from
+enforcement that silently does nothing.
+
+```bash
+sudo KS_ENFORCE=on tests/attack/verify.sh
+```
+
+`container_escape_corepattern` now asserts the write **fails** and that
+`core_pattern` is unchanged, and `enforce_never_blocks_the_host` asserts the
+host's own write to the same file **succeeds**. The second is the one that
+matters: getting it wrong costs no detection at all, it denies root's writes to
+`core_pattern`, `modprobe` and `poweroff_cmd` on every host running the agent.
+It changes nothing on the system — it reads the value and writes the identical
+bytes back, so the open reaches the LSM hook while the value is its own
+replacement.
 
 ### Suppress routine behavior (baselining)
 

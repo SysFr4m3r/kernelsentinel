@@ -32,6 +32,87 @@ edit them constantly and every editor rewrites them; the detection would drown.
 Package upgrades are the main legitimate writer of the new paths, so baseline the
 package manager as you would for cron and systemd units.
 
+### Kali is a verified compatibility row again, and the probe stops lying
+
+`scripts/compat-probe.sh` runs `target/debug/kernelsentinel`. A build with
+`--no-default-features` is server-only — no sensors, no `run` subcommand — and
+lands on that same path, so a probe run after one reported "the agent never
+became ready". That is indistinguishable from a host whose kernel cannot load
+the sensors, and this script's output is recorded in `compat-results.txt` as
+measured evidence. A server-only build could have been written down as a kernel
+without BPF-LSM. The probe now checks for the `run` subcommand and says what
+actually happened.
+
+With that fixed, Kali is measured again and verified: `kali-2026.2`, kernel
+7.0.12, **12/12 sensors active**, superseding the 11-sensor line kept above it.
+The Ubuntu 24.04 row is still awaiting re-measurement; it comes from a CI
+`attach` run rather than a local probe.
+
+Counts that the new sensors moved are corrected throughout: seven `lsm/` sensors
+rather than six, and a kernel without BPF-LSM active gets `5 of 12`, not
+`5 of 11`.
+
+### Enforcement is tested with enforcement armed
+
+Enforcement is the only feature that can make a syscall fail, and it was the
+least tested thing in the repository: one scenario touched it, and that scenario
+printed `SUCCEEDED` or `BLOCKED` and passed either way. The suite could not
+distinguish armed enforcement from enforcement that silently does nothing —
+which is the only thing the feature exists to do.
+
+Two properties now assert instead of tolerate, under `KS_ENFORCE=on`:
+
+- `container_escape_corepattern` — the container's write must **fail**, and
+  `core_pattern` must be unchanged afterwards. An error return with the write
+  landing anyway is a separate failure and is checked separately.
+- `enforce_never_blocks_the_host` (new) — the host's own write to the same file
+  must **succeed**. Five paths in `deny_decision()` fail open, and none of them
+  had ever run on hardware with enforcement actually armed. Getting this wrong
+  costs no detection: it denies root's writes to `core_pattern`, `modprobe` and
+  `poweroff_cmd` on every host running the agent.
+
+The new scenario changes nothing on the system. It reads `core_pattern` and
+writes the identical bytes back — the open-for-write is what reaches the LSM
+hook, and the value is its own replacement, so an interrupted run leaves the
+host as it found it.
+
+With enforcement off, the escape scenario now also asserts the write *succeeded*.
+It was previously possible for the escape to fail for an unrelated reason and
+for the scenario to report a pass having tested nothing.
+
+### An interpreter from a network daemon is caught, quietly
+
+`shell_from_network_daemon` recognises the daemon two ways — by the identity of
+its executable and by name — and recognised the child one way only: a list of
+nine shell names. Measured:
+
+```
+nginx -> python3, and the interpreter execs nothing  ->  no signal at all
+```
+
+A Python reverse shell calling `pty.spawn("/bin/sh")` was always caught; the
+shell is a grandchild and the ancestry walk finds it. The gap is specifically
+the in-process implant that reads files and talks to its socket from inside the
+interpreter, never exec'ing anything. The first draft of the scenario used
+`pty.spawn` and would have passed while the gap stayed open.
+
+New signal `interpreter_from_network_daemon`, base **25**, covering `python`,
+`perl`, `ruby`, `php`, `node`, `lua`, `tclsh` and `awk`, including versioned
+names like `python3.11` and `php8.2`.
+
+**25 and not the shell's 50, deliberately.** `gunicorn` and `uwsgi` *are*
+Python, the name half of the daemon match catches both, and a web application
+spawning a Python subprocess is routine work. At the shell's score this would
+fire on ordinary operation for exactly the daemons most likely to be running.
+It sits below the alerting floor: visible in `investigate`, able to chain with
+whatever the interpreter then does, unable to alert on its own.
+
+Unlike the other name matches closed in this audit, this one stays a list. Those
+were replaced by something the kernel knows — a file's `(device, inode)`, a
+socket's bind path. There is no kernel-side answer to "is this an interpreter":
+`python3` is an ordinary binary that ordinary daemons ordinarily exec. The
+documentation says so rather than implying the detection is complete.
+
 ### The same-uid `/proc` trade is measured on both sides
 
 The ptrace sensor drops same-uid, read-only access in-kernel — the filter that

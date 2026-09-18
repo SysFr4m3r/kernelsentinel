@@ -26,6 +26,19 @@ BIN="${KS_BIN:-$REPO/target/debug/kernelsentinel}"
 SECS="${KS_PROBE_SECS:-8}"
 
 [[ -x "$BIN" ]] || { echo "no binary at $BIN" >&2; exit 1; }
+
+# A server-only build has no sensors and no `run`. `cargo build
+# --no-default-features` produces exactly that, and it lands on the same path as
+# the full build -- so a probe run after one reports "the agent never became
+# ready" and looks like a host that cannot load the sensors. The difference
+# matters: this script's output is recorded as a compatibility result.
+if ! "$BIN" run --help >/dev/null 2>&1; then
+	echo "$BIN has no 'run' subcommand: it was built without the bpf feature." >&2
+	echo "That is a server-only binary; it has no sensors to probe." >&2
+	echo "Rebuild with the default features and re-run:" >&2
+	echo "  cargo build" >&2
+	exit 1
+fi
 [[ $EUID -eq 0 ]] || { echo "must run as root (attaching BPF)" >&2; exit 1; }
 
 log="$(mktemp)"

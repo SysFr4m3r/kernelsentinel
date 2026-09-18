@@ -30,10 +30,33 @@ restore() {
 trap restore EXIT
 
 echo "[scenario] core_pattern before: $before"
-# Expected to FAIL under --enforce on, and to succeed (but be detected) without.
+
+# The outcome is asserted, not tolerated. This used to print SUCCEEDED or
+# BLOCKED and pass either way, which meant the suite could not tell armed
+# enforcement from enforcement that silently does nothing -- the only thing the
+# feature exists to do.
+rc=0
 docker run --rm --privileged -v /proc:/hostproc alpine \
-	sh -c 'echo "|/tmp/ks-scenario" > /hostproc/sys/kernel/core_pattern' \
-	&& echo "[scenario] write SUCCEEDED (expected without --enforce on)" \
-	|| echo "[scenario] write BLOCKED (expected with --enforce on)"
+	sh -c 'echo "|/tmp/ks-scenario" > /hostproc/sys/kernel/core_pattern' || rc=$?
+
+if [[ "${KS_ENFORCE:-off}" == "on" ]]; then
+	[[ $rc -ne 0 ]] || {
+		echo "NOT BLOCKED: enforcement is armed and the container escape succeeded" >&2
+		exit 1
+	}
+	now="$(cat /proc/sys/kernel/core_pattern)"
+	[[ "$now" == "$before" ]] || {
+		echo "enforcement returned an error but the write landed anyway ($now)" >&2
+		exit 1
+	}
+	echo "[scenario] write BLOCKED and core_pattern unchanged"
+else
+	[[ $rc -eq 0 ]] || {
+		echo "write failed with enforcement off (rc=$rc); the escape was never" >&2
+		echo "actually performed, so nothing was tested" >&2
+		exit 1
+	}
+	echo "[scenario] write SUCCEEDED (expected without --enforce on)"
+fi
 
 echo "[scenario] container_escape_corepattern complete"
