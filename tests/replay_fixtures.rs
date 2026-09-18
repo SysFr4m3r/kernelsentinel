@@ -1216,6 +1216,65 @@ fn an_interpreter_from_a_daemon_is_caught_but_cannot_alert_alone() {
     );
 }
 
+/// A reverse shell is identified by its descriptors, not its lineage -- and the
+/// inetd shape is identical, which is the whole false-positive story.
+#[test]
+fn a_socket_backed_shell_fires_but_a_socket_activated_service_does_not() {
+    fn exec(pid: u32, path: &str, socket_stdio: bool) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": 5_000u64 + pid as u64, "type": 1, "tgid": pid, "ppid": 1,
+            "start_boottime": 300u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "x", "filename": path, "argv": [path],
+            "socket_stdio": socket_stdio
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    let ids = |ev: &Event| -> Vec<&'static str> {
+        let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+        g.apply(ev);
+        kernelsentinel::detect::signals_for_event(ev, &g)
+            .iter()
+            .map(|s| s.id)
+            .collect()
+    };
+
+    // The reverse shell. No daemon anywhere in the lineage -- that is the point.
+    for sh in ["/bin/sh", "/bin/bash", "/usr/bin/zsh"] {
+        assert!(
+            ids(&exec(5100, sh, true)).contains(&"socket_backed_shell"),
+            "{sh} with socket stdio must fire"
+        );
+    }
+
+    // inetd, xinetd, systemd Accept=yes: the identical descriptor shape, and a
+    // service rather than a shell. Every socket-activated service on a host
+    // depends on this staying quiet.
+    for svc in ["/bin/date", "/usr/sbin/in.telnetd", "/usr/bin/python3"] {
+        assert!(
+            !ids(&exec(5101, svc, true)).contains(&"socket_backed_shell"),
+            "{svc} is socket-activated, not a reverse shell"
+        );
+    }
+
+    // An ordinary shell, no socket: the flag is what distinguishes them.
+    assert!(!ids(&exec(5102, "/bin/bash", false)).contains(&"socket_backed_shell"));
+
+    // A capture recorded before the flag existed has no field for it. It must
+    // decode as absent rather than failing, and must not invent a detection.
+    let old: Event = serde_json::from_str(
+        &serde_json::json!({
+            "ts_ns": 7_000u64, "type": 1, "tgid": 5103, "ppid": 1,
+            "start_boottime": 303u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "x", "filename": "/bin/bash", "argv": ["/bin/bash"]
+        })
+        .to_string(),
+    )
+    .expect("a pre-v0.5.0 capture must still decode");
+    assert!(!ids(&old).contains(&"socket_backed_shell"));
+}
+
 /// Enforcement outcome has to lead the detail. An operation the kernel blocked
 /// reads very differently from one that succeeded, and a responder who misses
 /// that wastes time on an attack that never landed.

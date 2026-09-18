@@ -116,6 +116,7 @@ single events should not cry wolf.
 | writes to watched paths | `lsm/file_open` + `bpf_d_path` | `ld.so.preload`, `authorized_keys`, cron, systemd, sudoers, shadow — filtered in-kernel by an LPM trie |
 | credential-file reads | `lsm/file_open` | `/etc/shadow` and SSH **private** keys — theft, as opposed to the tampering a write means |
 | ptrace / cross-uid `/proc` | `lsm/ptrace_access_check` | credential theft from another user's process |
+| reverse shell | `tp/sched_process_exec` + fd walk | a shell exec'd with a TCP socket on stdin/stdout/stderr — identified by the descriptor, not the parent |
 | runtime socket access | `lsm/unix_stream_connect` | Docker/containerd/podman sockets, matched by the name they were *bound* as — the container-escape primitive |
 | fileless execution | `lsm/bprm_check_security` | memfd / anonymous / deleted-file exec |
 | kernel module load | `fexit/do_init_module` | rootkit loading, by real module name |
@@ -138,11 +139,11 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 178 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 32 [attack scenarios](#testing) that run the
+**Tested** on four levels. 179 unit and integration tests, including detections replayed from
+**real kernel captures** committed as fixtures. 33 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
-against the actual attack. And ten noise scenarios asserting ordinary work stays
+against the actual attack. And eleven noise scenarios asserting ordinary work stays
 silent, because a tool that catches everything and fires on `docker run` gets muted in week one. One
 of those asserts the *absence* of a specific signal rather than general quiet — the only assertion
 shape that can catch a suppression having stopped working, which no amount of attack scenarios

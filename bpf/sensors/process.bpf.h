@@ -41,14 +41,17 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 
 	fill_argv(e);
 
+	/* Costs three bounded reads on every exec, and only on exec. The name of
+	 * the binary is left to userspace: deciding there which executables make
+	 * this worth reporting keeps the list out of the kernel, where changing
+	 * it means reloading the sensor. */
+	if (stdio_is_inet_socket(task))
+		e->flags |= EV_F_SOCKET_STDIO;
+
 	bpf_ringbuf_submit(e, 0);
 	stat_inc(STAT_EVENTS_EMITTED);
 	return 0;
 }
-
-/* Raw tracepoints hand us the task_struct directly, which regular tracepoints
- * do not. That matters here: a pid alone cannot tell a thread from a process,
- * and we only want process-level fork/exit in the graph. */
 
 /* Raw tracepoints hand us the task_struct directly, which regular tracepoints
  * do not. That matters here: a pid alone cannot tell a thread from a process,

@@ -33,6 +33,12 @@ enum event_type {
  * path -- so it is set even when the file was reached through a bind mount at
  * some other location, which is exactly what a container escape does. */
 #define EV_F_ESCAPE_TARGET (1 << 4)
+/* EV_EXEC: one of the new program's standard descriptors is an AF_INET or
+ * AF_INET6 socket. An ordinary exec inherits a tty, a pipe or a file; a shell
+ * reading its commands from a TCP connection is a reverse shell, whoever its
+ * parent happens to be. AF_UNIX is deliberately excluded -- socketpairs are
+ * ordinary IPC and would make this fire all day. */
+#define EV_F_SOCKET_STDIO  (1 << 5)
 
 struct event {
 	__u64 ts_ns;          /* CLOCK_BOOTTIME */

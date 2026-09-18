@@ -188,6 +188,12 @@ impl RawEvent {
         self.flags & (1 << 4) != 0
     }
 
+    /// EV_EXEC: a standard descriptor of the new program is an AF_INET or
+    /// AF_INET6 socket (EV_F_SOCKET_STDIO). The reverse shell shape.
+    pub fn socket_stdio(&self) -> bool {
+        self.flags & (1 << 5) != 0
+    }
+
     /// The kernel blocked this operation (EV_F_DENIED).
     pub fn denied(&self) -> bool {
         self.flags & (1 << 2) != 0
