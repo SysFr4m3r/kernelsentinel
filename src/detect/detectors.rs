@@ -41,6 +41,7 @@ pub fn detect(ev: &Event, graph: &ProcessGraph) -> Vec<Signal> {
         }
         EventType::Module => module_load(ev, key, graph),
         EventType::SockConnect => privileged_socket(ev, key),
+        EventType::SockListen => unexpected_listener(ev, key, graph),
         EventType::Exec => {
             let mut sigs = namespace_escape(ev, key, graph);
             sigs.extend(exec_from_suspicious_dir(ev, key, graph));
@@ -559,6 +560,51 @@ fn socket_backed_shell(ev: &Event, key: ProcKey) -> Vec<Signal> {
              (reverse shell)",
             shell_name(&ev.filename)
         ),
+    )]
+}
+
+/// A process that started listening on a TCP port and is not a known daemon.
+///
+/// The first design of this looked for a *shell* calling `listen()`, which
+/// catches almost nothing: in `nc -lvp 4444 -e /bin/sh` the listener is `nc`,
+/// and the shell that follows is already caught by `socket_backed_shell` when
+/// it inherits the socket. Every real bind shell has a helper holding the
+/// socket.
+///
+/// So the question is not "is the listener a shell" but "is this listener
+/// expected". A host's own daemons are known by file identity -- the same table
+/// `shell_from_network_daemon` consults -- and anything else opening a port is
+/// worth recording.
+///
+/// Scored 25, below the alerting floor, because a development machine listens
+/// constantly and legitimately: `python3 -m http.server`, a `cargo` test
+/// harness, a language server, a database someone started by hand. Alone this
+/// is a fact for `investigate`, not an alert. It earns weight in combination --
+/// with the exec of a shell onto that socket, with an execution from /tmp, with
+/// a lineage rooted at a web server -- which is the whole point of scoring a
+/// weak signal below the floor rather than discarding it.
+///
+/// `listen()` is rare enough to record wholesale: only servers call it, once
+/// per socket. That is what makes the forensic record affordable.
+fn unexpected_listener(ev: &Event, key: ProcKey, graph: &ProcessGraph) -> Vec<Signal> {
+    let node = graph.get(&key);
+    let trusted = node.map(|n| n.trusted.as_str()).unwrap_or("");
+    // A daemon listening is a daemon doing its job. Identity, not name: the
+    // suppression direction is the one an attacker would want to borrow.
+    if TrustedBinaries::has_role(trusted, Role::NetworkDaemon) {
+        return Vec::new();
+    }
+    let who = node
+        .map(|n| n.exe.clone())
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| ev.comm.clone());
+    vec![Signal::new(
+        "unexpected_listener",
+        25,
+        &["T1571"],
+        key,
+        ev.ts_ns,
+        format!("{} opened a listening port ({})", shell_name(&who), ev.aux),
     )]
 }
 

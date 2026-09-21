@@ -22,6 +22,7 @@ enum event_type {
 	EV_EXEC_ANON   = 9,   /* execution from memfd / anonymous or deleted file */
 	EV_MODULE      = 10,  /* kernel module load */
 	EV_SOCK_CONNECT = 11, /* connect() to a watched unix socket */
+	EV_SOCK_LISTEN  = 12, /* listen() on an AF_INET/AF_INET6 socket; aux = port */
 };
 
 /* flags */

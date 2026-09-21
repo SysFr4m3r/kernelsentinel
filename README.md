@@ -61,7 +61,7 @@ flowchart TD
         direction LR
         A1["tracepoints<br/><small>exec · fork · exit</small>"]
         A2["fentry / fexit<br/><small>commit_creds · do_init_module</small>"]
-        A3["LSM hooks<br/><small>file_open · path_chmod · inode_setxattr<br/>ptrace · bprm_check · unix_stream_connect</small>"]
+        A3["LSM hooks<br/><small>file_open · path_chmod · inode_setxattr<br/>ptrace · bprm_check · unix_stream_connect · socket_listen</small>"]
     end
 
     K -->|"ring buffer, 8&nbsp;MB, drop-counted"| G
@@ -117,6 +117,7 @@ single events should not cry wolf.
 | credential-file reads | `lsm/file_open` | `/etc/shadow` and SSH **private** keys — theft, as opposed to the tampering a write means |
 | ptrace / cross-uid `/proc` | `lsm/ptrace_access_check` | credential theft from another user's process |
 | reverse shell | `tp/sched_process_exec` + fd walk | a shell exec'd with a TCP socket on stdin/stdout/stderr — identified by the descriptor, not the parent |
+| unexpected listener | `lsm/socket_listen` | a port opened by something that is not a known daemon — the bind-shell half |
 | runtime socket access | `lsm/unix_stream_connect` | Docker/containerd/podman sockets, matched by the name they were *bound* as — the container-escape primitive |
 | fileless execution | `lsm/bprm_check_security` | memfd / anonymous / deleted-file exec |
 | kernel module load | `fexit/do_init_module` | rootkit loading, by real module name |
@@ -139,11 +140,11 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 184 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 33 [attack scenarios](#testing) that run the
+**Tested** on four levels. 185 unit and integration tests, including detections replayed from
+**real kernel captures** committed as fixtures. 34 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
-against the actual attack. And eleven noise scenarios asserting ordinary work stays
+against the actual attack. And twelve noise scenarios asserting ordinary work stays
 silent, because a tool that catches everything and fires on `docker run` gets muted in week one. One
 of those asserts the *absence* of a specific signal rather than general quiet — the only assertion
 shape that can catch a suppression having stopped working, which no amount of attack scenarios

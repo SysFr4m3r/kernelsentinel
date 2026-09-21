@@ -25,6 +25,7 @@ pub enum EventType {
     ExecAnon,
     Module,
     SockConnect,
+    SockListen,
     Unknown(u16),
 }
 
@@ -42,6 +43,7 @@ impl From<u16> for EventType {
             9 => EventType::ExecAnon,
             10 => EventType::Module,
             11 => EventType::SockConnect,
+            12 => EventType::SockListen,
             other => EventType::Unknown(other),
         }
     }

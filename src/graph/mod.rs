@@ -299,7 +299,8 @@ impl ProcessGraph {
             | EventType::Ptrace
             | EventType::ExecAnon
             | EventType::Module
-            | EventType::SockConnect => {}
+            | EventType::SockConnect
+            | EventType::SockListen => {}
             EventType::Unknown(_) => {}
         }
     }

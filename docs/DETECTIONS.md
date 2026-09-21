@@ -186,6 +186,39 @@ command-injection shape.
   name; the daemon table is also not exhaustive. A *known* interpreter is covered
   separately and much more quietly — see below.
 
+### `unexpected_listener` — base 25 · T1571
+A process opened a **listening TCP/UDP port** and its executable is not one of
+the host's known network daemons, by file identity. Detected at
+`lsm/socket_listen`.
+
+The first design of this looked for a *shell* calling `listen()`, which catches
+almost nothing: in `nc -lvp 4444 -e /bin/sh` the listener is `nc`, and the shell
+that follows is already caught by `socket_backed_shell` when it inherits the
+socket. Every real bind shell has a helper holding the socket, so the useful
+question is not "is the listener a shell" but "is this listener expected".
+
+- **Scored below the alerting floor on purpose.** A development machine listens
+  constantly and legitimately — `python3 -m http.server`, a test harness, a
+  language server, a database started by hand. Alone this is a fact for
+  `investigate`, not an alert. Pinned by `tests/noise/dev_server_listens.sh`.
+- **It earns weight in combination.** `tests/scenarios/bind_shell.sh` produces
+  both this and `socket_backed_shell` — the port opening, then the shell
+  inheriting the socket — which is the whole attack rather than either half. The
+  first incident scores ~28, because it is emitted when the port opens and the
+  shell does not exist yet; the incident after the exec carries both and reaches
+  critical.
+- **Every listener is recorded**, signal or not. `listen()` is rare enough to
+  afford that: only servers call it, once per socket. "What was listening, and
+  which process" is worth having in the timeline even when nothing fires.
+- **Trigger:** `python3 -c 'import socket;s=socket.socket();s.bind(("0.0.0.0",4444));s.listen(1)'`
+- **False positives:** every non-daemon server on the host. Expected, and the
+  reason for the score.
+- **Evasions:** a backdoor that reuses an existing daemon's socket, or one
+  reached through a port an established daemon already listens on, opens nothing
+  and is not seen here. A listener whose executable *is* a known daemon binary
+  is suppressed by identity — which is the intended trade, and the reason that
+  suppression keys on `(device, inode)` rather than a name.
+
 ### `socket_backed_shell` — base 70 · T1059.004, T1571
 A shell exec'd with an **AF_INET/AF_INET6 socket on fd 0, 1 or 2** — the reverse
 shell. Detected at `sched_process_exec` by walking the new program's descriptor

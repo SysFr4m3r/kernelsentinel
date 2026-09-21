@@ -71,4 +71,45 @@ int BPF_PROG(handle_unix_connect, struct sock *sock, struct sock *other, struct 
 	return 0;
 }
 
+/* A process that starts listening on a TCP/UDP port.
+ *
+ * listen() is rare -- only servers call it, once per socket -- so this is
+ * emitted for every AF_INET/AF_INET6 listener rather than filtered in-kernel,
+ * and userspace decides which ones are worth a signal. The forensic record of
+ * "what was listening, and which process" is worth having even when nothing
+ * fires.
+ *
+ * The complement of the reverse shell: that one connects out and puts the
+ * socket on its own stdio, this one waits for the attacker to connect in. A
+ * shell calling listen() has no innocent version; a dev server does it all day,
+ * which is why the name is left to userspace.
+ */
+SEC("lsm/socket_listen")
+int BPF_PROG(handle_socket_listen, struct socket *sock, int backlog)
+{
+	struct event *e;
+	struct sock *sk = BPF_CORE_READ(sock, sk);
+	__u16 family, port;
+
+	if (!sk)
+		return 0;
+	family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	if (family != AF_INET && family != AF_INET6)
+		return 0;
+
+	/* skc_num is the local port already in host byte order, unlike skc_dport. */
+	port = BPF_CORE_READ(sk, __sk_common.skc_num);
+
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		stat_inc(STAT_RINGBUF_DROPS);
+		return 0;
+	}
+	fill_hdr(e, EV_SOCK_LISTEN);
+	e->aux = port;
+	bpf_ringbuf_submit(e, 0);
+	stat_inc(STAT_EVENTS_EMITTED);
+	return 0;
+}
+
 #endif /* __KS_SENSOR_NET_H__ */

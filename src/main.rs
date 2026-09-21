@@ -1155,6 +1155,7 @@ fn event_detail(ev: &Event) -> String {
             )
         }
         EventType::SockConnect => format!("SOCKET-CONNECT {}", ev.filename),
+        EventType::SockListen => format!("LISTEN port {}", ev.aux),
         EventType::Module => {
             let origin = ev.module_origin();
             if origin.is_empty() {

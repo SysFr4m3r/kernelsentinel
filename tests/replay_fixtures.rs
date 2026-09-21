@@ -1275,6 +1275,86 @@ fn a_socket_backed_shell_fires_but_a_socket_activated_service_does_not() {
     assert!(!ids(&old).contains(&"socket_backed_shell"));
 }
 
+/// The two halves of a bind shell must add up. Opening a port is weak on its
+/// own -- a development machine does it all day -- and a shell inheriting a
+/// socket is strong. The claim in docs/DETECTIONS.md is that the scenario
+/// produces both and that together they are the whole attack; this checks it,
+/// because the live run reports whichever incident matched its expectation and
+/// says nothing about the other.
+#[test]
+fn a_bind_shell_chains_its_listener_with_the_shell_that_follows() {
+    fn exec(pid: u32, path: &str, socket_stdio: bool, ts: u64) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": ts, "type": 1, "tgid": pid, "ppid": 1,
+            "start_boottime": 200u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "x", "filename": path, "argv": [path],
+            "socket_stdio": socket_stdio
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+    fn listen(pid: u32, port: u32, ts: u64) -> Event {
+        let v = serde_json::json!({
+            "ts_ns": ts, "type": 12, "tgid": pid, "ppid": 1,
+            "start_boottime": 200u64 + pid as u64,
+            "uid": 0, "gid": 0, "euid": 0, "egid": 0, "cgroup_id": 1,
+            "comm": "python3", "aux": port
+        });
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+
+    let mut g = ProcessGraph::new(1_000, Duration::from_secs(3600));
+    let backdoor = exec(9000, "/usr/bin/python3", false, 1_000);
+    g.apply(&backdoor);
+
+    // The port opens. Weak on its own, and it must stay weak.
+    let l = listen(9000, 4444, 2_000);
+    g.apply(&l);
+    let alone = kernelsentinel::detect::signals_for_event(&l, &g);
+    assert!(alone.iter().any(|s| s.id == "unexpected_listener"));
+    assert!(
+        alone.iter().all(|s| s.score < 50),
+        "a listener alone must not reach the alerting floor"
+    );
+
+    // Seconds later the attacker connects and the shell takes the socket.
+    let sh = exec(9000, "/bin/sh", true, 3_000_000_000);
+    g.apply(&sh);
+    let after = kernelsentinel::detect::signals_for_event(&sh, &g);
+    assert!(
+        after.iter().any(|s| s.id == "socket_backed_shell"),
+        "the shell inheriting the socket must fire"
+    );
+
+    // Together, through the engine that actually scores incidents.
+    let mut g2 = ProcessGraph::new(1_000, Duration::from_secs(3600));
+    let mut engine = Engine::new(Severity::Info);
+    let mut worst = 0u32;
+    let mut best_ids: Vec<String> = Vec::new();
+    for ev in [
+        exec(9000, "/usr/bin/python3", false, 1_000),
+        listen(9000, 4444, 2_000),
+        exec(9000, "/bin/sh", true, 3_000_000_000),
+    ] {
+        g2.apply(&ev);
+        if let Some(inc) = engine.on_event(&ev, &g2) {
+            if inc.score.total > worst {
+                worst = inc.score.total;
+                best_ids = inc.signals.iter().map(|s| s.id.to_string()).collect();
+            }
+        }
+    }
+    assert!(
+        best_ids.iter().any(|i| i == "unexpected_listener")
+            && best_ids.iter().any(|i| i == "socket_backed_shell"),
+        "one incident must carry both halves, got {best_ids:?}"
+    );
+    assert!(
+        worst >= 90,
+        "listener plus socket-backed shell must be critical, got {worst}"
+    );
+}
+
 /// Enforcement outcome has to lead the detail. An operation the kernel blocked
 /// reads very differently from one that succeeded, and a responder who misses
 /// that wastes time on an attack that never landed.

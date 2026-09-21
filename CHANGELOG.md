@@ -5,6 +5,42 @@ line is in the commit history.
 
 ## v0.5.3 — unreleased
 
+### A listening port is recorded, and an unexpected one is a signal
+
+The listener half of the network story, and a thirteenth sensor:
+`lsm/socket_listen`. `socket_backed_shell` catches a shell that has *already*
+been handed a socket; this fires while the backdoor is still waiting, before
+anyone has connected.
+
+**The first design was wrong and was thrown away.** It looked for a *shell*
+calling `listen()`. In `nc -lvp 4444 -e /bin/sh` the listener is `nc`, and the
+shell only appears later inheriting the socket — where `socket_backed_shell`
+already catches it. Every real bind shell has a helper holding the socket, so
+that detector would have fired on almost nothing while looking like coverage.
+
+`unexpected_listener` (25) instead asks whether the listener is *expected*: it
+fires when the listening process's executable is not one of the host's known
+network daemons, by file identity rather than name, since this is a suppression.
+
+Scored below the alerting floor because a development machine listens constantly
+and legitimately — a static file server, a test harness, a language server.
+`tests/noise/dev_server_listens.sh` opens four ports and must stay silent.
+
+The value is the chain. `tests/scenarios/bind_shell.sh` produces the listener
+(25) and then the shell inheriting the socket (70); together they are critical.
+That is verified in a fixture rather than inferred from the live run, which
+reports the incident emitted when the port opened — score ~28, before the shell
+exists — and says nothing about the one after it.
+
+Every listener is recorded whether or not it signals. `listen()` is rare enough
+to afford: only servers call it, once per socket.
+
+### Kali re-verified at 13/13, on a newer kernel
+
+`kali-2026.3`, kernel 7.1.5, all thirteen sensors active. The host moved from
+7.0.12 during the upgrade that produced the capture behind v0.5.2's scoring
+work. The 12- and 11-sensor lines are kept above it as history.
+
 ### The release guards actually run, and stop crying wolf
 
 Two tests exist to catch a mistake that reached the remote three times this
