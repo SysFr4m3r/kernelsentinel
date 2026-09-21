@@ -58,6 +58,14 @@ units that no longer exist. And the first walk collected every path into a
 did not finish inside two minutes. The visitor form stats once and runs in 13
 seconds.
 
+SSH keys are parsed rather than split on whitespace. A line may begin with an
+options list, and `command="..."` there pins a forced command to a key — a
+foothold that survives a password change and reads as ordinary configuration, so
+it is printed alongside the key. A line that is not a key OpenSSH would accept
+is called out as one it will ignore, rather than reported as a key of that type:
+the development host's file held the single token `123`, which the first version
+dutifully described as a key and counted.
+
 `--quiet-unless-findings` prints nothing and exits 0 when there is nothing to
 say, for cron; it exits 1 when there is.
 
