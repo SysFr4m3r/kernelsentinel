@@ -37,7 +37,19 @@ to read. Measured before any of it was written:
   the check worth having: the signal is not "a setuid binary exists" but "one
   the distribution never shipped".
 
-Two bugs were found by reading the report rather than trusting it. Symlinks were
+**A third bug came from measuring as the wrong user.** The setuid check was
+validated unprivileged, where it reported 43 files and none unpackaged. Run as
+root — the only way it ever actually runs — it reported **132 files and 88
+unpackaged**, every one under `/var/lib/docker/overlay2/*/diff`. Container image
+layers are on this host's disk but are not this host's filesystem: every Debian
+image ships a setuid `su`, `mount` and `passwd`, and none of them is executable
+in the host's context until a container runs it. Image stores are skipped now,
+and the report names which ones rather than silently narrowing its claim. A
+setuid binary planted inside an image is a real question with a different
+answer — scan the image, or catch the container at runtime, which the sensors
+already do.
+
+Two more bugs were found by reading the report rather than trusting it. Symlinks were
 collected only at the top level of each directory, so an enable-link in
 `multi-user.target.wants/` pointing at an attacker's unit would have been
 invisible — the recursive version immediately surfaced two links pointing at

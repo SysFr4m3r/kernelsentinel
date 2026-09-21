@@ -140,7 +140,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 188 unit and integration tests, including detections replayed from
+**Tested** on four levels. 190 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. 35 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -646,6 +646,10 @@ enumerable now — whenever they were created:
 | kernel modules with no file behind them | `/lib/modules/$(uname -r)` |
 | `core_pattern`, `modprobe`, `poweroff_cmd` | the kernel's compiled-in defaults |
 | SSH authorized keys | listed with age, never judged — only you know which are yours |
+
+Container and snap image stores are skipped: they are on this host's disk but
+are not its filesystem, and every Debian image ships a setuid `su` and `mount`.
+The report names what it skipped rather than quietly narrowing its claim.
 
 Each check compares against an authority the host already keeps, rather than a
 list this project maintains. That is what makes the output short enough to read:

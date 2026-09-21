@@ -14,6 +14,44 @@ use super::packages::Manifest;
 /// anything on a filesystem mounted without `nosuid`.
 const SUID_ROOTS: &[&str] = &["/usr", "/opt", "/srv", "/var", "/home", "/root", "/tmp"];
 
+/// Storage belonging to container and package images, which is on this host's
+/// disk but is not this host's filesystem.
+///
+/// Measured, and the reason this list exists at all: run as an unprivileged
+/// user the setuid check reported 43 files, none unpackaged. Run as root -- the
+/// only way it will ever actually run -- it reported **132 files, 88 unpackaged**,
+/// and all 88 were under `/var/lib/docker/overlay2/*/diff`. Every Debian image
+/// ships a setuid `su`, `mount` and `passwd`; they are the image's business and
+/// they are not executable in the host's context until a container runs them.
+///
+/// Checking as the wrong user is how a check gets validated in conditions it
+/// will never meet. The first measurement was not wrong about what it saw; it
+/// was wrong about what it could see.
+///
+/// A setuid binary planted inside an image is a real thing, and it is a
+/// different question with a different answer -- scan the image, or catch the
+/// container at runtime, which the sensors already do.
+const IMAGE_STORES: &[&str] = &[
+    "/var/lib/docker",
+    "/var/lib/containerd",
+    "/var/lib/containers",
+    "/var/lib/lxc",
+    "/var/lib/lxd",
+    "/var/lib/machines",
+    "/var/lib/snapd",
+    "/snap",
+];
+
+fn is_image_store(path: &Path) -> bool {
+    path.to_str().is_some_and(|p| {
+        IMAGE_STORES
+            .iter()
+            .any(|s| p == *s || p.starts_with(&format!("{s}/")))
+            // Rootless podman keeps its store per-user.
+            || p.contains("/.local/share/containers/")
+    })
+}
+
 /// Visit every regular file under `root`, without collecting them.
 ///
 /// The first version pushed every path into a `Vec` and then stat'd each one
@@ -39,6 +77,9 @@ fn walk_files(root: &Path, depth: usize, dev: u64, visit: &mut dyn FnMut(&Path, 
         }
         let path = entry.path();
         if ft.is_dir() {
+            if is_image_store(&path) {
+                continue;
+            }
             if fs::symlink_metadata(&path).map(|m| m.dev()).ok() == Some(dev) {
                 walk_files(&path, depth + 1, dev, visit);
             }
@@ -121,12 +162,27 @@ pub fn suid(manifest: &Manifest) -> Finding {
             }
         });
     }
+    let skipped: Vec<&str> = IMAGE_STORES
+        .iter()
+        .copied()
+        .filter(|s| Path::new(s).is_dir())
+        .collect();
+    let note = if skipped.is_empty() {
+        String::new()
+    } else {
+        // Named, not silently dropped. A narrower claim that does not say it is
+        // narrower is the same failure as a check that cannot run pretending it
+        // passed.
+        format!(" (image stores not examined: {})", skipped.join(", "))
+    };
     if unowned.is_empty() {
-        Finding::Clear(format!("{total} setuid/setgid files, all package-owned"))
+        Finding::Clear(format!(
+            "{total} setuid/setgid files, all package-owned{note}"
+        ))
     } else {
         Finding::Suspect(
             format!(
-                "{total} setuid/setgid files, {} owned by no package",
+                "{total} setuid/setgid files, {} owned by no package{note}",
                 unowned.len()
             ),
             unowned,
@@ -501,5 +557,48 @@ mod tests {
         let empty = Manifest::default_for_test();
         assert!(matches!(suid(&empty), Finding::Unknown(_)));
         assert!(matches!(persistence(&empty), Finding::Unknown(_)));
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    /// Run unprivileged the setuid check saw 43 files and none unpackaged. Run
+    /// as root -- the only way it ever actually runs -- it saw 132 and 88
+    /// unpackaged, every one of them a container image layer under
+    /// /var/lib/docker/overlay2. 88 false positives is not a noisy check, it is
+    /// an unusable one.
+    #[test]
+    fn container_image_layers_are_not_this_hosts_files() {
+        for p in [
+            "/var/lib/docker/overlay2/abc/diff/usr/bin/su",
+            "/var/lib/docker",
+            "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs",
+            "/var/lib/containers/storage/overlay",
+            "/home/kali/.local/share/containers/storage/overlay/x/diff",
+            "/snap/core/current",
+            "/var/lib/snapd/snaps",
+        ] {
+            assert!(is_image_store(Path::new(p)), "{p} should be skipped");
+        }
+    }
+
+    /// The prune must not swallow the directories the check exists for. A
+    /// prefix match on "/var/lib" or a substring match on "docker" would take
+    /// /var/lib/dockerish, /var/tmp and /var/www with it.
+    #[test]
+    fn the_prune_does_not_swallow_the_host() {
+        for p in [
+            "/var/tmp",
+            "/var/www",
+            "/var/lib/dpkg",
+            "/var/lib/dockerish",
+            "/usr/bin",
+            "/home/kali/bin",
+            "/opt/thing",
+        ] {
+            assert!(!is_image_store(Path::new(p)), "{p} must still be scanned");
+        }
     }
 }
