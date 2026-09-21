@@ -192,8 +192,11 @@ run_one() {
 	# A third question, alongside "was it detected" and "did anything fire".
 	# `ks-forbid` names one signal that must NOT appear, and runs at info so
 	# the absence is real rather than an artefact of the alerting floor.
-	local forbid baselined
+	local forbid baselined detail
 	forbid="$(header "$script" ks-forbid)"
+	# A substring the matching incident's text must contain. See the assertion
+	# at the bottom of this function.
+	detail="$(header "$script" ks-detail)"
 	# `ks-baseline: yes` runs the scenario twice: once recorded, to learn a
 	# baseline from, and once with that baseline applied. The assertion is on
 	# the second run.
@@ -350,6 +353,26 @@ PYEOF
 		local score
 		score="$(grep "\"$expect\"" "$out" | head -1 \
 			| grep -o '"score":[0-9]*' | head -1 | cut -d: -f2)"
+
+		# `ks-detail` asserts what the incident *said*, not just which detector
+		# fired. Until this existed the suite could only ask "did something
+		# fire", so every claim about wording went unchecked -- including
+		# enforcement's, where "BLOCKED:" and "would be blocked:" are the whole
+		# difference between an attack that landed and one that did not.
+		if [[ -n "$detail" ]]; then
+			if grep "\"$expect\"" "$out" | grep -qF "$detail"; then
+				printf '  %-32s PASS  %s (score %s, said %s)\n' \
+					"$name" "$expect" "${score:-?}" "\"$detail\""
+				pass=$((pass + 1))
+			else
+				printf '  %-32s WRONG DETAIL  %s fired but did not say %s\n' \
+					"$name" "$expect" "\"$detail\""
+				grep "\"$expect\"" "$out" | head -1 \
+					| grep -o '"detail":"[^"]*"' | head -2 | sed 's/^/      /'
+				fail=$((fail + 1)); FAILED+=("$name")
+			fi
+			return
+		fi
 		printf '  %-32s PASS  %s (score %s)\n' "$name" "$expect" "${score:-?}"
 		pass=$((pass + 1))
 	else
@@ -395,7 +418,8 @@ if [[ $fail -gt 0 ]]; then
 	echo "  FAIL          an attack ran and the sensor did not report it."
 	echo "  FALSE POSITIVE ordinary work produced an alert. Either the detection is"
 	echo "                too eager, or it belongs in a baseline -- both are findings."
-	echo "  FIRED         a signal that should have been suppressed was reported."
+	echo "  FIRED         a signal that should have been suppressed was reported.
+  WRONG DETAIL  the right detector fired and told the operator the wrong thing."
 	echo "  ERROR         the scenario itself did not run; nothing was tested."
 	exit 1
 fi

@@ -5,6 +5,25 @@ line is in the commit history.
 
 ## v0.5.3 — unreleased
 
+### Audit mode is tested, and the harness can assert what an incident said
+
+`--enforce audit` was the only enforcement mode with no test, and it is the one
+README.md tells operators in bold to run first: *"It reports every operation
+enforcement would have blocked, and blocks nothing."* Two claims, neither
+checked. The two modes that *do* something were covered; the one recommended as
+the safe starting point was not.
+
+Both halves matter and are asserted separately. If audit blocks, the advice to
+start there is unsafe. If audit reports nothing, the operator learns nothing and
+arms enforcement blind.
+
+Testing the second half needed something the suite could not do: assert what an
+incident *said*, not merely which detector fired. `ks-detail:` does that, and
+the gap it closes is wider than enforcement — `BLOCKED:` versus
+`would be blocked:` is the difference between an attack that landed and one that
+did not, and a responder reading the wrong one wastes an hour on an attack that
+never happened.
+
 ### A listening port is recorded, and an unexpected one is a signal
 
 The listener half of the network story, and a thirteenth sensor:

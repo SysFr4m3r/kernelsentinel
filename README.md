@@ -141,7 +141,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
 **Tested** on four levels. 185 unit and integration tests, including detections replayed from
-**real kernel captures** committed as fixtures. 34 [attack scenarios](#testing) that run the
+**real kernel captures** committed as fixtures. 35 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
 against the actual attack. And twelve noise scenarios asserting ordinary work stays
@@ -605,7 +605,17 @@ sudo KS_ENFORCE=on tests/attack/verify.sh
 
 `container_escape_corepattern` now asserts the write **fails** and that
 `core_pattern` is unchanged, and `enforce_never_blocks_the_host` asserts the
-host's own write to the same file **succeeds**. The second is the one that
+host's own write to the same file **succeeds**. Audit mode has its own run, and
+it checks both halves of the sentence above it — that the write is *allowed*,
+and that the incident says `would be blocked`:
+
+```bash
+sudo KS_ENFORCE=audit tests/attack/verify.sh
+```
+
+If audit ever blocks, telling operators to start there is unsafe; if it reports
+nothing, they arm enforcement blind. Neither half was tested until it was the
+last untested mode. The second is the one that
 matters: getting it wrong costs no detection at all, it denies root's writes to
 `core_pattern`, `modprobe` and `poweroff_cmd` on every host running the agent.
 It changes nothing on the system — it reads the value and writes the identical
