@@ -3,6 +3,25 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
+## v0.5.3 — unreleased
+
+### The release guards actually run, and stop crying wolf
+
+Two tests exist to catch a mistake that reached the remote three times this
+week: a tagged version still being edited, and a released changelog section
+still headed "unreleased". Both read `git tag --list`, and CI checks out with no
+tags — so both saw an empty list and passed without checking anything. A guard
+that reports green because the question was never asked is worse than no guard,
+because the tick is read as an answer. The two jobs that run `cargo test` now
+fetch tags.
+
+`a_shipped_version_is_not_still_being_edited` also compared **commit hashes**,
+and a tag naturally lands on the reviewed branch commit rather than the merge
+commit that lands it. Those carry the same tree and differ only in hash, so the
+guard called an ordinary merge a version drift — failing on `main` immediately
+after a correct release. It compares trees now: the question is whether anything
+has been *edited* since the release, not which commit object holds it.
+
 ## v0.5.2 — a sudo from 75 minutes ago is not a chain
 
 **The first capture of real administrative work.** Every previous alert-budget
