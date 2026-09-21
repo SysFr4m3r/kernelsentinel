@@ -16,6 +16,13 @@
 #
 # Contained: the lab runs with --network none, so this is loopback only. Nothing
 # leaves the container and no external host is contacted.
+#
+# One consequence of that containment shows up in the score. Both ends run here,
+# so the scenario's own listener trips unexpected_listener, which chains with
+# socket_backed_shell and takes the incident to 100. In the wild the attacker's
+# machine does the listening and the victim only connects out, so the same
+# attack scores 70 (77 in a container). The 100 is the harness, not the
+# detection -- do not read it as the real-world severity.
 set -euo pipefail
 if [[ ! -f /.ks-lab ]] || [[ "${KS_LAB:-}" != "1" ]]; then
 	echo "refusing to run outside the kernelsentinel lab container" >&2
