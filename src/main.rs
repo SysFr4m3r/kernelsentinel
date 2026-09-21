@@ -195,12 +195,37 @@ enum Command {
         #[arg(short, long, default_value = "rules")]
         dir: String,
     },
+    /// Inventory what is on this host right now -- setuid binaries,
+    /// persistence files, listeners, keys -- and name what the distribution
+    /// cannot account for. Complements `run`: that watches what happens, this
+    /// finds what somebody already left behind.
+    Sweep {
+        /// Print nothing and exit 0 unless a check found something hard to
+        /// explain innocently. Notices -- your own SSH keys, a unit you
+        /// installed by hand -- are not enough: they are true on every run, and
+        /// a cron entry that mails them nightly is one nobody reads.
+        #[arg(long)]
+        quiet_unless_findings: bool,
+    },
     /// Report whether this kernel can run the sensors.
     Doctor,
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Sweep {
+            quiet_unless_findings,
+        } => {
+            let report = kernelsentinel::sweep::run();
+            let attention = report.needs_attention();
+            if !quiet_unless_findings || attention {
+                print!("{report}");
+            }
+            if attention {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Doctor => {
             let report = doctor::run();
             report.print();

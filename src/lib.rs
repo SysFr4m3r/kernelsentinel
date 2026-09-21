@@ -19,5 +19,6 @@ pub mod redact;
 #[cfg(feature = "bpf")]
 pub mod sensors;
 pub mod server;
+pub mod sweep;
 pub mod watchlist;
 pub mod yara;

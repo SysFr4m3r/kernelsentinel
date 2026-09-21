@@ -140,7 +140,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 185 unit and integration tests, including detections replayed from
+**Tested** on four levels. 188 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. 35 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -621,6 +621,45 @@ matters: getting it wrong costs no detection at all, it denies root's writes to
 It changes nothing on the system — it reads the value and writes the identical
 bytes back, so the open reaches the LSM hook while the value is its own
 replacement.
+
+### Sweep: what is on the host right now
+
+Everything above is event-driven, and that leaves a hole the size of the usual
+intrusion: **an attacker who arrived before the agent did is invisible to it.**
+Their key is already in `authorized_keys`, their unit file is already in
+`/etc/systemd/system`, their SUID binary already exists. Nothing *happens*, so
+nothing fires.
+
+```bash
+sudo kernelsentinel sweep
+```
+
+Sweep asks the complementary question. To survive a reboot or your logging out,
+an intruder has to leave something somewhere, and those artifacts are
+enumerable now — whenever they were created:
+
+| check | the authority it compares against |
+|---|---|
+| setuid/setgid binaries | the package manager's file manifests |
+| cron, systemd, pam.d, profile.d, ld.so.conf.d, sudoers.d | the same, plus systemd's and pam-auth-update's own conventions |
+| processes running a deleted or anonymous executable | `/proc` |
+| kernel modules with no file behind them | `/lib/modules/$(uname -r)` |
+| `core_pattern`, `modprobe`, `poweroff_cmd` | the kernel's compiled-in defaults |
+| SSH authorized keys | listed with age, never judged — only you know which are yours |
+
+Each check compares against an authority the host already keeps, rather than a
+list this project maintains. That is what makes the output short enough to read:
+`/etc/systemd/system` holds 50 files on a working Kali install and **every one
+is unpackaged**, because 49 are `systemctl enable` and `mask` links. Recognising
+that takes the check from 50 findings to 1.
+
+`--quiet-unless-findings` prints nothing and exits 0 when there is nothing to
+say, for a cron entry. It exits 1 when there is.
+
+**What it cannot do**, said in the output as well as here: it reads the kernel
+it is auditing. A rootkit hiding a module or a process from `/proc` hides it
+from sweep too. A clean result means the artifacts it knows about are absent,
+which is not the same as a clean host.
 
 ### Suppress routine behavior (baselining)
 
