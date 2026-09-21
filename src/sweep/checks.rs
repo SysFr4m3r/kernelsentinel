@@ -454,18 +454,72 @@ pub fn escape_hatches() -> Finding {
     }
 }
 
+/// Key types OpenSSH accepts. The list is short and stable, and having it is
+/// what lets the options field be parsed at all.
+const KEY_TYPES: &[&str] = &[
+    "ssh-rsa",
+    "ssh-dss",
+    "ssh-ed25519",
+    "ssh-ed25519-cert-v01@openssh.com",
+    "sk-ssh-ed25519@openssh.com",
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+];
+
+/// What one authorized_keys line is.
+enum KeyLine<'a> {
+    /// options (may be empty), key type, trailing comment.
+    Key(&'a str, &'a str, &'a str),
+    /// Not a key OpenSSH would accept. sshd ignores it, which is exactly why it
+    /// is worth printing: something put a line in this file that does nothing.
+    Unparsed(&'a str),
+}
+
+/// Split a line into options, type and comment.
+///
+/// The naive parse -- field 0 is the type, field 2 is the comment -- is wrong
+/// twice. A line may begin with an options list
+/// (`command="/bin/sh",no-pty ssh-ed25519 AAAA...`), and a line may not be a
+/// key at all. Both were live on the development host: its authorized_keys
+/// contained the single token `123`, which the naive version reported as a key
+/// of type "123".
+///
+/// The options half matters on its own. `command=` pins a forced command to a
+/// key, which is a way to keep a foothold that survives a password change and
+/// looks like ordinary configuration.
+fn parse_key_line(line: &str) -> KeyLine<'_> {
+    let at = line
+        .split_whitespace()
+        .position(|t| KEY_TYPES.contains(&t) || t.starts_with("sk-") || t.starts_with("ecdsa-"));
+    let Some(at) = at else {
+        return KeyLine::Unparsed(line);
+    };
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    // A key needs its base64 body after the type; a bare type is not a key.
+    if tokens.len() < at + 2 {
+        return KeyLine::Unparsed(line);
+    }
+    let options = if at == 0 { "" } else { tokens[0] };
+    let comment = tokens.get(at + 2).copied().unwrap_or("");
+    KeyLine::Key(options, tokens[at], comment)
+}
+
 /// Every SSH key that can log into this host.
 ///
 /// Listed, never judged. This project cannot know which of your keys is yours,
 /// and a tool that guesses would be wrong in the direction that matters. What
-/// it can do is put them in one place with their age, which is the form in
-/// which a person can recognise one that should not be there.
+/// it can do is put them in one place, with their age and any forced command,
+/// which is the form in which a person can recognise one that should not be
+/// there.
 pub fn authorized_keys() -> Finding {
     let mut homes = vec![PathBuf::from("/root")];
     if let Ok(dir) = fs::read_dir("/home") {
         homes.extend(dir.flatten().map(|e| e.path()));
     }
     let mut keys = Vec::new();
+    let mut odd = Vec::new();
     let mut files = 0usize;
     for home in homes {
         for name in ["authorized_keys", "authorized_keys2"] {
@@ -485,27 +539,88 @@ pub fn authorized_keys() -> Finding {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                // The comment field is the only human-meaningful part; the key
-                // body is noise in a report a person has to read.
-                let comment = line.split_whitespace().nth(2).unwrap_or("(no comment)");
-                let kind = line.split_whitespace().next().unwrap_or("?");
-                keys.push(format!(
-                    "{} — {kind} {comment} (file {age} old)",
-                    path.display()
-                ));
+                match parse_key_line(line) {
+                    KeyLine::Key(options, kind, comment) => {
+                        let comment = if comment.is_empty() {
+                            "(no comment)"
+                        } else {
+                            comment
+                        };
+                        let opts = if options.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{options}]")
+                        };
+                        keys.push(format!(
+                            "{} — {kind} {comment}{opts} (file {age} old)",
+                            path.display()
+                        ));
+                    }
+                    KeyLine::Unparsed(raw) => {
+                        odd.push(format!(
+                            "{} — line OpenSSH will ignore: {:.40}",
+                            path.display(),
+                            raw
+                        ));
+                    }
+                }
             }
         }
     }
-    if keys.is_empty() {
+    let mut items = keys;
+    let n = items.len();
+    items.extend(odd.iter().cloned());
+    if items.is_empty() {
         Finding::Clear(format!("{files} authorized_keys files, no keys"))
     } else {
-        Finding::Notice(format!("{} keys across {files} files", keys.len()), keys)
+        Finding::Notice(
+            format!(
+                "{n} keys across {files} files{}",
+                if odd.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} unparseable line(s)", odd.len())
+                }
+            ),
+            items,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The naive parse -- field 0 is the type, field 2 is the comment -- is
+    /// wrong twice, and both were live on the development host.
+    #[test]
+    fn an_authorized_keys_line_is_parsed_or_called_out() {
+        // Plain.
+        let KeyLine::Key(opts, kind, comment) = parse_key_line("ssh-ed25519 AAAAC3Nz me@box")
+        else {
+            panic!("plain key must parse")
+        };
+        assert_eq!((opts, kind, comment), ("", "ssh-ed25519", "me@box"));
+
+        // Options first. `command=` pins a forced command to a key: a foothold
+        // that survives a password change and reads as configuration.
+        let KeyLine::Key(opts, kind, _) =
+            parse_key_line(r#"command="/bin/sh",no-pty ssh-rsa AAAAB3 bob"#)
+        else {
+            panic!("options must not hide the key")
+        };
+        assert!(opts.contains("command="), "the forced command must survive");
+        assert_eq!(kind, "ssh-rsa");
+
+        // Not a key. The development host's file held exactly this, and the
+        // naive version reported it as a key of type "123".
+        assert!(matches!(parse_key_line("123"), KeyLine::Unparsed(_)));
+        // A type with no body is not a key either.
+        assert!(matches!(
+            parse_key_line("ssh-ed25519"),
+            KeyLine::Unparsed(_)
+        ));
+    }
 
     /// Measured on a working host: /etc/systemd/system held 50 files and every
     /// one of them was unpackaged, which would have made the whole check
