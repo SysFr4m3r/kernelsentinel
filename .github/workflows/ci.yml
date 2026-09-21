@@ -19,6 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags, not just the tip. Two tests in tests/docs_consistency.rs
+          # ask git which versions are released: one refuses to let a tagged
+          # version keep being edited, the other refuses to let a released
+          # section still call itself "unreleased". The default checkout
+          # fetches no tags, so both saw an empty list and passed without
+          # checking anything -- guards for a mistake that reached the remote
+          # three times, reporting green because the question was never asked.
+          fetch-depth: 0
 
       - name: Install BPF toolchain
         run: |
@@ -123,6 +132,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags: this job runs cargo test, and the release guards in
+          # tests/docs_consistency.rs read them. See the `test` job.
+          fetch-depth: 0
 
       - name: Install BPF toolchain
         run: |

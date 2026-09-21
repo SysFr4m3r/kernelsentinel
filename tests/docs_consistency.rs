@@ -444,20 +444,26 @@ fn a_shipped_version_is_not_still_being_edited() {
     };
 
     let tag = format!("v{version}");
-    let Some(tagged) = git(&["rev-parse", &format!("{tag}^{{commit}}")]) else {
+    let Some(tagged) = git(&["rev-parse", &format!("{tag}^{{tree}}")]) else {
         // Not released yet: the normal state during development.
         return;
     };
-    let Some(head) = git(&["rev-parse", "HEAD"]) else {
+    let Some(head) = git(&["rev-parse", "HEAD^{tree}"]) else {
         return;
     };
 
+    // Trees, not commits. The question is whether anything has been *edited*
+    // since the release, and a tag naturally lands on the branch commit that
+    // was reviewed rather than on the merge commit that lands it. Those two
+    // carry the same tree and differ only in hash, so comparing commits called
+    // an ordinary squash-free merge a version drift -- a guard crying wolf
+    // about the exact workflow it is meant to protect.
     assert_eq!(
         head, tagged,
-        "Cargo.toml still says {version}, but {tag} is already tagged at {tagged} and HEAD is \
-         {head}. Commits exist beyond that release while the version still names it, so anything \
-         written into the {tag} section of CHANGELOG.md describes a release that does not contain \
-         it. Bump the version and open a new section."
+        "Cargo.toml still says {version}, but {tag} is already tagged and its tree ({tagged}) \
+         differs from HEAD's ({head}). Files have changed since that release while the version \
+         still names it, so anything written into the {tag} section of CHANGELOG.md describes a \
+         release that does not contain it. Bump the version and open a new section."
     );
 
     // And the changelog's newest section must be the version being built.
