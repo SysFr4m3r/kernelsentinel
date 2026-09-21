@@ -140,7 +140,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 191 unit and integration tests, including detections replayed from
+**Tested** on four levels. 193 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. 35 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -640,7 +640,7 @@ enumerable now — whenever they were created:
 
 | check | the authority it compares against |
 |---|---|
-| setuid/setgid binaries | the package manager's file manifests |
+| setuid/setgid binaries | the package manager's file manifests (dpkg or pacman) |
 | cron, systemd, pam.d, profile.d, ld.so.conf.d, sudoers.d | the same, plus systemd's and pam-auth-update's own conventions |
 | processes running a deleted or anonymous executable | `/proc` |
 | kernel modules with no file behind them | `/lib/modules/$(uname -r)` |

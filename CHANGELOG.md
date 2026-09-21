@@ -66,6 +66,11 @@ is called out as one it will ignore, rather than reported as a key of that type:
 the development host's file held the single token `123`, which the first version
 dutifully described as a key and counted.
 
+Both dpkg and pacman manifests are read, so the checks that need an authority
+work on Debian and Arch derivatives alike. A host with neither is told so: every
+such check reports *unknown* rather than reporting that every file on the system
+is unpackaged.
+
 `--quiet-unless-findings` prints nothing and exits 0 when there is nothing to
 say, for cron; it exits 1 when there is.
 

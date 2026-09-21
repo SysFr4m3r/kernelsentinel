@@ -52,6 +52,37 @@ impl Manifest {
             }
         }
 
+        // Arch and derivatives. One directory per installed package, each with
+        // a `files` manifest: a `%FILES%` header followed by paths relative to
+        // the root, with directories written with a trailing slash.
+        if source.is_none() {
+            if let Ok(dir) = fs::read_dir("/var/lib/pacman/local") {
+                let mut any = false;
+                for entry in dir.flatten() {
+                    let Ok(f) = fs::File::open(entry.path().join("files")) else {
+                        continue;
+                    };
+                    let mut in_files = false;
+                    for line in BufReader::new(f).lines().map_while(Result::ok) {
+                        if line.starts_with('%') {
+                            // Sections other than %FILES% list backup paths and
+                            // checksums, which are not the question here.
+                            in_files = line.trim() == "%FILES%";
+                            continue;
+                        }
+                        if !in_files || line.is_empty() || line.ends_with('/') {
+                            continue;
+                        }
+                        owned.insert(format!("/{line}"));
+                    }
+                    any = true;
+                }
+                if any {
+                    source = Some("pacman");
+                }
+            }
+        }
+
         Self { owned, source }
     }
 
@@ -88,5 +119,63 @@ impl Manifest {
 
     pub fn owns(&self, path: &Path) -> bool {
         path.to_str().is_some_and(|p| self.owned.contains(p))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pacman `files` manifest, parsed the way `load` parses it. Split out
+    /// because the development host is Debian and the target is Arch, and a
+    /// format nobody can test on the machine they are writing on is a format
+    /// that gets guessed at.
+    fn parse_pacman(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut in_files = false;
+        for line in text.lines() {
+            if line.starts_with('%') {
+                in_files = line.trim() == "%FILES%";
+                continue;
+            }
+            if !in_files || line.is_empty() || line.ends_with('/') {
+                continue;
+            }
+            out.push(format!("/{line}"));
+        }
+        out
+    }
+
+    #[test]
+    fn a_pacman_manifest_yields_absolute_file_paths() {
+        let files = parse_pacman(
+            "%FILES%\n\
+             usr/\n\
+             usr/bin/\n\
+             usr/bin/sudo\n\
+             usr/lib/sudo/sudoers.so\n\
+             \n\
+             %BACKUP%\n\
+             etc/sudoers\t9a8b7c\n",
+        );
+        // Paths are relative in the file and absolute everywhere else.
+        assert_eq!(files, vec!["/usr/bin/sudo", "/usr/lib/sudo/sudoers.so"]);
+        // Directories carry a trailing slash and are not files.
+        assert!(!files.iter().any(|f| f.ends_with('/')));
+        // %BACKUP% lists checksums, not ownership, and must not leak in as a
+        // path -- it would arrive with a tab and a hash attached.
+        assert!(!files.iter().any(|f| f.contains('\t')));
+    }
+
+    /// A host with no supported manager must say so rather than reporting that
+    /// every file on it is unpackaged.
+    #[test]
+    fn no_manager_is_unknown_not_empty() {
+        let m = Manifest {
+            owned: HashSet::new(),
+            source: None,
+        };
+        assert!(!m.knows());
+        assert_eq!(m.source(), "none");
     }
 }
