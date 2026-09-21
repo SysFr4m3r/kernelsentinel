@@ -69,6 +69,12 @@ way from nothing.
 compiled in, it must also be listed in `/sys/kernel/security/lsm`, which usually
 means adding `lsm=...,bpf` to the kernel command line.
 
+Two rows are verified on real hardware, on different distributions, package
+managers and kernels: Kali at 7.1.5 and CachyOS at 6.18.50, both 13/13. That
+pair is the evidence behind the portability claim above — until the second one
+existed, "CO-RE relocates against the target kernel's BTF" was an argument
+rather than a measurement.
+
 A row may say **verified** only when `scripts/compat-probe.sh` has actually
 loaded the sensors there and its output is recorded in
 [compat-results.txt](compat-results.txt). Each verified row carries the
@@ -88,7 +94,8 @@ to start", and let `doctor` settle it.
 | **Ubuntu 24.04 LTS** | 6.17 (azure) | compiled in, **not active** | measured at 5/11 before `lsm/path_mknod` and `lsm/unix_stream_connect`; **awaiting re-measurement** against the current 12, which comes from a CI `attach` run. The `lsm/` sensors attach and stay inert until `bpf` is added to `lsm=` |
 | Ubuntu 22.04 LTS | 5.15 | compiled in | expect to need `lsm=` on the cmdline |
 | Fedora 38+ | 6.2+ | compiled in | |
-| Arch | current | compiled in | rolling, well above the floor |
+| **CachyOS** | 6.18 | ✅ active by default | **verified** — `cachyos-rolling`, kernel 6.18.50, 13/13 sensors active |
+| Arch | current | compiled in | rolling, well above the floor; the CachyOS row above is Arch-derived |
 | Manjaro | current | compiled in | Arch-derived; kernel lags Arch slightly |
 | CachyOS | current | compiled in | Arch-derived, custom-tuned kernels — check `doctor`, since a non-stock config is exactly where a default may differ |
 | EndeavourOS / Garuda | current | compiled in | Arch kernels, unmodified |

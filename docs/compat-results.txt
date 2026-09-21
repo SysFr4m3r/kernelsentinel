@@ -14,6 +14,7 @@
 # and paste the ks-compat line below.
 
 ks-compat: distro=kali-2026.3 kernel=7.1.5+kali-amd64 arch=x86_64 bpflsm=active sensors=13/13 missing=none live=exec,path_chmod,file_open
+ks-compat: distro=cachyos-rolling kernel=6.18.50-3-cachyos-lts arch=x86_64 bpflsm=active sensors=13/13 missing=none live=exec,path_chmod,file_open
 
 # Superseded: measured against an 11-sensor build, before lsm/path_mknod was
 # added. Kept because a compatibility claim should show its history rather than

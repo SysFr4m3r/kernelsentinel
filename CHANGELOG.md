@@ -66,6 +66,14 @@ is called out as one it will ignore, rather than reported as a key of that type:
 the development host's file held the single token `123`, which the first version
 dutifully described as a key and counted.
 
+**Measured on a second distribution.** CachyOS (Arch-derived), kernel 6.18.50,
+**13 of 13 sensors active**, sweep comparing against 385,116 pacman paths with
+34 setuid files and none unpackaged — the shape a correct parse produces, where
+a broken one would have shown dozens of false findings. The compatibility table
+now has two verified rows on different package managers and kernels, which is
+the first real evidence that the CO-RE portability claim holds off Debian
+rather than being an argument about how CO-RE works.
+
 Both dpkg and pacman manifests are read, so the checks that need an authority
 work on Debian and Arch derivatives alike. A host with neither is told so: every
 such check reports *unknown* rather than reporting that every file on the system
