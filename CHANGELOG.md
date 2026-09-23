@@ -34,6 +34,14 @@ link still matches, and the kernel escape hatches, which are keyed by identity
 *because* paths lie. On btrfs the identity half of all of them was inert while
 the path half kept working, so nothing looked broken.
 
+A second defect hid the first. The table lists `/usr/sbin/unix_chkpwd`, and on
+a usr-merged host — Arch and everything after it — `/usr/sbin` is a symlink to
+`/usr/bin`. `stat` resolves the listed path, so the program lands in the index
+and `doctor` reports it found; but the kernel names the *real* path at exec,
+`/usr/bin/unix_chkpwd`, which matches no listed string. Tracked paths are now
+indexed by where they resolve as well as by how they are written, so the repair
+below can actually run. Without that, the first fix shipped and changed nothing.
+
 `rebind`, added a day earlier for replaced binaries, could not repair it: it
 re-stats the path, gets 37 again, and relearns the identity that cannot match.
 The agent now learns the identity **the kernel reports** for a tracked path.

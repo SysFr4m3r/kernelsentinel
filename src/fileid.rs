@@ -330,6 +330,17 @@ const fn t(name: &'static str, role: Role, paths: &'static [&'static str]) -> Tr
 #[derive(Default)]
 pub struct TrustedBinaries {
     by_id: HashMap<FileId, (&'static str, Role)>,
+    /// Tracked paths as they exist on *this* host, including where the listed
+    /// path resolves to.
+    ///
+    /// The table lists `/usr/sbin/unix_chkpwd`, and on a usr-merged host --
+    /// Arch, and every distribution that followed -- `/usr/sbin` is a symlink
+    /// to `/usr/bin`. `stat` resolves the listed path happily, so the program
+    /// appears in `by_id` and `doctor` reports it found; but the kernel reports
+    /// the *real* path at exec, `/usr/bin/unix_chkpwd`, which matches no listed
+    /// string. Comparing the literal list against an exec's filename therefore
+    /// missed on exactly the hosts where the identity also needed relearning.
+    by_path: HashMap<String, (&'static str, Role)>,
     /// Programs whose every candidate path was absent. Not an error -- most
     /// hosts do not run postgres -- but worth reporting, because a credential
     /// reader that fails to resolve becomes a source of alerts.
@@ -347,6 +358,7 @@ impl TrustedBinaries {
     /// Resolve the built-in tables against this host's filesystem.
     pub fn resolve_host() -> Self {
         let mut by_id = HashMap::new();
+        let mut by_path: HashMap<String, (&'static str, Role)> = HashMap::new();
         let mut unresolved = Vec::new();
         for entry in CREDENTIAL_READERS.iter().chain(NETWORK_DAEMONS) {
             let mut found = false;
@@ -355,6 +367,14 @@ impl TrustedBinaries {
                     // A hardlinked or identically-inoded path resolving twice is
                     // fine; first name wins and they are the same program.
                     by_id.entry(id).or_insert((entry.name, entry.role));
+                    by_path.insert(path.to_string(), (entry.name, entry.role));
+                    // And where it really lives, which is what an exec event
+                    // will name on a usr-merged host.
+                    if let Ok(real) = std::fs::canonicalize(path) {
+                        if let Some(r) = real.to_str() {
+                            by_path.insert(r.to_string(), (entry.name, entry.role));
+                        }
+                    }
                     found = true;
                 }
             }
@@ -362,7 +382,11 @@ impl TrustedBinaries {
                 unresolved.push(entry.name);
             }
         }
-        Self { by_id, unresolved }
+        Self {
+            by_id,
+            by_path,
+            unresolved,
+        }
     }
 
     /// Re-resolve one path whose identity the table no longer recognises.
@@ -446,10 +470,12 @@ impl TrustedBinaries {
 
     /// Point a tracked path's program at one identity, replacing any other.
     fn bind(&mut self, path: &str, id: FileId) -> Option<(&'static str, Role)> {
-        let entry = CREDENTIAL_READERS
-            .iter()
-            .chain(NETWORK_DAEMONS)
-            .find(|e| e.paths.contains(&path))?;
+        let entry = *self.by_path.get(path)?;
+        let entry = Trusted {
+            name: entry.0,
+            role: entry.1,
+            paths: &[],
+        };
         // Drop any stale identity still claiming this program, so the table
         // does not grow an entry per upgrade for the lifetime of the daemon.
         self.by_id.retain(|_, (name, _)| *name != entry.name);
@@ -460,11 +486,8 @@ impl TrustedBinaries {
 
     /// Does the table track this path at all? Cheap enough to ask per exec, and
     /// the gate that keeps `rebind` off the hot path.
-    pub fn tracks_path(path: &str) -> bool {
-        CREDENTIAL_READERS
-            .iter()
-            .chain(NETWORK_DAEMONS)
-            .any(|e| e.paths.contains(&path))
+    pub fn tracks_path(&self, path: &str) -> bool {
+        self.by_path.contains_key(path)
     }
 
     /// The canonical name and role of the program with this identity.
@@ -664,10 +687,7 @@ mod rebind_tests {
         );
 
         // What the daemon now does on the next exec of that path.
-        assert!(
-            TrustedBinaries::tracks_path(path),
-            "{path} must be recognised as tracked"
-        );
+        assert!(t.tracks_path(path), "{path} must be recognised as tracked");
         let (again, role_again) = t.rebind(path).expect("rebind must resolve it");
         assert_eq!(again, name);
         assert_eq!(role_again, role);
@@ -767,15 +787,51 @@ mod rebind_tests {
         assert!(t.rebind_from_kernel(path, FileId::new(0, 0)).is_none());
     }
 
+    /// A usr-merged host reports a different path than the table lists, and
+    /// that difference silently disabled the fix above.
+    ///
+    /// The table lists `/usr/sbin/unix_chkpwd`. On Arch -- and every
+    /// distribution that followed usr-merge -- `/usr/sbin` is a symlink to
+    /// `/usr/bin`. `stat` resolves the listed path, so the program lands in
+    /// the identity index and `doctor` reports it found; but the kernel names
+    /// the real path at exec, `/usr/bin/unix_chkpwd`, which matches no listed
+    /// string. Comparing the literal list against an exec's filename missed on
+    /// exactly the hosts that also needed their identity relearned, so the
+    /// btrfs repair could never run and the alerts continued.
+    #[test]
+    fn a_path_is_tracked_by_where_it_resolves_not_only_by_how_it_is_listed() {
+        let t = TrustedBinaries::resolve_host();
+        let mut checked = 0;
+        for entry in CREDENTIAL_READERS.iter().chain(NETWORK_DAEMONS) {
+            for listed in entry.paths {
+                let Ok(real) = std::fs::canonicalize(listed) else {
+                    continue;
+                };
+                let Some(real) = real.to_str() else { continue };
+                checked += 1;
+                assert!(
+                    t.tracks_path(listed),
+                    "{listed} is listed and present, so it must be tracked"
+                );
+                assert!(
+                    t.tracks_path(real),
+                    "{listed} really lives at {real}, which is the path an exec \
+                     event carries -- it must be tracked too"
+                );
+            }
+        }
+        assert!(checked > 0, "no trusted binary present to check");
+    }
+
     /// An untracked path is never stat'd. This is what keeps the check off the
     /// hot path: every exec asks, and only the handful of tracked paths cost
     /// anything.
     #[test]
     fn an_untracked_path_is_not_rebound() {
         let mut t = TrustedBinaries::resolve_host();
-        assert!(!TrustedBinaries::tracks_path("/usr/bin/ls"));
+        assert!(!t.tracks_path("/usr/bin/ls"));
         assert!(t.rebind("/usr/bin/ls").is_none());
-        assert!(!TrustedBinaries::tracks_path("/tmp/sudo"));
+        assert!(!t.tracks_path("/tmp/sudo"));
         assert!(t.rebind("/tmp/sudo").is_none());
     }
 }

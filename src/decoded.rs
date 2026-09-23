@@ -175,9 +175,7 @@ impl Event {
         // tracks -- which is what a package upgrade leaves behind: same path,
         // new inode, no match, suppression silently off until restart. Only an
         // exec carries the path, and only a tracked path gets as far as a stat.
-        if self.event_type() == EventType::Exec
-            && crate::fileid::TrustedBinaries::tracks_path(&self.filename)
-        {
+        if self.event_type() == EventType::Exec && trusted.tracks_path(&self.filename) {
             // The identity the kernel just reported, not the one stat would
             // give: on btrfs those disagree about the device, and stat's
             // answer can never match a later event. The inode still has to
