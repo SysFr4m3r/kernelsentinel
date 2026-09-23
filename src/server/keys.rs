@@ -12,6 +12,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 
 /// key -> hostname.
@@ -42,10 +43,24 @@ impl AgentKeys {
                      can read every agent key. Run: chmod 600 {path}"
                 ));
             }
-            if mode & 0o040 != 0 {
+            // Group-readable is how the recommended deployment works, not a
+            // mistake. The server runs unprivileged and the file is owned
+            // root:kernelsentinel with mode 640, because a root-owned 600 file
+            // is one this process cannot read at all -- which is exactly the
+            // failure the advice below used to cause. deploy/install.sh sets
+            // it that way, so the shipped script tripped the shipped warning
+            // and following the warning broke the server.
+            //
+            // So the question is not "is it group-readable" but "is that group
+            // somebody else". Our own group reading our own credentials is the
+            // design; any other group is an accident worth naming.
+            let ours = unsafe { libc::getegid() };
+            if mode & 0o040 != 0 && md.gid() != ours {
                 eprintln!(
-                    "kernelsentinel: warning: keys file {path} is group-readable (mode \
-                     {mode:04o}); consider chmod 600"
+                    "kernelsentinel: warning: keys file {path} is readable by group {} (mode \
+                     {mode:04o}), which is not this process's group ({ours}). Either chown it \
+                     to this server's group or drop the group bits.",
+                    md.gid()
                 );
             }
         }

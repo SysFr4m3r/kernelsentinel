@@ -5,6 +5,20 @@ line is in the commit history.
 
 ## v0.5.5 — unreleased
 
+### The keys-file warning no longer advises breaking the server
+
+`deploy/install.sh` sets `agents.keys` to mode 640, owned `root:kernelsentinel`,
+because the server runs unprivileged and a root-owned 600 file is one it cannot
+read at all. The server then warned that the file was group-readable and advised
+`chmod 600` — so the shipped script tripped the shipped warning, and following
+the advice broke the thing that emitted it.
+
+The question was never "is it group-readable" but "is that group somebody else".
+The check compares the file's group against the process's own: our own group
+reading our own credentials is the design, and any other group is an accident
+worth naming.
+
+
 ### Comment without resolving, and reopen
 
 From a day of real triage on a live host: of 43 incidents, **21 were annotated
