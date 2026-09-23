@@ -178,7 +178,11 @@ impl Event {
         if self.event_type() == EventType::Exec
             && crate::fileid::TrustedBinaries::tracks_path(&self.filename)
         {
-            if let Some((name, _)) = trusted.rebind(&self.filename) {
+            // The identity the kernel just reported, not the one stat would
+            // give: on btrfs those disagree about the device, and stat's
+            // answer can never match a later event. The inode still has to
+            // match what is on disk at that path -- see rebind_from_kernel.
+            if let Some((name, _)) = trusted.rebind_from_kernel(&self.filename, self.exe_id()) {
                 self.exe_trusted = name.to_string();
             }
         }

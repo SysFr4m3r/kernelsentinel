@@ -394,11 +394,62 @@ impl TrustedBinaries {
     /// Returns the name and role now at that path, if it is one this table
     /// tracks and it currently exists.
     pub fn rebind(&mut self, path: &str) -> Option<(&'static str, Role)> {
+        let id = FileId::of(path)?;
+        self.bind(path, id)
+    }
+
+    /// Learn the identity *the kernel reports* for a tracked path.
+    ///
+    /// `stat` and the kernel do not always agree about a file's device, and
+    /// when they disagree every identity comparison fails silently and in the
+    /// direction that generates alerts. Measured on a btrfs host, for the same
+    /// file:
+    ///
+    /// ```text
+    /// stat()  dev = 37  ino = 17746   /usr/bin/unix_chkpwd
+    /// BPF     dev = 35  ino = 17746
+    /// ```
+    ///
+    /// btrfs allocates an anonymous block device per subvolume. Userspace gets
+    /// the subvolume's, while an LSM or tracepoint program reading
+    /// `inode->i_sb->s_dev` gets the superblock's. Neither is wrong; they are
+    /// different numbers for different things, and nothing in the encoding
+    /// says so -- both have major 0, so the glibc/kernel conversion that fixed
+    /// an earlier bug of this shape leaves them untouched.
+    ///
+    /// The cost was 33 of 43 incidents on one desktop in a day: PAM's password
+    /// checker reading /etc/shadow at every screen unlock, scored CRITICAL,
+    /// because the suppression that exists for exactly that case could not
+    /// recognise the binary. Default on CachyOS, Fedora and openSUSE.
+    ///
+    /// `rebind` alone cannot fix it -- it re-stats the path, gets the same
+    /// unmatchable device, and relearns the wrong thing forever. So the
+    /// identity is taken from the event instead.
+    ///
+    /// **The inode must still match.** Only the device may differ, and only
+    /// because the two sides genuinely name different objects. An attacker
+    /// wanting to poison this would have to place their binary *at the trusted
+    /// path*, which needs write access to a system directory -- the same bar
+    /// that already protects the table, and the reason a path is allowed to
+    /// identify a program at all while a `comm` is not.
+    pub fn rebind_from_kernel(&mut self, path: &str, seen: FileId) -> Option<(&'static str, Role)> {
+        if seen.is_unknown() {
+            return None;
+        }
+        // The file at that path, right now, must be the one that just ran.
+        let on_disk = FileId::of(path)?;
+        if on_disk.ino != seen.ino {
+            return None;
+        }
+        self.bind(path, seen)
+    }
+
+    /// Point a tracked path's program at one identity, replacing any other.
+    fn bind(&mut self, path: &str, id: FileId) -> Option<(&'static str, Role)> {
         let entry = CREDENTIAL_READERS
             .iter()
             .chain(NETWORK_DAEMONS)
             .find(|e| e.paths.contains(&path))?;
-        let id = FileId::of(path)?;
         // Drop any stale identity still claiming this program, so the table
         // does not grow an entry per upgrade for the lifetime of the daemon.
         self.by_id.retain(|_, (name, _)| *name != entry.name);
@@ -646,6 +697,74 @@ mod rebind_tests {
         let after = t.by_id.values().filter(|(n, _)| *n == name).count();
         assert_eq!(before, 1, "one identity per program");
         assert_eq!(after, 1, "rebinding must not add a second");
+    }
+
+    /// Measured on a btrfs host, for one file, at the same moment:
+    ///
+    /// ```text
+    /// stat()  dev = 37  ino = 17746   /usr/bin/unix_chkpwd
+    /// BPF     dev = 35  ino = 17746
+    /// ```
+    ///
+    /// btrfs gives each subvolume its own anonymous block device. Userspace
+    /// sees the subvolume's; a BPF program reading `inode->i_sb->s_dev` sees
+    /// the superblock's. Both have major 0, so the glibc/kernel device
+    /// conversion leaves them alone and nothing in the numbers says they are
+    /// different things.
+    ///
+    /// That cost 33 of 43 incidents on one desktop in a day, and `rebind`
+    /// could not repair it: re-stating the path returns 37 again, so the table
+    /// relearns the identity that cannot match.
+    #[test]
+    fn an_identity_the_kernel_reports_is_learned_even_when_stat_disagrees() {
+        let mut t = TrustedBinaries::resolve_host();
+        let Some(path) = CREDENTIAL_READERS
+            .iter()
+            .flat_map(|e| e.paths.iter())
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+        else {
+            return;
+        };
+        let from_stat = FileId::of(path).expect("path exists");
+
+        // What a btrfs kernel would report for the same file: same inode, the
+        // superblock's device instead of the subvolume's.
+        let from_kernel = FileId::new(from_stat.dev.wrapping_sub(2), from_stat.ino);
+        assert!(
+            t.lookup(from_kernel).is_none(),
+            "precondition: the kernel's identity must not match the table yet"
+        );
+
+        let (name, _) = t
+            .rebind_from_kernel(path, from_kernel)
+            .expect("a tracked path must be learnable from the kernel's identity");
+        assert!(
+            t.lookup(from_kernel).is_some(),
+            "{name} must now be recognised by the identity events actually carry"
+        );
+    }
+
+    /// Only the *device* may disagree. A different inode at the trusted path is
+    /// a different file, and learning it would let anything that manages to run
+    /// as the trusted program inherit its suppression.
+    #[test]
+    fn a_different_inode_is_never_learned() {
+        let mut t = TrustedBinaries::resolve_host();
+        let Some(path) = CREDENTIAL_READERS
+            .iter()
+            .flat_map(|e| e.paths.iter())
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+        else {
+            return;
+        };
+        let real = FileId::of(path).expect("exists");
+        let impostor = FileId::new(real.dev, real.ino ^ 0xbeef);
+        assert!(t.rebind_from_kernel(path, impostor).is_none());
+        assert!(t.lookup(impostor).is_none(), "must not be trusted");
+        // An unknown identity carries no information and must not be learned.
+        assert!(t.rebind_from_kernel(path, FileId::new(0, 0)).is_none());
     }
 
     /// An untracked path is never stat'd. This is what keeps the check off the

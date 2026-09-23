@@ -5,6 +5,46 @@ line is in the commit history.
 
 ## v0.5.5 — unreleased
 
+### Identity matching was silently dead on btrfs
+
+**Upgrade if any watched host uses btrfs** — the default on CachyOS, Fedora and
+openSUSE. Measured on a live host, for one file, at the same moment:
+
+```
+stat()  dev = 37  ino = 17746   /usr/bin/unix_chkpwd
+BPF     dev = 35  ino = 17746
+```
+
+btrfs allocates an anonymous block device per subvolume. Userspace `stat` sees
+the subvolume's; a BPF program reading `inode->i_sb->s_dev` sees the
+superblock's. Both have major 0, so the glibc/kernel device conversion that
+fixed an earlier bug of this shape leaves them untouched, and nothing in the
+numbers says they name different things.
+
+Every identity comparison on such a host therefore failed — silently, and in the
+direction that generates alerts. **33 of 43 incidents on one desktop in a day**
+were PAM's password checker reading `/etc/shadow` at each screen unlock, scored
+CRITICAL, because the suppression that exists for exactly that case could not
+recognise the binary. The panel showed a clean, fully-attached host the whole
+time.
+
+Identity underpins more than that one suppression: the daemon table behind
+`shell_from_network_daemon`, watched files keyed by `(device, inode)` so a hard
+link still matches, and the kernel escape hatches, which are keyed by identity
+*because* paths lie. On btrfs the identity half of all of them was inert while
+the path half kept working, so nothing looked broken.
+
+`rebind`, added a day earlier for replaced binaries, could not repair it: it
+re-stats the path, gets 37 again, and relearns the identity that cannot match.
+The agent now learns the identity **the kernel reports** for a tracked path.
+The inode must still agree with what is on disk there — only the device may
+differ, and only because the two sides genuinely name different objects. To
+poison it an attacker must place their binary *at* the trusted path, which needs
+write access to a system directory: the same bar that already protects the
+table, and the reason a kernel-reported path may identify a program while a
+`comm` may not.
+
+
 ### The keys-file warning no longer advises breaking the server
 
 `deploy/install.sh` sets `agents.keys` to mode 640, owned `root:kernelsentinel`,
