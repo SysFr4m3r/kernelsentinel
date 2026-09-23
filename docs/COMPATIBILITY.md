@@ -63,6 +63,40 @@ kernel module loading. You lose the file, credential-theft, fileless-exec and
 container-socket detections — which is most of the detection surface, but a long
 way from nothing.
 
+## Filesystems and usr-merge
+
+Identity matching — `(device, inode)` — underpins credential-read suppression,
+the trusted-daemon table, watched files reached by a second name, and the kernel
+escape hatches. Two host properties break the naive version of it, and they
+arrived in the same generation of distributions, so they usually appear
+together.
+
+**btrfs gives userspace and the kernel different device numbers for one file.**
+Each subvolume gets its own anonymous block device: `stat` reports the
+subvolume's, while a BPF program reading `inode->i_sb->s_dev` reports the
+superblock's. Measured on CachyOS, same file, same moment:
+
+```
+stat()  dev = 37  ino = 17746   /usr/bin/unix_chkpwd
+BPF     dev = 35  ino = 17746
+```
+
+Both have major 0, so the glibc/kernel device conversion leaves them untouched
+and nothing in the numbers says they name different things. The agent therefore
+learns the identity the *kernel* reports for a tracked path, requiring the inode
+to still match what is on disk there.
+
+**usr-merge means the kernel reports a different path than the table lists.**
+`/usr/sbin` is a symlink to `/usr/bin` on Arch and everything after it, so
+`stat("/usr/sbin/unix_chkpwd")` resolves while the kernel names
+`/usr/bin/unix_chkpwd` at exec. Tracked paths are indexed by where they resolve
+as well as by how they are written.
+
+Both were found by running on a second distribution. On ext4 without usr-merge
+neither is reachable, and the cost on a host where they are is not subtle: 33 of
+43 incidents in one day were PAM's password checker at each screen unlock,
+scored CRITICAL, while the panel showed a clean 13/13 host.
+
 ## Distributions
 
 `CONFIG_BPF_LSM=y` is the deciding factor, and it is not universal. Even where
