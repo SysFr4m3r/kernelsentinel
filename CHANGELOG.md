@@ -3,7 +3,30 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.5.4 — unreleased
+## v0.5.5 — unreleased
+
+### Comment without resolving, and reopen
+
+From a day of real triage on a live host: of 43 incidents, **21 were annotated
+"lock screen?"** — a question, not a verdict. The panel made the operator
+resolve every one of them in order to write that down, because a note could only
+be attached to a resolution. When the only way to record a doubt is to declare
+it settled, people either lose the note or close what they should not have.
+
+`note` and `resolved` are independent now. **Comment** saves what you worked out
+and leaves the incident open for somebody to confirm. **Reopen** puts back one
+that was closed too quickly, keeping the note that came with the resolution —
+usually the only record of why it looked settled, and exactly what the next
+person needs.
+
+The host score counts unresolved incidents, so it moves in both directions: a
+reopened critical takes the host's score back up. A score that only ever fell
+would make reopening cosmetic.
+
+Omitting a field leaves it alone; an empty string is a real value and clears the
+note, so a comment written by mistake can be removed without reopening anything.
+
+## v0.5.4 — sweep, and a second distribution
 
 ### `sweep`: what is on the host, not what happened to it
 

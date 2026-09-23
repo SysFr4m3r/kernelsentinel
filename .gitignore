@@ -44,3 +44,12 @@ temp.log
 PLAN.md
 /dist/
 /target/
+
+# Captures, databases and anything else pulled off a real host for analysis.
+# These carry hostnames, command lines, usernames and file paths, and none of
+# it belongs in a public repository.
+tmp/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.ndjson.gz

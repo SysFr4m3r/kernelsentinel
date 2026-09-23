@@ -519,7 +519,13 @@ fn handle(
                 }
             }
         },
-        // Resolve an incident -- records the actual signed-in username.
+        // Triage an incident -- records the actual signed-in username.
+        //
+        // `note` and `resolved` are both optional and independent. Omitting a
+        // field leaves it alone, so a comment does not resolve an incident and
+        // reopening one does not erase what somebody wrote on it. An operator
+        // needs to record a doubt without declaring it settled, and needs to
+        // undo a resolution made too quickly.
         (Method::Post, "/api/resolve") => match session(&req, secret) {
             None => text(401, "auth required"),
             Some((username, _)) => {
@@ -530,9 +536,12 @@ fn handle(
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let host = v.get("host").and_then(|x| x.as_str()).unwrap_or("");
                 let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-                let note = v.get("note").and_then(|x| x.as_str()).unwrap_or("");
-                if store.resolve(host, id, &username, note) {
-                    text(200, "resolved")
+                // Absent means "leave it"; an empty string is a real value and
+                // clears the note.
+                let note = v.get("note").and_then(|x| x.as_str());
+                let resolved = v.get("resolved").and_then(|x| x.as_bool());
+                if store.triage(host, id, &username, note, resolved) {
+                    text(200, "ok")
                 } else {
                     text(404, "no such incident")
                 }

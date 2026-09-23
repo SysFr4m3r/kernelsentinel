@@ -185,6 +185,10 @@ code.cmd.hero{margin-top:8px;font-size:12px}
 .resolvebar input:focus{outline:2px solid var(--accent);outline-offset:1px}
 .resolvebtn{border:0;border-radius:8px;padding:8px 14px;background:var(--ok);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
 .resolvebtn:hover{filter:brightness(1.08)}
+.commentbtn,.reopenbtn{border:1px solid var(--line);border-radius:8px;padding:8px 14px;background:transparent;color:var(--fg);font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.commentbtn:hover,.reopenbtn:hover{background:var(--line)}
+.note-shown{margin:6px 0;padding:8px 10px;border-left:3px solid var(--line);color:var(--fg);font-style:italic}
+.open-note{margin-top:8px;color:var(--faint);font-size:12px}
 .resolved-note{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
 .resolved-note b{color:var(--ok)}
 .adduser{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;box-shadow:var(--shadow)}
@@ -582,20 +586,47 @@ function renderInc(d){const det=document.getElementById('detail');det.className=
     const stamp=(when||off)?`<span class="sigtime mono">${when}${when&&off?' ':''}${off?`<i>${off}</i>`:''}</span>`:'';
     return `<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}${stamp}</span><span class="pts">+${num(s.score)}</span></div>`;
   }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${num(d.score)}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?num(d.subject.pid,'?'):'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?num(d.subject.uid,'?'):'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${num(d.score)}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div>${yaraSec(d)}<div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${num(b.base??d.score)}</b><span>+ chain</span><b>${num(b.chain_bonus,0)}</b>${mult}<span class="eq">= ${num(d.score)}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
+  const noteOf=()=>{const n=det.querySelector('.rnote');return n?n.value:'';};
   const rb=det.querySelector('.resolvebtn');
-  if(rb)rb.addEventListener('click',()=>resolveIncident(d._id,det.querySelector('.rnote').value));}
+  if(rb)rb.addEventListener('click',()=>triageIncident(d._id,noteOf(),true));
+  // Comment sends no `resolved` field at all, so the state is untouched.
+  const cb=det.querySelector('.commentbtn');
+  if(cb)cb.addEventListener('click',()=>triageIncident(d._id,noteOf(),undefined));
+  const ob=det.querySelector('.reopenbtn');
+  if(ob)ob.addEventListener('click',()=>triageIncident(d._id,noteOf(),false));}
 
 function resolveControl(d){
-  if(d._resolved){const when=d._resolved_at?new Date(d._resolved_at*1000).toISOString().slice(0,16).replace('T',' '):'';
-    return `<div class="resolved-note">✓ <b>Resolved</b> by ${esc(d._resolved_by||'admin')} ${when?'· '+when+' UTC':''}${d._note?' · “'+esc(d._note)+'”':''}</div>`;}
-  return `<div class="resolvebar"><input class="rnote" placeholder="Note (optional): false positive, acknowledged…"><button class="resolvebtn">Mark resolved</button></div>`;
+  const when=d._resolved_at?new Date(d._resolved_at*1000).toISOString().slice(0,16).replace('T',' '):'';
+  const who=esc(d._resolved_by||'admin');
+  // The note is shown in both states and is editable in both. A comment is a
+  // record of what somebody worked out, and it is worth as much on an open
+  // incident as on a closed one -- more, because an open one is the one
+  // somebody else still has to look at.
+  const note=d._note?`<div class="note-shown">“${esc(d._note)}”</div>`:'';
+  const bar=`<div class="resolvebar">
+      <input class="rnote" value="${esc(d._note||'')}" placeholder="Comment: what you worked out, or why it looks routine…">
+      <button class="commentbtn" title="Save the comment and leave this open">Comment</button>
+      ${d._resolved
+        ? '<button class="reopenbtn" title="This was closed too soon — put it back">Reopen</button>'
+        : '<button class="resolvebtn">Mark resolved</button>'}
+    </div>`;
+  const head=d._resolved
+    ? `<div class="resolved-note">✓ <b>Resolved</b> by ${who} ${when?'· '+when+' UTC':''}</div>`
+    : (d._note?`<div class="open-note">last comment by ${who}${when?' · '+when+' UTC':''}</div>`:'');
+  return head+note+bar;
 }
-async function resolveIncident(id,note){
+async function triageIncident(id,note,resolved){
   if(id==null)return;
+  // Only the fields being changed are sent. Omitting `resolved` leaves the
+  // state alone, which is what makes a comment a comment.
+  const body={host:currentHost.host,id};
+  if(note!==null&&note!==undefined)body.note=note;
+  if(resolved!==null&&resolved!==undefined)body.resolved=resolved;
   await fetch('/api/resolve',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({host:currentHost.host,id,note:note||''})});
-  // Refresh: re-fetch fleet (host score may have dropped) and re-open the host.
+    body:JSON.stringify(body)});
+  // Refresh: re-fetch fleet (host score moves in both directions now) and
+  // re-open the host.
   try{HOSTS=await api('/api/fleet');}catch(e){}
   const fresh=HOSTS.find(h=>h.host===currentHost.host);
   if(fresh){openHost(fresh);}else{document.getElementById('back').click();renderFleet();}

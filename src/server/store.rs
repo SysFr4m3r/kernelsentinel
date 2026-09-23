@@ -560,11 +560,31 @@ impl Store {
         }
     }
 
-    /// Mark an incident resolved. Writes only to the central record -- never to a
-    /// host. The host score counts unresolved incidents only, so resolving the
-    /// worst one drops the score to the next. Rewrites the journal so the
-    /// resolution survives a restart.
-    pub fn resolve(&self, host: &str, id: u64, by: &str, note: &str) -> bool {
+    /// Change an incident's triage state, its note, or both.
+    ///
+    /// Note and resolved state move independently, because in practice they
+    /// are independent questions. An operator triaging a day of alerts wants
+    /// to write down *why* something looks routine while leaving it open for a
+    /// colleague to confirm -- and wants to reopen one they closed too quickly.
+    /// Forcing a comment to also resolve, which is what this did, means the
+    /// only way to record a doubt is to declare it settled.
+    ///
+    /// `None` means "leave this as it is", so a comment does not disturb the
+    /// state and a state change does not erase the comment. An empty string is
+    /// a real value and clears the note.
+    ///
+    /// Writes only to the central record -- never to a host. The host score
+    /// counts unresolved incidents only, so resolving the worst one drops the
+    /// score to the next, and reopening it puts the score back.
+    pub fn triage(
+        &self,
+        host: &str,
+        id: u64,
+        by: &str,
+        note: Option<&str>,
+        resolved: Option<bool>,
+    ) -> bool {
+        let now = epoch();
         let found = {
             let mut hosts = self.hosts.lock().unwrap();
             let Some(state) = hosts.get_mut(host) else {
@@ -572,10 +592,17 @@ impl Store {
             };
             match state.incidents.iter_mut().find(|i| i.id == id) {
                 Some(inc) => {
-                    inc.resolved = true;
+                    if let Some(n) = note {
+                        inc.note = n.to_string();
+                    }
+                    if let Some(r) = resolved {
+                        inc.resolved = r;
+                    }
+                    // Whoever last touched it, in either direction. An entry
+                    // that says "resolved by admin" on an incident somebody
+                    // reopened would be a worse record than none.
                     inc.resolved_by = by.to_string();
-                    inc.resolved_at = epoch();
-                    inc.note = note.to_string();
+                    inc.resolved_at = now;
                     true
                 }
                 None => false,
@@ -584,13 +611,33 @@ impl Store {
         if found {
             if let Some(db) = &self.db {
                 let conn = db.lock().unwrap();
+                // Each field is written only when it was asked for, so the
+                // SQL mirrors the in-memory rule rather than restating it.
+                if let Some(n) = note {
+                    let _ = conn.execute(
+                        "UPDATE incidents SET note = ?1 WHERE id = ?2",
+                        rusqlite::params![n, id as i64],
+                    );
+                }
+                if let Some(r) = resolved {
+                    let _ = conn.execute(
+                        "UPDATE incidents SET resolved = ?1 WHERE id = ?2",
+                        rusqlite::params![r as i64, id as i64],
+                    );
+                }
                 let _ = conn.execute(
-                    "UPDATE incidents SET resolved = 1, resolved_by = ?1, resolved_at = ?2,                      note = ?3 WHERE id = ?4",
-                    rusqlite::params![by, epoch() as i64, note, id as i64],
+                    "UPDATE incidents SET resolved_by = ?1, resolved_at = ?2 WHERE id = ?3",
+                    rusqlite::params![by, now as i64, id as i64],
                 );
             }
         }
         found
+    }
+
+    /// Mark an incident resolved, with a note. Kept as the name the rest of the
+    /// code and its tests already use.
+    pub fn resolve(&self, host: &str, id: u64, by: &str, note: &str) -> bool {
+        self.triage(host, id, by, Some(note), Some(true))
     }
 
     /// The HMAC secret for signing session tokens: read from the config table,
@@ -1567,5 +1614,133 @@ mod tests {
             "blind",
             "a failed attestation still outranks everything"
         );
+    }
+}
+
+#[cfg(test)]
+mod triage_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The panel's view of one incident: the same JSON the dashboard renders,
+    /// so these tests check what an operator actually sees.
+    fn view(s: &Store, id: u64) -> serde_json::Value {
+        s.host_incidents("h1")
+            .expect("host exists")
+            .into_iter()
+            .find(|v| v.get("_id").and_then(|x| x.as_u64()) == Some(id))
+            .expect("incident exists")
+    }
+    fn note_of(s: &Store, id: u64) -> String {
+        view(s, id)["_note"].as_str().unwrap_or("").to_string()
+    }
+    fn resolved(s: &Store, id: u64) -> bool {
+        view(s, id)["_resolved"].as_bool().unwrap_or(false)
+    }
+    fn by_of(s: &Store, id: u64) -> String {
+        view(s, id)["_resolved_by"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn one(s: &Store) -> u64 {
+        s.ingest(
+            "h1",
+            "6.8",
+            "10.0.0.1",
+            json!({"severity":"CRITICAL","score":90}),
+        );
+        s.host_incidents("h1").unwrap()[0]["_id"]
+            .as_u64()
+            .expect("ingested")
+    }
+
+    /// A comment must not resolve. Triaging a day of alerts means writing down
+    /// what you worked out while leaving the thing open for somebody to
+    /// confirm; when the only way to record a doubt is to declare it settled,
+    /// people either lose the note or close what they should not have.
+    ///
+    /// From a real day on a real host: 21 of 43 incidents were annotated
+    /// "lock screen?" -- a question, not a verdict, and the panel made the
+    /// operator resolve every one of them to write it down.
+    #[test]
+    fn a_comment_does_not_resolve() {
+        let s = Store::new();
+        let id = one(&s);
+        assert!(s.triage("h1", id, "admin", Some("lock screen?"), None));
+        assert_eq!(note_of(&s, id), "lock screen?");
+        assert!(!resolved(&s, id), "a comment must leave it open");
+        assert_eq!(by_of(&s, id), "admin", "who commented is worth keeping");
+    }
+
+    /// Reopening must not erase the reasoning that came with the resolution.
+    /// That note is usually the only record of why somebody thought it was
+    /// settled, and it is exactly what the next person needs.
+    #[test]
+    fn reopening_keeps_the_note() {
+        let s = Store::new();
+        let id = one(&s);
+        assert!(s.resolve("h1", id, "admin", "false positive, steam"));
+        assert!(resolved(&s, id));
+
+        assert!(s.triage("h1", id, "bob", None, Some(false)));
+        assert!(!resolved(&s, id), "reopened");
+        assert_eq!(
+            note_of(&s, id),
+            "false positive, steam",
+            "the reasoning survives"
+        );
+        assert_eq!(by_of(&s, id), "bob", "the last person to touch it");
+    }
+
+    /// The host score counts unresolved incidents, so it has to move in both
+    /// directions. A score that only ever falls would make reopening cosmetic.
+    #[test]
+    fn the_host_score_recovers_when_an_incident_is_reopened() {
+        let s = Store::new();
+        s.ingest(
+            "h1",
+            "6.8",
+            "10.0.0.1",
+            json!({"severity":"LOW","score":20}),
+        );
+        s.ingest(
+            "h1",
+            "6.8",
+            "10.0.0.1",
+            json!({"severity":"CRITICAL","score":90}),
+        );
+        let worst = s
+            .host_incidents("h1")
+            .unwrap()
+            .into_iter()
+            .find(|v| v.get("score").and_then(|x| x.as_u64()) == Some(90))
+            .unwrap()["_id"]
+            .as_u64()
+            .unwrap();
+        let score_of = |s: &Store| s.fleet().iter().find(|h| h.host == "h1").unwrap().score;
+        assert_eq!(score_of(&s), 90);
+
+        s.resolve("h1", worst, "admin", "");
+        assert_eq!(score_of(&s), 20, "resolving the worst drops to the next");
+
+        s.triage("h1", worst, "admin", None, Some(false));
+        assert_eq!(score_of(&s), 90, "reopening must put it back");
+    }
+
+    /// An empty string is a real value and clears the note; absent leaves it.
+    /// Without that distinction there is no way to remove a comment written by
+    /// mistake.
+    #[test]
+    fn an_empty_note_clears_and_an_absent_one_does_not() {
+        let s = Store::new();
+        let id = one(&s);
+        s.triage("h1", id, "admin", Some("typo"), None);
+        s.triage("h1", id, "admin", None, Some(true));
+        assert_eq!(note_of(&s, id), "typo", "absent leaves it alone");
+        s.triage("h1", id, "admin", Some(""), None);
+        assert_eq!(note_of(&s, id), "", "an empty note clears it");
+        assert!(resolved(&s, id), "clearing a note must not reopen it");
     }
 }
