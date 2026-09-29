@@ -540,10 +540,56 @@ fn handle(
                 // clears the note.
                 let note = v.get("note").and_then(|x| x.as_str());
                 let resolved = v.get("resolved").and_then(|x| x.as_bool());
+                // Teaching the baseline is a separate act from closing the
+                // incident, so it is a separate flag. An operator may well want
+                // to say "this is normal here" while leaving the alert open for
+                // a colleague, and equally to close one without declaring the
+                // behaviour routine forever.
+                let expect = v.get("expect").and_then(|x| x.as_bool()).unwrap_or(false);
                 if store.triage(host, id, &username, note, resolved) {
+                    if expect {
+                        store.mark_expected(host, id, &username);
+                    }
                     text(200, "ok")
                 } else {
                     text(404, "no such incident")
+                }
+            }
+        },
+
+        // The host's baseline, as a file to download.
+        //
+        // Not pushed to the agent, and there is no endpoint that could push it.
+        // Data in this system flows host to central and never back: an agent
+        // that accepted configuration from the panel would mean a compromised
+        // panel could blind every host it watches. Installing this is a human
+        // action, which is the property worth more than the convenience.
+        (Method::Get, "/api/baseline") => match session(&req, secret) {
+            None => text(401, "auth required"),
+            Some(_) => {
+                let host = req
+                    .url()
+                    .split_once("host=")
+                    .map(|(_, h)| h.split('&').next().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                match store.baseline_for(&host) {
+                    Some(json) => {
+                        let name = format!("{host}.baseline.json");
+                        let mut r = Response::from_string(json).with_status_code(200);
+                        for (k, v) in [
+                            ("Content-Type", "application/json".to_string()),
+                            (
+                                "Content-Disposition",
+                                format!("attachment; filename=\"{name}\""),
+                            ),
+                        ] {
+                            if let Ok(h) = Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+                                r = r.with_header(h);
+                            }
+                        }
+                        r
+                    }
+                    None => text(404, "nothing marked expected on this host yet"),
                 }
             }
         },

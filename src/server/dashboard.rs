@@ -187,6 +187,10 @@ code.cmd.hero{margin-top:8px;font-size:12px}
 .resolvebtn:hover{filter:brightness(1.08)}
 .commentbtn,.reopenbtn{border:1px solid var(--line);border-radius:8px;padding:8px 14px;background:transparent;color:var(--fg);font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
 .commentbtn:hover,.reopenbtn:hover{background:var(--line)}
+.expectbox{display:inline-flex;align-items:center;gap:6px;color:var(--faint);font-size:12px;white-space:nowrap;cursor:pointer}
+.expectbox input{cursor:pointer}
+.dlbase{color:var(--faint);text-decoration:none;border:1px solid var(--line);border-radius:6px;padding:2px 8px}
+.dlbase:hover{color:var(--fg);background:var(--line)}
 .note-shown{margin:6px 0;padding:8px 10px;border-left:3px solid var(--line);color:var(--fg);font-style:italic}
 .open-note{margin-top:8px;color:var(--faint);font-size:12px}
 .resolved-note{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
@@ -534,7 +538,7 @@ async function openHost(h,selectId){
   if(h.agent_version)tel.push('agent '+esc(h.agent_version));
   if(h.uptime_secs)tel.push('up '+dur(h.uptime_secs));
   if(h.events!=null)tel.push(h.events.toLocaleString()+' events');
-  hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${esc(h.host)} ${agentTag(h)}</div><div class="hr">${esc(h.kernel||'linux')} ${h.ip?'· '+esc(h.ip):''}${tel.length?' · '+tel.join(' · '):''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span></div>`;
+  hb.innerHTML=`<span class="big">${h.score}</span><div><div class="hn">${esc(h.host)} ${agentTag(h)}</div><div class="hr">${esc(h.kernel||'linux')} ${h.ip?'· '+esc(h.ip):''}${tel.length?' · '+tel.join(' · '):''}</div></div><div class="tags"><span>${h.n} incident${h.n!==1?'s':''}</span><span>seen ${tsago(h.last_seen)}</span><a class="dlbase" href="/api/baseline?host=${encodeURIComponent(h.host)}" title="Everything marked expected on this host, as a baseline file. Copy it to the host and pass it to the agent with --baseline; nothing is pushed from here.">baseline \u2193</a></div>`;
   // A drop is an event the kernel could not hand us: a hole in coverage, and
   // the one number that must never be presented quietly.
   const warn=document.getElementById('hostwarn');
@@ -587,13 +591,16 @@ function renderInc(d){const det=document.getElementById('detail');det.className=
     return `<div class="sig"><span class="id">${esc(s.id)}</span><span class="txt">${esc(s.detail)}${s.cmdline?`<code class="cmd">${esc(s.cmdline)}</code>`:''}${stamp}</span><span class="pts">+${num(s.score)}</span></div>`;
   }).join('');const b=d.score_breakdown||{};const mult=(b.context_mult&&Math.abs(b.context_mult-1)>0.001)?`<span>×</span><b>${b.context_mult.toFixed(2)}</b>`:'';const note=b.context_note?`<span class="note">(${esc(b.context_note)})</span>`:'';const att=(d.attack||[]).map(t=>`<div class="att"><span class="id">${esc(t)}</span><span class="nm">${esc(names[t]||t)}</span></div>`).join('');det.innerHTML=`<div class="d-head"><div class="d-badge">${num(d.score)}</div><div class="t"><div class="scn">${esc(d.subject&&d.subject.comm||'incident')}</div><div class="meta mono">pid ${d.subject?num(d.subject.pid,'?'):'?'}${d.subject&&d.subject.exe?' · '+esc(d.subject.exe):''} · uid ${d.subject?num(d.subject.uid,'?'):'?'}</div><div class="meta when">${(()=>{const t=incTime(d);return t.ms?(t.exact?tsabs(t.ms):tsabs(t.ms)+' (server receive time — agent supplied none)'):'time unknown';})()}</div>${d.subject&&d.subject.cmdline?`<code class="cmd hero">${esc(d.subject.cmdline)}</code>`:''}</div><div class="d-sv">${esc(d.severity)}<br><span style="color:var(--faint);font-weight:400">${num(d.score)}/100</span></div></div><div class="sec"><h4>Process lineage</h4><div class="chain">${chain}</div>${cmds?`<div class="cmds">${cmds}</div>`:''}</div><div class="sec"><h4>Signals (${(d.signals||[]).length})</h4>${sigs}</div>${yaraSec(d)}<div class="sec"><h4>Score</h4><div class="math"><span>base</span><b>${num(b.base??d.score)}</b><span>+ chain</span><b>${num(b.chain_bonus,0)}</b>${mult}<span class="eq">= ${num(d.score)}</span>${note}</div></div><div class="sec"><h4>MITRE ATT&CK</h4><div class="attgrid">${att}</div></div>${resolveControl(d)}`;
   const noteOf=()=>{const n=det.querySelector('.rnote');return n?n.value:'';};
+  // Checked once, read by whichever button is pressed: marking something
+  // expected is orthogonal to closing it.
+  const expectOf=()=>{const c=det.querySelector('.rexpect');return !!(c&&c.checked);};
   const rb=det.querySelector('.resolvebtn');
-  if(rb)rb.addEventListener('click',()=>triageIncident(d._id,noteOf(),true));
+  if(rb)rb.addEventListener('click',()=>triageIncident(d._id,noteOf(),true,expectOf()));
   // Comment sends no `resolved` field at all, so the state is untouched.
   const cb=det.querySelector('.commentbtn');
-  if(cb)cb.addEventListener('click',()=>triageIncident(d._id,noteOf(),undefined));
+  if(cb)cb.addEventListener('click',()=>triageIncident(d._id,noteOf(),undefined,expectOf()));
   const ob=det.querySelector('.reopenbtn');
-  if(ob)ob.addEventListener('click',()=>triageIncident(d._id,noteOf(),false));}
+  if(ob)ob.addEventListener('click',()=>triageIncident(d._id,noteOf(),false,expectOf()));}
 
 function resolveControl(d){
   const when=d._resolved_at?new Date(d._resolved_at*1000).toISOString().slice(0,16).replace('T',' '):'';
@@ -606,6 +613,7 @@ function resolveControl(d){
   const bar=`<div class="resolvebar">
       <input class="rnote" value="${esc(d._note||'')}" placeholder="Comment: what you worked out, or why it looks routine…">
       <button class="commentbtn" title="Save the comment and leave this open">Comment</button>
+      <label class="expectbox" title="Record this (signal, executable) pair as normal on this host, so the agent can stop scoring it"><input type="checkbox" class="rexpect"> expected here</label>
       ${d._resolved
         ? '<button class="reopenbtn" title="This was closed too soon — put it back">Reopen</button>'
         : '<button class="resolvebtn">Mark resolved</button>'}
@@ -615,13 +623,14 @@ function resolveControl(d){
     : (d._note?`<div class="open-note">last comment by ${who}${when?' · '+when+' UTC':''}</div>`:'');
   return head+note+bar;
 }
-async function triageIncident(id,note,resolved){
+async function triageIncident(id,note,resolved,expect){
   if(id==null)return;
   // Only the fields being changed are sent. Omitting `resolved` leaves the
   // state alone, which is what makes a comment a comment.
   const body={host:currentHost.host,id};
   if(note!==null&&note!==undefined)body.note=note;
   if(resolved!==null&&resolved!==undefined)body.resolved=resolved;
+  if(expect)body.expect=true;
   await fetch('/api/resolve',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)});

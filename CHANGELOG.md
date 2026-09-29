@@ -3,7 +3,50 @@
 Notable changes per release. Dates are release dates; the detail behind each
 line is in the commit history.
 
-## v0.5.5 — unreleased
+## v0.5.6 — unreleased
+
+### Triage can teach the baseline
+
+Eight days on a real desktop, and the alert volume was not what the scoring
+changes had been chasing. **140 incidents, 89% of them built entirely from
+signals that cannot alert on their own** — a `sudo`, a `/proc` read, a listening
+port. The archetype was the operator's own tool:
+
+```
+sudo python3 -m rfmap serve --config open.json --source wifi-monitor:iface=wlan1mon
+  cross_uid_proc_read   25
+  privilege_escalation  40
+  unexpected_listener   25          ->  85  HIGH
+```
+
+Three routine things, each deliberately below the alerting floor, chaining.
+
+A fourth scoring change was the obvious move and the wrong one: the rule that
+would suppress this — "an incident made only of weak signals cannot exceed the
+floor" — also suppresses `interpreter_from_network_daemon` + `exec_from_tmp`,
+which is a webshell spawning an interpreter out of `/tmp`. The shapes are
+identical. Trading that for a Steam client is not a fix.
+
+Baselining is the designed answer and was unreachable in practice. Getting one
+meant stopping the agent, taking a separate capture, learning from it, editing
+the unit and restarting — while the panel held 140 hand-triaged incidents, 21 of
+them annotated "lock screen?", containing every fact required.
+
+**expected here** on the triage bar records that incident's `(signal,
+executable)` pairs as normal on that host. The host view offers the result as a
+baseline file in the format `--baseline` already reads, built with the real
+`Baseline` type so the format cannot drift from its loader. Counts and
+timestamps come from the incidents that taught them; recurrence is what makes a
+pair look routine, so inventing either would mean inventing confidence.
+
+**The panel cannot push it.** Data flows host→central and never back, and an
+agent that accepted configuration from the panel would let a compromised panel
+blind every host it watches. Installing a baseline stays a human action.
+
+Weaker than a capture-learned baseline, deliberately: only occurrences that
+alerted are visible here, so a pair firing fifty times and alerting twice is
+recorded as twice. The error is toward less suppression.
+
 
 ### Identity matching was silently dead on btrfs
 

@@ -19,7 +19,7 @@ use crate::decoded::Event;
 use crate::graph::{ProcKey, ProcessGraph};
 
 pub use alert::render;
-pub use baseline::Baseline;
+pub use baseline::{Baseline, Entry as BaselineEntry};
 pub use record::IncidentRecord;
 pub use rule::{Rule, RuleSet, load_dir as load_rules};
 pub use score::{Context, Score, Severity};

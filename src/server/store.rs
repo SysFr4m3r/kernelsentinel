@@ -112,7 +112,7 @@ const MAX_PER_HOST: usize = 500;
 /// database written by a *newer* build is refused rather than attempted: a
 /// downgrade that half-understands the schema would corrupt an audit trail
 /// people are meant to be able to trust.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Hard ceiling on rows kept on disk, independent of retention.
 ///
@@ -273,6 +273,18 @@ impl Store {
                  role TEXT NOT NULL DEFAULT 'admin', created_at INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             -- (signal, exe) pairs an operator has said are normal on a host.
+             -- The evidence columns are copied from the incidents that taught
+             -- them, so the baseline this produces carries real counts and real
+             -- timestamps rather than invented ones.
+             CREATE TABLE IF NOT EXISTS expected (
+                 host TEXT NOT NULL, signal TEXT NOT NULL, exe TEXT NOT NULL,
+                 count INTEGER NOT NULL DEFAULT 1,
+                 first_ns INTEGER NOT NULL DEFAULT 0,
+                 last_ns INTEGER NOT NULL DEFAULT 0,
+                 added_by TEXT NOT NULL DEFAULT '', added_at INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (host, signal, exe)
+             );
              CREATE TABLE IF NOT EXISTS hosts (
                  host TEXT PRIMARY KEY,
                  first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
@@ -638,6 +650,137 @@ impl Store {
     /// code and its tests already use.
     pub fn resolve(&self, host: &str, id: u64, by: &str, note: &str) -> bool {
         self.triage(host, id, by, Some(note), Some(true))
+    }
+
+    /// Record every (signal, exe) pair in one incident as normal on that host.
+    ///
+    /// Triage already produces this knowledge and then throws it away. Over
+    /// eight days on one desktop the panel accumulated 140 incidents, 89% of
+    /// them built entirely from signals that cannot alert on their own --
+    /// `sudo`, a `/proc` read, a listening port -- and an operator clicked
+    /// through them one at a time. Everything needed to stop that repeating was
+    /// already in the database.
+    ///
+    /// The evidence is copied from the incident rather than invented: the count
+    /// of times that pair has been seen here, and the first and last timestamps
+    /// the signals carried. A baseline's strength comes from recurrence, so
+    /// fabricating either would mean fabricating confidence.
+    ///
+    /// Undercounts on purpose. Only occurrences that *alerted* are visible
+    /// here, so a pair that fires fifty times and alerts twice is recorded as
+    /// two. The error is toward weaker suppression, which is the safe
+    /// direction.
+    pub fn mark_expected(&self, host: &str, id: u64, by: &str) -> usize {
+        let pairs: Vec<(String, String, u64)> = {
+            let hosts = self.hosts.lock().unwrap();
+            let Some(state) = hosts.get(host) else {
+                return 0;
+            };
+            let Some(inc) = state.incidents.iter().find(|i| i.id == id) else {
+                return 0;
+            };
+            let exe = inc
+                .record
+                .pointer("/subject/exe")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if exe.is_empty() {
+                // An unresolved executable is not a baseline key: it would
+                // match everything that failed to resolve, on any host.
+                return 0;
+            }
+            inc.record
+                .pointer("/signals")
+                .and_then(|v| v.as_array())
+                .map(|sigs| {
+                    sigs.iter()
+                        .filter_map(|s| {
+                            Some((
+                                s.get("id")?.as_str()?.to_string(),
+                                exe.clone(),
+                                s.get("ts_ns").and_then(|t| t.as_u64()).unwrap_or(0),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let Some(db) = &self.db else {
+            return pairs.len();
+        };
+        let conn = db.lock().unwrap();
+        let now = epoch() as i64;
+        let mut n = 0;
+        for (signal, exe, ts) in &pairs {
+            // Seen again: the count grows and the window widens, which is
+            // exactly what makes a pair look routine rather than one-off.
+            let done = conn.execute(
+                "INSERT INTO expected (host, signal, exe, count, first_ns, last_ns, added_by, added_at)
+                 VALUES (?1, ?2, ?3, 1, ?4, ?4, ?5, ?6)
+                 ON CONFLICT(host, signal, exe) DO UPDATE SET
+                     count = count + 1,
+                     first_ns = CASE WHEN ?4 > 0 AND (first_ns = 0 OR ?4 < first_ns) THEN ?4 ELSE first_ns END,
+                     last_ns  = CASE WHEN ?4 > last_ns THEN ?4 ELSE last_ns END",
+                rusqlite::params![host, signal, exe, *ts as i64, by, now],
+            );
+            if done.is_ok() {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// The baseline file for a host, in the format the agent's `--baseline`
+    /// already reads.
+    ///
+    /// Built with the real `Baseline` type rather than hand-written JSON, so
+    /// the format cannot drift away from the one that has to load it.
+    ///
+    /// Deliberately a *file to fetch*, not something pushed to the agent. Data
+    /// in this system flows host to central and never back: an agent that took
+    /// configuration from the panel would mean a compromised panel could blind
+    /// every host it watches. Installing this stays a human action.
+    pub fn baseline_for(&self, host: &str) -> Option<String> {
+        let db = self.db.as_ref()?;
+        let conn = db.lock().unwrap();
+        let mut q = conn
+            .prepare(
+                "SELECT signal, exe, count, first_ns, last_ns FROM expected \
+                 WHERE host = ?1 ORDER BY signal, exe",
+            )
+            .ok()?;
+        let rows = q
+            .query_map([host], |r| {
+                Ok(crate::detect::BaselineEntry {
+                    signal: r.get(0)?,
+                    exe: r.get(1)?,
+                    count: r.get::<_, i64>(2)? as u64,
+                    first_ns: r.get::<_, i64>(3)? as u64,
+                    last_ns: r.get::<_, i64>(4)? as u64,
+                })
+            })
+            .ok()?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return None;
+        }
+        // The learning window spans everything recorded, which is what
+        // recurrence is measured against.
+        let lo = rows
+            .iter()
+            .map(|e| e.first_ns)
+            .filter(|t| *t > 0)
+            .min()
+            .unwrap_or(0);
+        let hi = rows.iter().map(|e| e.last_ns).max().unwrap_or(0);
+        let mut b = crate::detect::Baseline::new();
+        b.window_ns = hi.saturating_sub(lo);
+        b.events_observed = rows.iter().map(|e| e.count).sum();
+        b.entries = rows;
+        serde_json::to_string_pretty(&b).ok()
     }
 
     /// The HMAC secret for signing session tokens: read from the config table,
@@ -1742,5 +1885,133 @@ mod triage_tests {
         s.triage("h1", id, "admin", Some(""), None);
         assert_eq!(note_of(&s, id), "", "an empty note clears it");
         assert!(resolved(&s, id), "clearing a note must not reopen it");
+    }
+}
+
+#[cfg(test)]
+mod expected_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn store_with_db(tag: &str) -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ks-exp-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("j.sqlite");
+        let s = Store::persistent(path.to_str().unwrap(), 0).unwrap();
+        (s, path)
+    }
+
+    fn incident(exe: &str, sigs: &[(&str, u64)]) -> serde_json::Value {
+        json!({
+            "severity": "HIGH", "score": 85,
+            "subject": {"comm": "python3", "exe": exe},
+            "signals": sigs.iter().map(|(id, ts)| json!({"id": id, "score": 25, "ts_ns": ts})).collect::<Vec<_>>()
+        })
+    }
+
+    /// Triage already produces this knowledge and then throws it away. Eight
+    /// days on one desktop produced 140 incidents, 89% of them built entirely
+    /// from signals that cannot alert alone, clicked through one at a time.
+    #[test]
+    fn marking_an_incident_expected_records_every_pair_it_contains() {
+        let (s, _p) = store_with_db("pairs");
+        s.ingest(
+            "h1",
+            "6.8",
+            "10.0.0.1",
+            incident(
+                "/usr/bin/python3",
+                &[
+                    ("cross_uid_proc_read", 1_000),
+                    ("unexpected_listener", 2_000),
+                ],
+            ),
+        );
+        let id = s.host_incidents("h1").unwrap()[0]["_id"].as_u64().unwrap();
+        assert_eq!(s.mark_expected("h1", id, "admin"), 2);
+
+        let file = s
+            .baseline_for("h1")
+            .expect("a baseline once something is expected");
+        // Must load as the very type the agent's --baseline reads. Hand-written
+        // JSON here would be free to drift away from the loader.
+        let b: crate::detect::Baseline = serde_json::from_str(&file).expect("valid baseline");
+        let mut got: Vec<(String, String)> = b
+            .entries
+            .iter()
+            .map(|e| (e.signal.clone(), e.exe.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "cross_uid_proc_read".to_string(),
+                    "/usr/bin/python3".to_string()
+                ),
+                (
+                    "unexpected_listener".to_string(),
+                    "/usr/bin/python3".to_string()
+                ),
+            ]
+        );
+        // Real timestamps, not invented ones: recurrence is measured against
+        // the window, so a fabricated span would be fabricated confidence.
+        assert!(b.window_ns > 0, "the window spans the evidence");
+    }
+
+    /// Seeing the same pair again is what makes it look routine rather than
+    /// one-off, so the count has to grow and the window has to widen.
+    #[test]
+    fn marking_the_same_pair_twice_strengthens_it() {
+        let (s, _p) = store_with_db("twice");
+        for ts in [1_000u64, 9_000] {
+            s.ingest(
+                "h1",
+                "6.8",
+                "",
+                incident("/usr/bin/fish", &[("cross_uid_proc_read", ts)]),
+            );
+            let id = s.host_incidents("h1").unwrap()[0]["_id"].as_u64().unwrap();
+            s.mark_expected("h1", id, "admin");
+        }
+        let b: crate::detect::Baseline =
+            serde_json::from_str(&s.baseline_for("h1").unwrap()).unwrap();
+        assert_eq!(b.entries.len(), 1, "one pair, not two rows");
+        assert_eq!(b.entries[0].count, 2);
+        assert_eq!(b.entries[0].first_ns, 1_000);
+        assert_eq!(b.entries[0].last_ns, 9_000);
+    }
+
+    /// An unresolved executable matches everything that failed to resolve, on
+    /// any host. Baselining it would suppress far more than the operator saw.
+    #[test]
+    fn an_incident_without_an_executable_teaches_nothing() {
+        let (s, _p) = store_with_db("noexe");
+        s.ingest(
+            "h1",
+            "6.8",
+            "",
+            incident("", &[("cross_uid_proc_read", 1_000)]),
+        );
+        let id = s.host_incidents("h1").unwrap()[0]["_id"].as_u64().unwrap();
+        assert_eq!(s.mark_expected("h1", id, "admin"), 0);
+        assert!(s.baseline_for("h1").is_none());
+    }
+
+    /// One host's normal is not another's.
+    #[test]
+    fn a_baseline_is_per_host() {
+        let (s, _p) = store_with_db("perhost");
+        s.ingest(
+            "h1",
+            "6.8",
+            "",
+            incident("/usr/bin/python3", &[("unexpected_listener", 5)]),
+        );
+        let id = s.host_incidents("h1").unwrap()[0]["_id"].as_u64().unwrap();
+        s.mark_expected("h1", id, "admin");
+        assert!(s.baseline_for("h1").is_some());
+        assert!(s.baseline_for("h2").is_none(), "must not leak across hosts");
     }
 }

@@ -140,7 +140,7 @@ measured, with the method and caveats, in **[docs/PERFORMANCE.md](docs/PERFORMAN
 `(pid, start_boottime)`, parent/child edges, credential history, ancestry walks, a retention window,
 hard memory caps, and `/proc` bootstrap for processes that predate the daemon.
 
-**Tested** on four levels. 200 unit and integration tests, including detections replayed from
+**Tested** on four levels. 204 unit and integration tests, including detections replayed from
 **real kernel captures** committed as fixtures. 35 [attack scenarios](#testing) that run the
 real attack against a live agent and assert it is caught — because replay tests feed the detector
 events it was given, which is how a container escape detection once passed everything and failed
@@ -664,6 +664,38 @@ say, for a cron entry. It exits 1 when there is.
 it is auditing. A rootkit hiding a module or a process from `/proc` hides it
 from sweep too. A clean result means the artifacts it knows about are absent,
 which is not the same as a clean host.
+
+### Teaching the baseline from the panel
+
+Triage produces the knowledge a baseline needs and then throws it away.
+Measured over eight days on one desktop: **140 incidents, 89% of them built
+entirely from signals that cannot alert on their own** — a `sudo`, a `/proc`
+read, a listening port — clicked through one at a time.
+
+Tick **expected here** when resolving or commenting, and the `(signal,
+executable)` pair is recorded as normal on that host, with the count and
+timestamps taken from the incidents that taught it. The host view then offers a
+**baseline ↓** link.
+
+```bash
+curl -k -b cookies.txt "https://panel:8088/api/baseline?host=user-pc" -o user-pc.baseline.json
+```
+
+Copy it to that host and point the agent at it:
+
+```
+ExecStart=… kernelsentinel run --json --baseline /etc/kernelsentinel/host.baseline.json | … ship …
+```
+
+**The panel cannot push it.** Data flows host→central and never back; an agent
+that accepted configuration from the panel would mean a compromised panel could
+blind every host it watches. Installing a baseline is a human action, and that
+property is worth more than the convenience.
+
+A baseline built this way is weaker than one learned from a capture, and
+deliberately so: only occurrences that *alerted* are visible to the panel, so a
+pair that fires fifty times and alerts twice is recorded as twice. The error is
+toward less suppression.
 
 ### Suppress routine behavior (baselining)
 
