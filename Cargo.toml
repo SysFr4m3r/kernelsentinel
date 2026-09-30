@@ -40,3 +40,20 @@ bpf = ["dep:libbpf-rs", "dep:libbpf-cargo"]
 
 [build-dependencies]
 libbpf-cargo = { version = "0.27.0", optional = true }
+
+# Debug builds carried full debug info, which is why each test binary was about
+# 300 MB. Cargo hashes every build and never deletes the old ones, so a long
+# session of edit-test cycles left 90 of them: 52 GB in target/debug, against a
+# 12 MB repository.
+#
+# line-tables-only keeps what a backtrace actually needs -- file and line for
+# every frame -- and drops the variable and type information a debugger would
+# want. Nothing in this project is debugged under gdb; failures are read from
+# panic messages and test output.
+[profile.dev]
+debug = "line-tables-only"
+
+# Tests inherit from dev, but say it explicitly: the test binaries are the large
+# ones, and an inherited setting is easy to lose in a later edit.
+[profile.test]
+debug = "line-tables-only"
